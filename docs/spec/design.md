@@ -36,16 +36,18 @@
 graph TD
     CLI[cli: commander エントリポイント] --> UC[usecase: status / plan / deploy / import / graph]
     UC --> CORE[core: 純粋ロジック]
-    UC --> PORT[ports: Gateway インターフェース]
+    UC --> PORT[ports: Gateway / StateBackend インターフェース]
     UC --> REP[report: Human / JSON Reporter]
-    AWS[aws: SDK 実装] -->|implements| PORT
-    CORE -.->|依存しない| AWS
+    AWS[aws: SDK 実装 + s3 バックエンド] -->|implements| PORT
+    BE[backend: local バックエンド] -->|implements| PORT
 ```
+
+図は存在する依存のみを描く。`core` はどこにも依存しない(アダプタ `aws` / `backend` への依存禁止を含む。下記の依存方向を参照)。
 
 | モジュール | 責務 | 主な要件 |
 |---|---|---|
 | `core/config` | `cfnsync.yaml` の読込・zod 検証・スタック名導出 | FR-11, FR-13 |
-| `core/state` | ステートの読込・保存・世代管理(compare-and-swap) | FR-1 |
+| `core/state` | ステートのスキーマ検証・世代管理(compare-and-swap 判定)。読み書きは `StateBackend`(ports)経由 | FR-1 |
 | `core/template` | テンプレートのパース(CFN 短縮タグ)、Export / ImportValue / NoEcho の抽出 | FR-8, NFR-4 |
 | `core/detect` | スタックキー単位の変更分類(added / modified / deleted / unchanged) | FR-1, FR-13 |
 | `core/graph` | 依存グラフ構築・トポロジカルソート・循環検出・新旧グラフの統合 | FR-8, FR-9, FR-6 |
@@ -54,11 +56,12 @@ graph TD
 | `usecase/guard` | 接続先検証(fail-closed) | FR-7 |
 | `usecase/executor` | 変更セットのライフサイクル管理・イベントストリーム・待機 | FR-2, FR-4, FR-6 |
 | `usecase/importer` | 既存スタックのインポート | FR-10 |
-| `ports` | `CloudFormationGateway` / `StsGateway` インターフェース定義 | NFR-2 |
-| `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応) | NFR-3 |
+| `ports` | `CloudFormationGateway` / `StsGateway` / `StateBackend` インターフェース定義 | NFR-2, FR-1 |
+| `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド | NFR-3, FR-1 |
+| `backend` | `StateBackend` の `local` 実装(原子的ファイル置換・`.bak` 保持) | FR-1 |
 | `report` | 人間可読テキスト / JSON 出力、NoEcho マスク | FR-3, NFR-4 |
 
-依存方向: `cli → usecase → core / ports / report`。`aws` は `ports` を実装する。`core` はどこにも依存しない。
+依存方向: `cli → usecase → core / ports / report`。`aws` / `backend` は `ports` を実装する。`core` はどこにも依存しない。
 
 ## 4. データ設計
 
@@ -282,9 +285,9 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。A
 - **core/**: AWS 非依存の純粋関数として実装し、vitest の単体テストでカバーする(fixtures にテンプレート・設定・ステートのサンプルを置く)。例:
   - `detect`: 「同一内容でタイムスタンプのみ異なる → unchanged」「リージョン追加 → added」
   - `graph`: 「Export/Import から辺を構築」「循環 → 循環要素を列挙してエラー」「旧グラフ統合で削除順を決定」
-  - `state`: 「保存時に世代 / ETag 不一致 → StateConflictError で上書きしない」「ロックを取得できない → 変更を行わずエラー」「破損ステートの読込 → fail-closed」「保存途中の中断 → 元ファイルが無傷(原子的置換)」「force-unlock で所有者が交代した後の旧実行 → fencing 検証で中断」
+  - `state`: 「保存ペイロード生成で世代がインクリメントされる」「読込時世代からの変更を StateConflictError と判定する」「破損ステートの読込 → fail-closed 判定」(ロック・原子的置換・ETag などバックエンド固有の経路は `aws/`・`backend/` で、fencing 中断シナリオは `usecase/` でテストする)
 - **障害注入シナリオ**: AWS 操作成功直後・ステート保存前の中断を CREATE / UPDATE / DELETE それぞれで注入し、再実行が自動収束すること(FR-1、§7 の復旧分岐)を検証する。CREATE 復旧では「タグのみ異なる同名管理外スタック」「Capabilities のみ異なる同名管理外スタック」「NoEcho 実値のみ異なる(=管理タグを持たない)同名管理外スタック」を含め、一致条件を満たさないスタックが再同期されずインポート案内付きで停止することも検証する。また `REVIEW_IN_PROGRESS` スタックに対して `DeleteStack` が一切呼ばれないこと(自変更セットの個別削除のみが行われること)、他主体の変更セットが存在する場合・所有権確認直後に並行追加された場合のいずれも、実行直前の再検査(§7)により `ExecuteChangeSet` が呼ばれず他主体の変更セットが暗黙削除されないことも検証する。
-- **ports 実装(aws/)**: `aws-sdk-client-mock` で SDK レスポンスをスタブし、変更セットの状態遷移(空変更セット判定・所有権判定つき残存回収・IN_PROGRESS ガード)を検証する。S3 バックエンドの条件付き書き込み・ロック競合(`PreconditionFailed`)のパターンも同様に検証する。
+- **ports 実装(aws/・backend/)**: `aws-sdk-client-mock` で SDK レスポンスをスタブし、変更セットの状態遷移(空変更セット判定・所有権判定つき残存回収・IN_PROGRESS ガード)を検証する。S3 バックエンドの条件付き書き込み・ロック競合(`PreconditionFailed`)・`If-Match` 条件付きロック解除(所有者交代時は削除しない)も同様に検証する。`backend/` の local バックエンドは、原子的置換(保存途中の中断で元ファイルが無傷・`.bak` 保持)と保存直前の世代比較 CAS をテンポラリディレクトリで検証する。
 - **usecase/**: ゲートウェイをインメモリのフェイクに差し替えたシナリオテスト(「plan → deploy → 再実行で変更なし」の冪等性、途中失敗 → 再実行の継続性、完了待機中に force-unlock された場合のステート保存直前 fencing 中断、fencing 検証と副作用の間で所有権交代が起きた競合窓シナリオでも CAS 失敗と `*_IN_PROGRESS` ガードにより正本が分岐しないこと)。
 - 実 AWS を使う E2E は初期リリースのスコープ外(手動検証手順を README に記載)。
 
@@ -295,11 +298,12 @@ src/
   cli/            # commander 定義のみ(薄く保つ)
   usecase/        # guard, executor, importer, 各コマンド
   core/           # config, state, template, detect, graph, plan(純粋)
-  ports/          # Gateway インターフェース
-  aws/            # SDK 実装
+  ports/          # Gateway / StateBackend インターフェース
+  aws/            # SDK 実装(s3 ステートバックエンド含む)
+  backend/        # StateBackend の local 実装
   report/         # Reporter
 test/
-  core/ usecase/ aws/
+  core/ usecase/ aws/ backend/ report/ cli/
   fixtures/       # テンプレート・設定・ステートのサンプル
 docs/spec/        # requirements.md / design.md / tasks.md
 ```
