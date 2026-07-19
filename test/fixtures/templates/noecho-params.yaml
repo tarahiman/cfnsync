@@ -1,0 +1,16 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: T-03 fixture (NFR-4) - NoEcho parameter extraction
+
+Parameters:
+  DbPassword:
+    Type: String
+    NoEcho: true
+  ApiKey:
+    Type: String
+    NoEcho: 'true'
+  Environment:
+    Type: String
+
+Resources:
+  Dummy:
+    Type: AWS::SNS::Topic

@@ -1,0 +1,22 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "T-03 fixture (§6) - Export.Name resolved via Fn::Sub pseudo parameters",
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16"
+      }
+    }
+  },
+  "Outputs": {
+    "VpcId": {
+      "Value": { "Ref": "Vpc" },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-VpcId" } }
+    },
+    "VpcIdWithRegion": {
+      "Value": { "Ref": "Vpc" },
+      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-${AWS::Region}-VpcId" } }
+    }
+  }
+}

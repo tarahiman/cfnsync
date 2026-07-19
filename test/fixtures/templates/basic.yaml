@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: T-03 fixture (FR-8-1) - CFN short-tag template with import/export
+
+Parameters:
+  DbPassword:
+    Type: String
+    NoEcho: true
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-bucket'
+
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: !ImportValue shared-kms-key-arn
+
+  Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmActions:
+        - !GetAtt Queue.Arn
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref Queue
+
+Outputs:
+  BucketName:
+    Value: !Ref Bucket
+    Export:
+      Name: basic-bucket-name
