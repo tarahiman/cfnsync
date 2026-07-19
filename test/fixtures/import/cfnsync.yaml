@@ -1,0 +1,15 @@
+version: 1
+# 誤接続防止(FR-7): 許可アカウントとリージョン
+allowedAccounts: ["123456789012"]
+allowedRegions: [ap-northeast-1]
+defaultRegion: ap-northeast-1
+stackNamePrefix: prod-
+
+state:
+  backend: local
+
+stacks:
+  # ネットワーク層のスタック(運用者コメント: このブロックは手編集で残すこと)
+  network.yaml:
+    stackName: prod-network
+    regions: [ap-northeast-1]
