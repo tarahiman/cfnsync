@@ -353,10 +353,10 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 
 ## 11. 進捗チェックリスト
 
-- [ ] T-01 プロジェクト初期化
-- [ ] T-02 core/config
-- [ ] T-03 core/template
-- [ ] T-04 core/state(スキーマ・世代管理)
+- [x] T-01 プロジェクト初期化
+- [x] T-02 core/config
+- [x] T-03 core/template
+- [x] T-04 core/state(スキーマ・世代管理)
 - [ ] T-05 core/detect
 - [ ] T-06 core/graph
 - [ ] T-07 core/plan
