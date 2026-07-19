@@ -1,0 +1,4 @@
+version: 1
+defaultRegion: ap-northeast-1
+stacks:
+  templates/does-not-exist.yaml: {}
