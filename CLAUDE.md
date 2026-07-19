@@ -1,0 +1,50 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+**cfnsync** — a minimal CLI tool that syncs a directory of raw CloudFormation templates to stacks: it detects template add/modify/delete, creates/diffs/executes change sets, and creates/updates/deletes stacks in dependency order. Purpose: ease IaC operation of legacy products that run on hand-written CloudFormation. It deliberately is *not* a new IaC abstraction (no CDK-like layer, no template generation). Target runtime is CI (GitHub Actions, non-interactive); the repo is named `cfn-action`, the tool is `cfnsync`.
+
+The user communicates in Japanese, and all spec documents are written in Japanese.
+
+## Current state: spec-only, pre-implementation
+
+There is no code yet. The project follows **spec-driven TDD**:
+
+1. `docs/spec/requirements.md` — requirements FR-1..FR-13 / NFR-1..NFR-6 with EARS-style (WHEN/IF) acceptance criteria. **Each acceptance criterion maps 1:1 to a test case.**
+2. `docs/spec/design.md` — approved design (survived 9 rounds of adversarial review). Decides: TypeScript/Node.js 20+, npm distribution, commander/yaml/zod/vitest/aws-sdk-client-mock, ports & adapters architecture.
+3. `docs/spec/tasks.md` — next step, not yet written: TDD task breakdown mapping acceptance criteria to test cases.
+
+The specs are the source of truth. Any behavior change must be reflected in requirements.md/design.md **before** implementation. Both documents have been hardened through repeated adversarial review (Codex, via the `/codex:adversarial-review` command); significant spec changes should be re-reviewed the same way.
+
+## Commands
+
+No package.json exists yet. Once scaffolded (per design.md §2/§10): npm + vitest (`vitest run` for the suite, `vitest run <file>` for a single test). Tests must not require real AWS access.
+
+## Architecture (from design.md — read it before implementing)
+
+Ports & adapters; dependency direction is `cli → usecase → core / ports / report`, with `aws` implementing `ports`:
+
+- `src/core/` — **pure logic, no AWS SDK imports**: config loading/validation (zod), state management, change detection, template parsing (CFN short-form YAML tags), dependency graph (Export/ImportValue → topological sort), planning. Most acceptance tests land here as plain unit tests.
+- `src/ports/` — `CloudFormationGateway` / `StsGateway` (+ S3 state backend) interfaces.
+- `src/aws/` — AWS SDK v3 implementations, tested with `aws-sdk-client-mock`.
+- `src/usecase/` — command orchestration: guard (account verification), executor (change set lifecycle), importer.
+- `src/cli/` — thin commander definitions. Subcommands: `status`, `plan`, `deploy`, `graph`, `import`, `force-unlock`.
+
+Unit of management is the **stack key** `<template-path>@<region>` (multi-region: one template can deploy to several regions with per-region parameter/tag overrides).
+
+## Safety invariants (do not weaken these in code or spec)
+
+These came out of adversarial review and are load-bearing; see requirements.md FR-1/FR-2/FR-6/FR-7 and design.md §4.5/§7/§8 for full detail:
+
+- **Fail-closed everywhere**: mutations require `allowedAccounts`/`allowedRegions` config + STS `GetCallerIdentity` match; state is bound to a single AWS account; unverifiable situations abort, they don't warn-and-continue.
+- **State backend** is Terraform-style (`local` default / `s3` for CI) with generation/ETag compare-and-swap, S3 conditional-write locking, atomic file replacement. Fencing (ownership re-check before every side effect) is explicitly **best-effort**; strict guarantees live in CAS + per-stack `*_IN_PROGRESS` guards. Don't claim stronger guarantees than the spec does.
+- **Change set ownership**: names encode `cfnsync-<stateID>-<runID>-<timestamp>`; only own-stateID change sets may be cleaned up; foreign change sets (other tools/humans/other state) block execution — `ExecuteChangeSet` implicitly deletes all other change sets on a stack, so re-inspect immediately before executing.
+- **Never `DeleteStack` a `REVIEW_IN_PROGRESS` stack**; recreate a CREATE-type change set on it instead.
+- **Management tag** `cfnsync:state-id=<stateID>` is auto-applied to every stack and is the provenance check for CREATE recovery (`added` but stack already exists).
+- Stack deletion only with `--allow-delete`, in reverse order of the merged old+new dependency graph, refusing when dependency info can't be reconstructed from state.
+
+## Exit codes
+
+`0` success (including no changes) / `1` error / `2` diff exists (plan/dry-run only). CI depends on these.
