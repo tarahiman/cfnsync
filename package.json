@@ -1,0 +1,28 @@
+{
+  "name": "cfnsync",
+  "version": "0.1.0",
+  "description": "Sync a directory of raw CloudFormation templates to stacks (detect changes, create/diff/execute change sets, manage stacks in dependency order).",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudformation": "^3",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/client-sts": "^3",
+    "commander": "^12",
+    "yaml": "^2",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "aws-sdk-client-mock": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+cfnsync.state.json
+cfnsync.state.json.bak
+*.log
+.DS_Store
