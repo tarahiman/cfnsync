@@ -369,7 +369,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 - [ ] T-14 usecase/deploy
 - [ ] T-15 usecase/delete
 - [ ] T-16 usecase/importer
-- [ ] T-17 usecase/force-unlock
+- [x] T-17 usecase/force-unlock
 - [ ] T-18 障害注入・並行シナリオ
 - [ ] T-19 cli
 - [ ] T-20 README・運用ドキュメント
