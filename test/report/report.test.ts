@@ -1,0 +1,489 @@
+/**
+ * T-11 report のテスト(tasks.md §5 T-11 の対応表)。
+ *
+ * usecase(未実装)が依存する出力契約をここで固定する。実 AWS には接続しない
+ * 純粋関数のテスト。各 it の先頭に対応する受け入れ基準 ID を明記する。
+ */
+
+import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { makeStackKey } from '../../src/core/types.js';
+import type { RegionGraph } from '../../src/core/graph.js';
+import type { ChangeSetDetail, ResourceChange } from '../../src/ports/index.js';
+import {
+  buildStackDiff,
+  maskNoEcho,
+  renderGraphJson,
+  renderGraphText,
+  renderJson,
+  renderText,
+  type ConnectionInfo,
+  type DeployReport,
+  type StackDiff,
+} from '../../src/report/index.js';
+
+const REGION = 'ap-northeast-1';
+const REGION_B = 'us-east-1';
+
+function change(overrides: Partial<ResourceChange> & Pick<ResourceChange, 'logicalResourceId'>): ResourceChange {
+  return {
+    action: 'Modify',
+    resourceType: 'AWS::EC2::VPC',
+    scope: ['Properties'],
+    details: [],
+    ...overrides,
+  };
+}
+
+function connection(overrides: Partial<ConnectionInfo> = {}): ConnectionInfo {
+  return { accountId: '123456789012', regions: [REGION], ...overrides };
+}
+
+function report(diffs: StackDiff[], overrides: Partial<DeployReport> = {}): DeployReport {
+  return { connection: connection(), diffs, ...overrides };
+}
+
+// ---------------------------------------------------------------------------
+// FR-3-1: リソース単位の Add / Modify / Remove と変更プロパティを表示
+// ---------------------------------------------------------------------------
+
+describe('FR-3-1: リソース単位の変更種別・変更プロパティの整形', () => {
+  it('FR-3-1: DescribeChangeSet の Changes から action・logicalResourceId・resourceType・変更プロパティが整形される', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'Vpc',
+          action: 'Modify',
+          resourceType: 'AWS::EC2::VPC',
+          details: [
+            { target: { attribute: 'Properties', name: 'CidrBlock' }, evaluation: 'Static' },
+            { target: { attribute: 'Properties', name: 'Tags' }, evaluation: 'Static' },
+          ],
+        }),
+        change({ logicalResourceId: 'Subnet', action: 'Add', resourceType: 'AWS::EC2::Subnet' }),
+        change({ logicalResourceId: 'Old', action: 'Remove', resourceType: 'AWS::EC2::RouteTable' }),
+      ],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    expect(diff.resources).toHaveLength(3);
+    expect(diff.resources[0]).toMatchObject({
+      action: 'Modify',
+      logicalResourceId: 'Vpc',
+      resourceType: 'AWS::EC2::VPC',
+      changedProperties: ['CidrBlock', 'Tags'],
+    });
+    expect(diff.resources[1]).toMatchObject({ action: 'Add', logicalResourceId: 'Subnet' });
+    expect(diff.resources[2]).toMatchObject({ action: 'Remove', logicalResourceId: 'Old' });
+  });
+
+  it('FR-3-1: renderText はリソース単位の変更種別・変更プロパティを含める', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'Vpc',
+          action: 'Modify',
+          resourceType: 'AWS::EC2::VPC',
+          details: [{ target: { attribute: 'Properties', name: 'CidrBlock' } }],
+        }),
+      ],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    const text = renderText(report([diff]));
+    expect(text).toContain('Modify');
+    expect(text).toContain('Vpc');
+    expect(text).toContain('AWS::EC2::VPC');
+    expect(text).toContain('CidrBlock');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-3-2: Replacement は警告として強調(テキスト・JSON 双方にフラグ)
+// ---------------------------------------------------------------------------
+
+describe('FR-3-2: Replacement の警告強調', () => {
+  it('FR-3-2: Replacement: True のリソースは resources[].replacement === true になる', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Vpc', replacement: 'True' })],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    expect(diff.resources[0].replacement).toBe(true);
+  });
+
+  it('FR-3-2: Replacement: Conditional も警告扱い(replacement: true)になる', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Vpc', replacement: 'Conditional' })],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    expect(diff.resources[0].replacement).toBe(true);
+  });
+
+  it('FR-3-2: Replacement: False は replacement: false になる', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Vpc', replacement: 'False' })],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    expect(diff.resources[0].replacement).toBe(false);
+  });
+
+  it('FR-3-2: renderText は置換対象を警告として強調表示する([REPLACEMENT] 等のフラグを含む)', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Vpc', replacement: 'True' })],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    const text = renderText(report([diff]));
+    expect(text).toMatch(/REPLACEMENT/i);
+    // 警告セクションにも置換対象が明示される。
+    expect(diff.warnings.some((w) => w.includes('Vpc'))).toBe(true);
+  });
+
+  it('FR-3-2: renderJson は置換対象に replacement: true フラグを含める', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Vpc', replacement: 'True' })],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    const parsed = JSON.parse(renderJson(report([diff])));
+    expect(parsed.diffs[0].resources[0].replacement).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-3-3: テキストに加え JSON を選択できる(機械可読・スキーマ検証)
+// ---------------------------------------------------------------------------
+
+const ResourceDiffLineSchema = z.object({
+  action: z.string(),
+  logicalResourceId: z.string(),
+  resourceType: z.string(),
+  replacement: z.boolean(),
+  changedProperties: z.array(z.string()),
+});
+
+const StackDiffSchema = z.object({
+  stackKey: z.string(),
+  region: z.string(),
+  stackName: z.string(),
+  operation: z.enum(['create', 'update', 'delete', 'no-change']),
+  resources: z.array(ResourceDiffLineSchema),
+  warnings: z.array(z.string()),
+});
+
+const DeployReportJsonSchema = z.object({
+  connection: z.object({ accountId: z.string(), regions: z.array(z.string()) }),
+  diffs: z.array(StackDiffSchema),
+  events: z.array(z.unknown()).optional(),
+  result: z.unknown().optional(),
+});
+
+describe('FR-3-3: テキスト・JSON 両方の出力を選択できる', () => {
+  it('FR-3-3: renderText は人間可読な文字列を返す', () => {
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    const text = renderText(report([diff]));
+    expect(typeof text).toBe('string');
+    expect(text.length).toBeGreaterThan(0);
+  });
+
+  it('FR-3-3: renderJson は zod スキーマで自己検証できる機械可読 JSON を返す', () => {
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    const json = renderJson(report([diff]));
+    const parsed = JSON.parse(json);
+    const result = DeployReportJsonSchema.safeParse(parsed);
+    expect(result.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NFR-4: NoEcho 値をマスク(差分・ログ・JSON のすべてで実値が現れない)
+// ---------------------------------------------------------------------------
+
+describe('NFR-4: NoEcho マスク', () => {
+  const SECRET = 'S3cr3t-Raw-Value-Do-Not-Leak';
+
+  it('NFR-4: maskNoEcho は NoEcho キーの値のみ **** に置換する', () => {
+    const masked = maskNoEcho({ DbPassword: SECRET, Other: 'plain' }, ['DbPassword']);
+    expect(masked).toEqual({ DbPassword: '****', Other: 'plain' });
+  });
+
+  it('NFR-4: maskNoEcho は noEchoParams に無いキーを変更しない', () => {
+    const masked = maskNoEcho({ A: '1', B: '2' }, []);
+    expect(masked).toEqual({ A: '1', B: '2' });
+  });
+
+  it('NFR-4: buildStackDiff は ChangeSetDetail.parameters の実値を StackDiff に持ち込まない(構造的保証)', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [change({ logicalResourceId: 'Db' })],
+      parameters: { DbPassword: SECRET },
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('database.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-db',
+      operation: 'update',
+      detail,
+      noEchoParams: ['DbPassword'],
+    });
+
+    expect(JSON.stringify(diff)).not.toContain(SECRET);
+  });
+
+  it('NFR-4: renderText・renderJson のいずれにも NoEcho 実値が一切現れない', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'Db',
+          details: [{ target: { attribute: 'Properties', name: 'MasterUserPassword' }, causingEntity: 'DbPassword' }],
+        }),
+      ],
+      parameters: { DbPassword: SECRET },
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('database.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-db',
+      operation: 'update',
+      detail,
+      noEchoParams: ['DbPassword'],
+    });
+    const rep = report([diff]);
+
+    expect(renderText(rep)).not.toContain(SECRET);
+    expect(renderJson(rep)).not.toContain(SECRET);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-13-7: 出力に対象リージョンを明示(スタックキーにリージョン込み)
+// ---------------------------------------------------------------------------
+
+describe('FR-13-7: 出力へのリージョン明示(スタックキー込み)', () => {
+  it('FR-13-7: StackDiff にリージョン込みのスタックキーが含まれる', () => {
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    expect(diff.stackKey).toBe(`network.yaml@${REGION}`);
+    expect(diff.region).toBe(REGION);
+  });
+
+  it('FR-13-7: renderText / renderJson の両方にスタックキー(リージョン込み)が現れる', () => {
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    const rep = report([diff]);
+    expect(renderText(rep)).toContain(`network.yaml@${REGION}`);
+    const parsed = JSON.parse(renderJson(rep));
+    expect(parsed.diffs[0].stackKey).toBe(`network.yaml@${REGION}`);
+  });
+
+  it('FR-13-7: 複数リージョンの StackDiff がそれぞれのスタックキーで区別される', () => {
+    const diffA = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    const diffB = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION_B),
+      region: REGION_B,
+      stackName: 'prod-network',
+      operation: 'create',
+      noEchoParams: [],
+    });
+    const text = renderText(report([diffA, diffB], { connection: connection({ regions: [REGION, REGION_B] }) }));
+    expect(text).toContain(`network.yaml@${REGION}`);
+    expect(text).toContain(`network.yaml@${REGION_B}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-8-3: 依存マッピングをテキストツリー / JSON で出力
+// ---------------------------------------------------------------------------
+
+describe('FR-8-3: 依存マッピングの出力', () => {
+  function makeGraphs(): Map<string, RegionGraph> {
+    const network = makeStackKey('network.yaml', REGION);
+    const database = makeStackKey('database.yaml', REGION);
+    const graph: RegionGraph = {
+      region: REGION,
+      nodes: [network, database],
+      edges: [{ from: network, to: database }],
+    };
+    return new Map([[REGION, graph]]);
+  }
+
+  it('FR-8-3: renderGraphText は依存関係をリージョンごとのテキストツリーとして出力する', () => {
+    const text = renderGraphText(makeGraphs());
+    expect(text).toContain(REGION);
+    expect(text).toContain('network.yaml@' + REGION);
+    expect(text).toContain('database.yaml@' + REGION);
+    // database は network に依存することがわかる。
+    const databaseIndex = text.indexOf('database.yaml@' + REGION);
+    const dependsLineIndex = text.indexOf('network.yaml@' + REGION, databaseIndex);
+    expect(dependsLineIndex).toBeGreaterThan(databaseIndex);
+  });
+
+  it('FR-8-3: renderGraphJson はリージョンごとのノード・辺を機械可読 JSON として出力する', () => {
+    const json = renderGraphJson(makeGraphs());
+    const parsed = JSON.parse(json);
+    expect(parsed.regions).toHaveLength(1);
+    expect(parsed.regions[0].region).toBe(REGION);
+    expect(parsed.regions[0].nodes).toEqual(['network.yaml@' + REGION, 'database.yaml@' + REGION]);
+    expect(parsed.regions[0].edges).toEqual([
+      { from: 'network.yaml@' + REGION, to: 'database.yaml@' + REGION },
+    ]);
+  });
+
+  it('FR-8-3: renderGraphText / renderGraphJson は複数リージョンを独立に出力する', () => {
+    const graphs = makeGraphs();
+    const soloKey = makeStackKey('solo.yaml', REGION_B);
+    graphs.set(REGION_B, { region: REGION_B, nodes: [soloKey], edges: [] });
+
+    const text = renderGraphText(graphs);
+    expect(text).toContain(REGION_B);
+    expect(text).toContain('solo.yaml@' + REGION_B);
+
+    const parsed = JSON.parse(renderGraphJson(graphs));
+    expect(parsed.regions).toHaveLength(2);
+    expect(parsed.regions.map((r: { region: string }) => r.region)).toEqual([REGION, REGION_B]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-7-8(出力): 接続先を出力の先頭に含める。クレデンシャルは含めない
+// ---------------------------------------------------------------------------
+
+describe('FR-7-8(出力): 接続先の先頭表示', () => {
+  it('FR-7-8: renderText の先頭にアカウント ID・リージョンが含まれる', () => {
+    const text = renderText(report([], { connection: connection({ accountId: '999999999999', regions: [REGION, REGION_B] }) }));
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    const headerBlock = lines.slice(0, 4).join('\n');
+    expect(headerBlock).toContain('999999999999');
+    expect(headerBlock).toContain(REGION);
+    expect(headerBlock).toContain(REGION_B);
+  });
+
+  it('FR-7-8: renderJson の connection フィールドにアカウント ID・リージョンが含まれる', () => {
+    const parsed = JSON.parse(renderJson(report([], { connection: connection({ accountId: '999999999999', regions: [REGION] }) })));
+    expect(parsed.connection).toEqual({ accountId: '999999999999', regions: [REGION] });
+  });
+
+  it('FR-7-8: DeployReport に不正に付与されたクレデンシャルらしき余剰フィールドは renderText / renderJson の出力に一切現れない', () => {
+    const rep = report([]) as DeployReport & { credentials?: unknown };
+    // usecase 側の実装ミスを想定した防御的テスト: 契約にない秘匿情報が紛れ込んでも出力に漏れないこと。
+    rep.credentials = { accessKeyId: 'AKIAFAKEEXAMPLE', secretAccessKey: 'super-secret-leak-marker' };
+
+    expect(renderText(rep)).not.toContain('super-secret-leak-marker');
+    expect(renderJson(rep)).not.toContain('super-secret-leak-marker');
+    expect(renderJson(rep)).not.toContain('AKIAFAKEEXAMPLE');
+  });
+});
