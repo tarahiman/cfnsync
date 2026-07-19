@@ -361,9 +361,9 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 - [x] T-06 core/graph
 - [x] T-07 core/plan
 - [x] T-08 ports + aws/CloudFormationGateway
-- [ ] T-09 aws/StsGateway
-- [ ] T-10 ステートバックエンド(backend/local + aws/s3)
-- [ ] T-11 report
+- [x] T-09 aws/StsGateway
+- [x] T-10 ステートバックエンド(backend/local + aws/s3)
+- [x] T-11 report
 - [ ] T-12 usecase/guard
 - [ ] T-13 usecase/executor
 - [ ] T-14 usecase/deploy
