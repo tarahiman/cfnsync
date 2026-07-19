@@ -359,8 +359,8 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 - [x] T-04 core/state(スキーマ・世代管理)
 - [x] T-05 core/detect
 - [x] T-06 core/graph
-- [ ] T-07 core/plan
-- [ ] T-08 ports + aws/CloudFormationGateway
+- [x] T-07 core/plan
+- [x] T-08 ports + aws/CloudFormationGateway
 - [ ] T-09 aws/StsGateway
 - [ ] T-10 ステートバックエンド(backend/local + aws/s3)
 - [ ] T-11 report
