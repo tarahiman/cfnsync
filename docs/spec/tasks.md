@@ -372,5 +372,5 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 - [x] T-17 usecase/force-unlock
 - [x] T-18 障害注入・並行シナリオ
 - [x] T-19 cli
-- [ ] T-20 README・運用ドキュメント
-- [ ] T-21 npm パッケージング
+- [x] T-20 README・運用ドキュメント
+- [x] T-21 npm パッケージング
