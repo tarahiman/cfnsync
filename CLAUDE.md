@@ -8,13 +8,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The user communicates in Japanese, and all spec documents are written in Japanese.
 
-## Current state: spec-only, pre-implementation
+## Current state: implemented (T-01..T-21 complete)
 
-There is no code yet. The project follows **spec-driven TDD**:
+The implementation is complete and lives in `src/` with the full acceptance-test suite in `test/` (all green; run it before and after any change). The project follows **spec-driven TDD**:
 
 1. `docs/spec/requirements.md` — requirements FR-1..FR-13 / NFR-1..NFR-6 with EARS-style (WHEN/IF) acceptance criteria. **Each acceptance criterion maps 1:1 to a test case.**
 2. `docs/spec/design.md` — approved design (survived 9 rounds of adversarial review). Decides: TypeScript/Node.js 20+, npm distribution, commander/yaml/zod/vitest/aws-sdk-client-mock, ports & adapters architecture.
-3. `docs/spec/tasks.md` — next step, not yet written: TDD task breakdown mapping acceptance criteria to test cases.
+3. `docs/spec/tasks.md` — TDD task breakdown (T-01..T-21) with the acceptance-criteria → test-case mapping table; its checklist reflects completion status.
+
+Do NOT re-scaffold or ignore existing code; extend it.
 
 The specs are the source of truth. Any behavior change must be reflected in requirements.md/design.md **before** implementation. Both documents have been hardened through repeated adversarial review (Codex, via the `/codex:adversarial-review` command); significant spec changes should be re-reviewed the same way.
 

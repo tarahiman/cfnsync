@@ -121,6 +121,7 @@ stacks:
       "inputsHash": "sha256:def...",
       "exports": ["prod-network-VpcId"],
       "imports": [],
+      "dependsOn": [],
       "lastAction": "UPDATE",
       "lastSuccessAt": "2026-07-19T00:00:00Z"
     }
@@ -132,6 +133,7 @@ stacks:
 - `templateHash`: デプロイ成功時点のテンプレートファイル内容の SHA-256。
 - `inputsHash`: テンプレート内容 + スタック名 + 実効パラメータ + タグ + Capabilities + 明示依存(`dependsOn`)の複合ハッシュ。**設定ファイルのみの変更もデプロイ対象として検知する**ため(FR-1 の変更検知を「デプロイへの入力全体」に適用)。
 - `exports` / `imports`: 前回成功時点の依存辺。テンプレートファイル削除後の削除順序決定に使用(FR-6, FR-8)。
+- `dependsOn`: 前回成功時点の**明示依存**(設定の `dependsOn` をスタックキーに解決したもの)。自動解析辺と同様に旧グラフの復元に含める。これがないと明示依存のみで結ばれたスタック群の削除順が復元できない(FR-6-4/FR-6-5 の fail-closed 対象)。
 - `generation`: 保存のたびにインクリメント。読込時点の世代(`s3` では ETag)との比較により compare-and-swap を実現する(FR-1、§4.5)。
 
 ### 4.4 変更分類(core/detect)
