@@ -15,7 +15,12 @@
 
 import { describe, expect, it } from 'vitest';
 import type { CfnSyncState } from '../../src/core/state.js';
-import type { LockHandle, LockInfo, StateBackend, StateVersion } from '../../src/ports/index.js';
+import type {
+  LockHandle,
+  LockInfo,
+  StateBackend,
+  StateVersion,
+} from '../../src/ports/index.js';
 import { forceUnlock } from '../../src/usecase/forceUnlock.js';
 
 // ---------------------------------------------------------------------------
@@ -38,7 +43,9 @@ class FakeStateBackendForUnlock implements StateBackend {
     this.lock = initialLock;
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
     throw new Error('not used by forceUnlock');
   }
 
@@ -63,7 +70,9 @@ class FakeStateBackendForUnlock implements StateBackend {
     return this.lock;
   }
 
-  async forceUnlock(runId: string): Promise<{ released: boolean; reason?: string }> {
+  async forceUnlock(
+    runId: string,
+  ): Promise<{ released: boolean; reason?: string }> {
     this.forceUnlockCalls.push(runId);
     if (this.simulateRaceOnForceUnlock) {
       return {
@@ -86,7 +95,11 @@ class FakeStateBackendForUnlock implements StateBackend {
   }
 }
 
-const LOCK: LockInfo = { runId: 'run-1', startedAt: '2026-07-19T00:00:00Z', owner: 'ci@github' };
+const LOCK: LockInfo = {
+  runId: 'run-1',
+  startedAt: '2026-07-19T00:00:00Z',
+  owner: 'ci@github',
+};
 
 // ===========================================================================
 // FR-1-7(手動解除): 残存ロックを手動解除する手段を提供

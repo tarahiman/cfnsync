@@ -1,14 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import type { ResolvedStackTarget } from '../../src/core/config.js';
-import { computeInputsHash, computeTemplateHash, detectChanges } from '../../src/core/detect.js';
-import { createInitialState, upsertStackEntry, type CfnSyncState, type StackEntry } from '../../src/core/state.js';
+import {
+  computeInputsHash,
+  computeTemplateHash,
+  detectChanges,
+} from '../../src/core/detect.js';
+import {
+  type CfnSyncState,
+  createInitialState,
+  type StackEntry,
+  upsertStackEntry,
+} from '../../src/core/state.js';
 import { makeStackKey } from '../../src/core/types.js';
 
 // ---------------------------------------------------------------------------
 // テスト用ビルダー
 // ---------------------------------------------------------------------------
 
-function makeTarget(overrides: Partial<ResolvedStackTarget> = {}): ResolvedStackTarget {
+function makeTarget(
+  overrides: Partial<ResolvedStackTarget> = {},
+): ResolvedStackTarget {
   const templatePath = overrides.templatePath ?? 'network.yaml';
   const region = overrides.region ?? 'ap-northeast-1';
   const base: ResolvedStackTarget = {
@@ -39,7 +50,11 @@ function makeStateEntry(overrides: Partial<StackEntry> = {}): StackEntry {
 }
 
 /** target と content から、実際に一致する templateHash/inputsHash を持つステートを組み立てる。 */
-function stateEntryFor(target: ResolvedStackTarget, content: string, overrides: Partial<StackEntry> = {}): StackEntry {
+function stateEntryFor(
+  target: ResolvedStackTarget,
+  content: string,
+  overrides: Partial<StackEntry> = {},
+): StackEntry {
   return makeStateEntry({
     stackName: target.stackName,
     region: target.region,
@@ -81,11 +96,16 @@ describe('core/detect — §4.3: computeInputsHash の複合ハッシュ感度',
   };
 
   it('§4.3: ベースラインは決定的(同一入力で同一ハッシュ)', () => {
-    expect(computeInputsHash(baseInput)).toBe(computeInputsHash({ ...baseInput }));
+    expect(computeInputsHash(baseInput)).toBe(
+      computeInputsHash({ ...baseInput }),
+    );
   });
 
   it('§4.3(1/6 テンプレート内容): templateContent のみ変えるとハッシュが変わる', () => {
-    const changed = { ...baseInput, templateContent: 'Resources:\n  Vpc2:\n    Type: AWS::EC2::VPC\n' };
+    const changed = {
+      ...baseInput,
+      templateContent: 'Resources:\n  Vpc2:\n    Type: AWS::EC2::VPC\n',
+    };
     expect(computeInputsHash(changed)).not.toBe(computeInputsHash(baseInput));
   });
 
@@ -133,8 +153,12 @@ describe('core/detect — computeTemplateHash', () => {
   });
 
   it('同一内容は同一ハッシュ、異なる内容は異なるハッシュになる', () => {
-    expect(computeTemplateHash(BASE_CONTENT)).toBe(computeTemplateHash(BASE_CONTENT));
-    expect(computeTemplateHash(BASE_CONTENT)).not.toBe(computeTemplateHash(`${BASE_CONTENT}\n# comment`));
+    expect(computeTemplateHash(BASE_CONTENT)).toBe(
+      computeTemplateHash(BASE_CONTENT),
+    );
+    expect(computeTemplateHash(BASE_CONTENT)).not.toBe(
+      computeTemplateHash(`${BASE_CONTENT}\n# comment`),
+    );
   });
 });
 
@@ -144,9 +168,18 @@ describe('core/detect — computeTemplateHash', () => {
 
 describe('core/detect — FR-1-1: added / modified / deleted / unchanged の 4 分類', () => {
   it('FR-1-1: 設定記載順を基本とし、純粋な deleted はステートのキー順で末尾に付加される', () => {
-    const targetA = makeTarget({ templatePath: 'a.yaml', stackKey: makeStackKey('a.yaml', 'ap-northeast-1') });
-    const targetB = makeTarget({ templatePath: 'b.yaml', stackKey: makeStackKey('b.yaml', 'ap-northeast-1') });
-    const targetC = makeTarget({ templatePath: 'c.yaml', stackKey: makeStackKey('c.yaml', 'ap-northeast-1') });
+    const targetA = makeTarget({
+      templatePath: 'a.yaml',
+      stackKey: makeStackKey('a.yaml', 'ap-northeast-1'),
+    });
+    const targetB = makeTarget({
+      templatePath: 'b.yaml',
+      stackKey: makeStackKey('b.yaml', 'ap-northeast-1'),
+    });
+    const targetC = makeTarget({
+      templatePath: 'c.yaml',
+      stackKey: makeStackKey('c.yaml', 'ap-northeast-1'),
+    });
 
     const bOldContent = 'Resources:\n  Old:\n    Type: AWS::S3::Bucket\n';
     const bNewContent = 'Resources:\n  New:\n    Type: AWS::S3::Bucket\n';
@@ -169,7 +202,11 @@ describe('core/detect — FR-1-1: added / modified / deleted / unchanged の 4 �
       ['c.yaml', cContent],
     ]);
 
-    const result = detectChanges({ targets: [targetA, targetB, targetC], templates, state });
+    const result = detectChanges({
+      targets: [targetA, targetB, targetC],
+      templates,
+      state,
+    });
 
     expect(result.entries.map((e) => [e.stackKey, e.changeType])).toEqual([
       ['a.yaml@ap-northeast-1', 'added'],
@@ -234,10 +271,15 @@ describe('core/detect — FR-1-2: 比較はコンテンツハッシュに基づ�
 // ---------------------------------------------------------------------------
 
 describe('core/detect — §4.3: detectChanges 経由での構成要素変更の検知', () => {
-  function runWithChangedTarget(overrides: Partial<ResolvedStackTarget>, content = BASE_CONTENT) {
+  function runWithChangedTarget(
+    overrides: Partial<ResolvedStackTarget>,
+    content = BASE_CONTENT,
+  ) {
     const baseline = makeTarget();
     const changed = makeTarget(overrides);
-    const state = stateWith({ [baseline.stackKey]: stateEntryFor(baseline, content) });
+    const state = stateWith({
+      [baseline.stackKey]: stateEntryFor(baseline, content),
+    });
     return detectChanges({
       targets: [changed],
       templates: new Map([[changed.templatePath, content]]),
@@ -249,7 +291,9 @@ describe('core/detect — §4.3: detectChanges 経由での構成要素変更の
     const target = makeTarget();
     const oldContent = BASE_CONTENT;
     const newContent = `${BASE_CONTENT}\n# updated`;
-    const state = stateWith({ [target.stackKey]: stateEntryFor(target, oldContent) });
+    const state = stateWith({
+      [target.stackKey]: stateEntryFor(target, oldContent),
+    });
     const result = detectChanges({
       targets: [target],
       templates: new Map([[target.templatePath, newContent]]),
@@ -259,7 +303,9 @@ describe('core/detect — §4.3: detectChanges 経由での構成要素変更の
   });
 
   it('§4.3: 設定ファイルのみの変更(パラメータ変更、テンプレート内容は同一)も modified として検知される', () => {
-    const result = runWithChangedTarget({ parameters: { VpcCidr: '10.2.0.0/16' } });
+    const result = runWithChangedTarget({
+      parameters: { VpcCidr: '10.2.0.0/16' },
+    });
     expect(result.entries[0].changeType).toBe('modified');
   });
 
@@ -269,7 +315,9 @@ describe('core/detect — §4.3: detectChanges 経由での構成要素変更の
   });
 
   it('§4.3: Capabilities のみの変更は modified として検知される', () => {
-    const result = runWithChangedTarget({ capabilities: ['CAPABILITY_NAMED_IAM'] });
+    const result = runWithChangedTarget({
+      capabilities: ['CAPABILITY_NAMED_IAM'],
+    });
     expect(result.entries[0].changeType).toBe('modified');
   });
 
@@ -314,7 +362,10 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
   });
 
   it('FR-1-14: この対は末尾の deleted 集約とは別に、対象 target の処理順の位置に現れる', () => {
-    const targetA = makeTarget({ templatePath: 'a.yaml', stackKey: makeStackKey('a.yaml', 'ap-northeast-1') });
+    const targetA = makeTarget({
+      templatePath: 'a.yaml',
+      stackKey: makeStackKey('a.yaml', 'ap-northeast-1'),
+    });
     const renamedB = makeTarget({
       templatePath: 'b.yaml',
       stackKey: makeStackKey('b.yaml', 'ap-northeast-1'),
@@ -323,7 +374,11 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
 
     const state = stateWith({
       'b.yaml@ap-northeast-1': stateEntryFor(
-        makeTarget({ templatePath: 'b.yaml', stackKey: makeStackKey('b.yaml', 'ap-northeast-1'), stackName: 'old-b' }),
+        makeTarget({
+          templatePath: 'b.yaml',
+          stackKey: makeStackKey('b.yaml', 'ap-northeast-1'),
+          stackName: 'old-b',
+        }),
         BASE_CONTENT,
       ),
     });
@@ -337,7 +392,11 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
       state,
     });
 
-    expect(result.entries.map((e) => e.changeType)).toEqual(['added', 'deleted', 'added']);
+    expect(result.entries.map((e) => e.changeType)).toEqual([
+      'added',
+      'deleted',
+      'added',
+    ]);
     expect(result.entries[2].renamedFrom).toEqual({ oldStackName: 'old-b' });
   });
 });
@@ -348,8 +407,15 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
 
 describe('core/detect — FR-1-15: 初回(空ステート)は全スタックキーが added', () => {
   it('FR-1-15: createInitialState() から始めるとすべての target が added になる', () => {
-    const targetA = makeTarget({ templatePath: 'a.yaml', stackKey: makeStackKey('a.yaml', 'ap-northeast-1') });
-    const targetB = makeTarget({ templatePath: 'b.yaml', stackKey: makeStackKey('b.yaml', 'us-east-1'), region: 'us-east-1' });
+    const targetA = makeTarget({
+      templatePath: 'a.yaml',
+      stackKey: makeStackKey('a.yaml', 'ap-northeast-1'),
+    });
+    const targetB = makeTarget({
+      templatePath: 'b.yaml',
+      stackKey: makeStackKey('b.yaml', 'us-east-1'),
+      region: 'us-east-1',
+    });
 
     const result = detectChanges({
       targets: [targetA, targetB],
@@ -371,8 +437,14 @@ describe('core/detect — FR-1-15: 初回(空ステート)は全スタックキ�
 
 describe('core/detect — FR-13-2: 2 リージョン設定のテンプレート変更は両リージョン独立に modified', () => {
   it('FR-13-2: 同一テンプレートの 2 リージョンがそれぞれ独立したスタックキーで modified になる', () => {
-    const targetNe = makeTarget({ region: 'ap-northeast-1', stackKey: makeStackKey('network.yaml', 'ap-northeast-1') });
-    const targetUs = makeTarget({ region: 'us-east-1', stackKey: makeStackKey('network.yaml', 'us-east-1') });
+    const targetNe = makeTarget({
+      region: 'ap-northeast-1',
+      stackKey: makeStackKey('network.yaml', 'ap-northeast-1'),
+    });
+    const targetUs = makeTarget({
+      region: 'us-east-1',
+      stackKey: makeStackKey('network.yaml', 'us-east-1'),
+    });
 
     const oldContent = BASE_CONTENT;
     const newContent = `${BASE_CONTENT}\n# changed`;
@@ -402,8 +474,14 @@ describe('core/detect — FR-13-2: 2 リージョン設定のテンプレート�
 
 describe('core/detect — FR-13-5: リージョン追加/削除', () => {
   it('FR-13-5: リージョン追加 → 追加されたリージョンのキーのみ added、既存リージョンは unchanged', () => {
-    const existing = makeTarget({ region: 'ap-northeast-1', stackKey: makeStackKey('network.yaml', 'ap-northeast-1') });
-    const added = makeTarget({ region: 'us-east-1', stackKey: makeStackKey('network.yaml', 'us-east-1') });
+    const existing = makeTarget({
+      region: 'ap-northeast-1',
+      stackKey: makeStackKey('network.yaml', 'ap-northeast-1'),
+    });
+    const added = makeTarget({
+      region: 'us-east-1',
+      stackKey: makeStackKey('network.yaml', 'us-east-1'),
+    });
 
     const state = stateWith({
       [existing.stackKey]: stateEntryFor(existing, BASE_CONTENT),
@@ -416,14 +494,26 @@ describe('core/detect — FR-13-5: リージョン追加/削除', () => {
     });
 
     expect(result.entries).toEqual([
-      expect.objectContaining({ stackKey: 'network.yaml@ap-northeast-1', changeType: 'unchanged' }),
-      expect.objectContaining({ stackKey: 'network.yaml@us-east-1', changeType: 'added' }),
+      expect.objectContaining({
+        stackKey: 'network.yaml@ap-northeast-1',
+        changeType: 'unchanged',
+      }),
+      expect.objectContaining({
+        stackKey: 'network.yaml@us-east-1',
+        changeType: 'added',
+      }),
     ]);
   });
 
   it('FR-13-5: リージョン削除 → 除外されたリージョンのキーのみ deleted、残るリージョンは unchanged', () => {
-    const remaining = makeTarget({ region: 'ap-northeast-1', stackKey: makeStackKey('network.yaml', 'ap-northeast-1') });
-    const removed = makeTarget({ region: 'us-east-1', stackKey: makeStackKey('network.yaml', 'us-east-1') });
+    const remaining = makeTarget({
+      region: 'ap-northeast-1',
+      stackKey: makeStackKey('network.yaml', 'ap-northeast-1'),
+    });
+    const removed = makeTarget({
+      region: 'us-east-1',
+      stackKey: makeStackKey('network.yaml', 'us-east-1'),
+    });
 
     const state = stateWith({
       [remaining.stackKey]: stateEntryFor(remaining, BASE_CONTENT),
@@ -438,8 +528,14 @@ describe('core/detect — FR-13-5: リージョン追加/削除', () => {
     });
 
     expect(result.entries).toEqual([
-      expect.objectContaining({ stackKey: 'network.yaml@ap-northeast-1', changeType: 'unchanged' }),
-      expect.objectContaining({ stackKey: 'network.yaml@us-east-1', changeType: 'deleted' }),
+      expect.objectContaining({
+        stackKey: 'network.yaml@ap-northeast-1',
+        changeType: 'unchanged',
+      }),
+      expect.objectContaining({
+        stackKey: 'network.yaml@us-east-1',
+        changeType: 'deleted',
+      }),
     ]);
   });
 });

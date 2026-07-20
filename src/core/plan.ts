@@ -12,7 +12,7 @@
  */
 
 import type { DetectedEntry, DetectionResult } from './detect.js';
-import { reverseOrder, topologicalOrder, type RegionGraph } from './graph.js';
+import { type RegionGraph, reverseOrder, topologicalOrder } from './graph.js';
 import { parseStackKey, type StackKey } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,10 @@ interface RegionBuckets {
   delete: Map<StackKey, DetectedEntry>;
 }
 
-function bucketFor(byRegion: Map<string, RegionBuckets>, region: string): RegionBuckets {
+function bucketFor(
+  byRegion: Map<string, RegionBuckets>,
+  region: string,
+): RegionBuckets {
   let buckets = byRegion.get(region);
   if (buckets === undefined) {
     buckets = { createUpdate: new Map(), delete: new Map() };
@@ -107,7 +110,10 @@ function groupByRegion(detection: DetectionResult): Map<string, RegionBuckets> {
  * リージョンで操作が残っている場合(削除のみ等)も、取りこぼさないよう
  * 末尾に決定的な順序(文字列昇順)で追加する。
  */
-function orderRegions(byRegion: Map<string, RegionBuckets>, regionOrder: string[]): string[] {
+function orderRegions(
+  byRegion: Map<string, RegionBuckets>,
+  regionOrder: string[],
+): string[] {
   const ordered: string[] = [];
   const seen = new Set<string>();
   for (const region of regionOrder) {
@@ -116,7 +122,9 @@ function orderRegions(byRegion: Map<string, RegionBuckets>, regionOrder: string[
       seen.add(region);
     }
   }
-  const leftover = [...byRegion.keys()].filter((region) => !seen.has(region)).sort();
+  const leftover = [...byRegion.keys()]
+    .filter((region) => !seen.has(region))
+    .sort();
   ordered.push(...leftover);
   return ordered;
 }
@@ -154,12 +162,18 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
     const buckets = byRegion.get(region);
     // orderRegions は byRegion のキーのみを返すため必ず存在する。
     if (buckets === undefined) {
-      throw new Error(`内部エラー: リージョン ${region} のバケットが見つかりません`);
+      throw new Error(
+        `内部エラー: リージョン ${region} のバケットが見つかりません`,
+      );
     }
 
     const operations: PlannedOperation[] = [];
 
-    const createUpdateKeys = orderedKeys(graphs.get(region), buckets.createUpdate, topologicalOrder);
+    const createUpdateKeys = orderedKeys(
+      graphs.get(region),
+      buckets.createUpdate,
+      topologicalOrder,
+    );
     for (const stackKey of createUpdateKeys) {
       const entry = buckets.createUpdate.get(stackKey);
       if (entry === undefined) continue;
@@ -171,7 +185,11 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
       });
     }
 
-    const deleteKeys = orderedKeys(mergedGraphs.get(region), buckets.delete, (g) => reverseOrder(topologicalOrder(g)));
+    const deleteKeys = orderedKeys(
+      mergedGraphs.get(region),
+      buckets.delete,
+      (g) => reverseOrder(topologicalOrder(g)),
+    );
     for (const stackKey of deleteKeys) {
       const entry = buckets.delete.get(stackKey);
       if (entry === undefined) continue;
@@ -193,7 +211,10 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
  * (直接・間接を問わず)依存するスタックキー全員の集合を返す(`start` 自身は
  * 含まない)。
  */
-function transitiveDependents(graph: RegionGraph, start: StackKey): Set<StackKey> {
+function transitiveDependents(
+  graph: RegionGraph,
+  start: StackKey,
+): Set<StackKey> {
   const adjacency = new Map<StackKey, StackKey[]>();
   for (const edge of graph.edges) {
     const list = adjacency.get(edge.from);
@@ -233,15 +254,21 @@ function transitiveDependents(graph: RegionGraph, start: StackKey): Set<StackKey
 export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
   const { plan, failedStackKey, mergedGraphs, onFailure } = input;
 
-  const flattened: PlannedOperation[] = plan.regions.flatMap((r) => r.operations);
-  const failedIndex = flattened.findIndex((op) => op.stackKey === failedStackKey);
+  const flattened: PlannedOperation[] = plan.regions.flatMap(
+    (r) => r.operations,
+  );
+  const failedIndex = flattened.findIndex(
+    (op) => op.stackKey === failedStackKey,
+  );
   if (failedIndex === -1) {
     return { skipped: [], continued: [] };
   }
 
   const failedRegion = flattened[failedIndex].region;
   const failedRegionGraph = mergedGraphs.get(failedRegion);
-  const downstream = failedRegionGraph ? transitiveDependents(failedRegionGraph, failedStackKey) : new Set<StackKey>();
+  const downstream = failedRegionGraph
+    ? transitiveDependents(failedRegionGraph, failedStackKey)
+    : new Set<StackKey>();
 
   const skipped: StackKey[] = [];
   const continued: StackKey[] = [];

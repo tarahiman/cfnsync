@@ -8,18 +8,23 @@
  * が `StateCorruptionError` を投げることで fail-closed になる(FR-1-12)。
  */
 
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, open, readFile, rename } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { StateConflictError } from '../core/errors.js';
 import {
+  type CfnSyncState,
   parseState,
   serializeState,
   sha256Hex,
-  type CfnSyncState,
 } from '../core/state.js';
-import type { LockHandle, LockInfo, StateBackend, StateVersion } from '../ports/index.js';
+import type {
+  LockHandle,
+  LockInfo,
+  StateBackend,
+  StateVersion,
+} from '../ports/index.js';
 
 /** テスト用の注入点。実運用では未指定(既定 no-op)。 */
 export interface LocalStateBackendOptions {
@@ -32,7 +37,9 @@ export interface LocalStateBackendOptions {
 
 /** バックエンド識別子から変更セット命名用の短縮ハッシュを導出する(§7)。 */
 function shortStateId(identifier: string): string {
-  return sha256Hex(identifier).replace(/^sha256:/, '').slice(0, 12);
+  return sha256Hex(identifier)
+    .replace(/^sha256:/, '')
+    .slice(0, 12);
 }
 
 export class LocalStateBackend implements StateBackend {
@@ -45,7 +52,9 @@ export class LocalStateBackend implements StateBackend {
     this.onBeforeRename = options.onBeforeRename;
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
     let text: string;
     try {
       text = await readFile(this.statePath, 'utf8');
@@ -58,7 +67,10 @@ export class LocalStateBackend implements StateBackend {
     return { state, version: { generation: state.generation } };
   }
 
-  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+  async save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion> {
     // FR-1-6(local): 保存直前に再読込して世代を比較し、競合は上書きせずエラーとする。
     const current = await this.readCurrentGeneration();
 
@@ -94,7 +106,9 @@ export class LocalStateBackend implements StateBackend {
     return true;
   }
 
-  async releaseLock(_handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
+  async releaseLock(
+    _handle: LockHandle,
+  ): Promise<{ released: boolean; reason?: string }> {
     return { released: true };
   }
 
@@ -102,7 +116,9 @@ export class LocalStateBackend implements StateBackend {
     return undefined;
   }
 
-  async forceUnlock(_runId: string): Promise<{ released: boolean; reason?: string }> {
+  async forceUnlock(
+    _runId: string,
+  ): Promise<{ released: boolean; reason?: string }> {
     return { released: false, reason: 'local backend has no lock' };
   }
 
@@ -131,7 +147,10 @@ export class LocalStateBackend implements StateBackend {
    */
   private async writeAtomic(content: string): Promise<void> {
     const dir = dirname(this.statePath);
-    const tmpPath = join(dir, `.${basename(this.statePath)}.tmp.${randomBytes(6).toString('hex')}`);
+    const tmpPath = join(
+      dir,
+      `.${basename(this.statePath)}.tmp.${randomBytes(6).toString('hex')}`,
+    );
 
     // 一時ファイルへ書き込み、fsync してからクローズする。
     const handle = await open(tmpPath, 'w');

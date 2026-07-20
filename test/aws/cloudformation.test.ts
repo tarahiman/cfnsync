@@ -5,7 +5,6 @@
  * 各 it の先頭に対応する受け入れ基準 ID を明記する。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CloudFormationClient,
   CreateChangeSetCommand,
@@ -19,6 +18,7 @@ import {
   ListChangeSetsCommand,
 } from '@aws-sdk/client-cloudformation';
 import { mockClient } from 'aws-sdk-client-mock';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CloudFormationGatewayImpl,
   type CloudFormationGatewayOptions,
@@ -36,7 +36,9 @@ beforeEach(() => {
 });
 
 /** テスト用ゲートウェイ。ポーリング間隔・sleep を潰して 0ms 化する。 */
-function makeGateway(overrides: Partial<CloudFormationGatewayOptions> = {}): CloudFormationGatewayImpl {
+function makeGateway(
+  overrides: Partial<CloudFormationGatewayOptions> = {},
+): CloudFormationGatewayImpl {
   return new CloudFormationGatewayImpl({
     region: 'ap-northeast-1',
     maxAttempts: 10,
@@ -59,7 +61,11 @@ function makeChange(logicalId: string) {
       Scope: ['Properties'],
       Details: [
         {
-          Target: { Attribute: 'Properties', Name: 'CidrBlock', RequiresRecreation: 'Always' },
+          Target: {
+            Attribute: 'Properties',
+            Name: 'CidrBlock',
+            RequiresRecreation: 'Always',
+          },
           Evaluation: 'Static',
           ChangeSource: 'DirectModification',
         },
@@ -127,7 +133,10 @@ describe('NFR-2: ports インターフェース適合', () => {
   it('NFR-2: StsGateway インターフェースは実装可能な形である(型テスト)', () => {
     const sts: StsGateway = {
       async getCallerIdentity() {
-        return { accountId: '123456789012', arn: 'arn:aws:iam::123456789012:role/x' };
+        return {
+          accountId: '123456789012',
+          arn: 'arn:aws:iam::123456789012:role/x',
+        };
       },
     };
     expect(typeof sts.getCallerIdentity).toBe('function');
@@ -171,7 +180,9 @@ describe('NFR-2: ports インターフェース適合', () => {
 
 describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッピング', () => {
   it('FR-2: createChangeSet が全フィールド(StackName/ChangeSetName/ChangeSetType/TemplateBody/Parameters/Capabilities/Tags/Description)をマッピングする', async () => {
-    cfnMock.on(CreateChangeSetCommand).resolves({ Id: 'arn:aws:cloudformation:changeSet/abc' });
+    cfnMock
+      .on(CreateChangeSetCommand)
+      .resolves({ Id: 'arn:aws:cloudformation:changeSet/abc' });
     const gateway = makeGateway();
 
     const res = await gateway.createChangeSet({
@@ -258,7 +269,10 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
 
     const calls = cfnMock.commandCalls(DescribeChangeSetCommand);
     expect(calls).toHaveLength(2);
-    expect(calls[0].args[0].input).toMatchObject({ StackName: 'stk', ChangeSetName: 'cs' });
+    expect(calls[0].args[0].input).toMatchObject({
+      StackName: 'stk',
+      ChangeSetName: 'cs',
+    });
     expect(calls[1].args[0].input.NextToken).toBe('page2');
   });
 
@@ -270,11 +284,15 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
     await gateway.deleteChangeSet('stk', 'cs-del');
     await gateway.executeChangeSet('stk', 'cs-exec');
 
-    expect(cfnMock.commandCalls(DeleteChangeSetCommand)[0].args[0].input).toMatchObject({
+    expect(
+      cfnMock.commandCalls(DeleteChangeSetCommand)[0].args[0].input,
+    ).toMatchObject({
       StackName: 'stk',
       ChangeSetName: 'cs-del',
     });
-    expect(cfnMock.commandCalls(ExecuteChangeSetCommand)[0].args[0].input).toMatchObject({
+    expect(
+      cfnMock.commandCalls(ExecuteChangeSetCommand)[0].args[0].input,
+    ).toMatchObject({
       StackName: 'stk',
       ChangeSetName: 'cs-exec',
     });
@@ -284,7 +302,9 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
     cfnMock.on(DeleteStackCommand).resolves({});
     const gateway = makeGateway();
     await gateway.deleteStack('stk');
-    expect(cfnMock.commandCalls(DeleteStackCommand)[0].args[0].input).toMatchObject({ StackName: 'stk' });
+    expect(
+      cfnMock.commandCalls(DeleteStackCommand)[0].args[0].input,
+    ).toMatchObject({ StackName: 'stk' });
   });
 });
 
@@ -296,7 +316,10 @@ describe('§7: ListChangeSets 全ページ走査', () => {
   it('§7: listChangeSets は NextToken 付き 2 ページ応答を全件列挙する', async () => {
     cfnMock
       .on(ListChangeSetsCommand, { StackName: 'stk' })
-      .resolvesOnce({ Summaries: [makeSummary('cs1'), makeSummary('cs2')], NextToken: 'page2' })
+      .resolvesOnce({
+        Summaries: [makeSummary('cs1'), makeSummary('cs2')],
+        NextToken: 'page2',
+      })
       .resolvesOnce({ Summaries: [makeSummary('cs3')] });
 
     const gateway = makeGateway();
@@ -309,7 +332,9 @@ describe('§7: ListChangeSets 全ページ走査', () => {
   });
 
   it('§7: listChangeSets は Summaries を正規化する(name/id/status/executionStatus/creationTime)', async () => {
-    cfnMock.on(ListChangeSetsCommand).resolves({ Summaries: [makeSummary('cs1')] });
+    cfnMock
+      .on(ListChangeSetsCommand)
+      .resolves({ Summaries: [makeSummary('cs1')] });
     const gateway = makeGateway();
     const [cs] = await gateway.listChangeSets('stk');
     expect(cs).toMatchObject({
@@ -345,7 +370,13 @@ describe('§7: スタック状態取得', () => {
           Parameters: [{ ParameterKey: 'K', ParameterValue: 'V' }],
           Tags: [{ Key: 'cfnsync:state-id', Value: 'abcd' }],
           Capabilities: ['CAPABILITY_IAM'],
-          Outputs: [{ OutputKey: 'VpcId', OutputValue: 'vpc-123', ExportName: 'stk-VpcId' }],
+          Outputs: [
+            {
+              OutputKey: 'VpcId',
+              OutputValue: 'vpc-123',
+              ExportName: 'stk-VpcId',
+            },
+          ],
           EnableTerminationProtection: true,
           CreationTime: new Date('2026-07-19T00:00:00Z'),
         },
@@ -371,7 +402,9 @@ describe('§7: スタック状態取得', () => {
 
   it('§7: describeStack は削除保護未指定を false に正規化する', async () => {
     cfnMock.on(DescribeStacksCommand).resolves({
-      Stacks: [{ StackName: 'stk', StackId: 'id', StackStatus: 'CREATE_COMPLETE' }],
+      Stacks: [
+        { StackName: 'stk', StackId: 'id', StackStatus: 'CREATE_COMPLETE' },
+      ],
     });
     const gateway = makeGateway();
     const summary = await gateway.describeStack('stk');
@@ -391,9 +424,13 @@ describe('§7: スタック状態取得', () => {
   it('§7: describeStack は不存在以外のエラー(AccessDenied)は伝播する', async () => {
     cfnMock
       .on(DescribeStacksCommand)
-      .rejects(Object.assign(new Error('not authorized'), { name: 'AccessDenied' }));
+      .rejects(
+        Object.assign(new Error('not authorized'), { name: 'AccessDenied' }),
+      );
     const gateway = makeGateway();
-    await expect(gateway.describeStack('stk')).rejects.toThrow(/not authorized/);
+    await expect(gateway.describeStack('stk')).rejects.toThrow(
+      /not authorized/,
+    );
   });
 });
 
@@ -406,7 +443,10 @@ describe('FR-4-1(基盤): スタックイベント取得', () => {
     // AWS は新しい順に返す。page1: e3(newest), e2 / page2: e1(oldest)。
     cfnMock
       .on(DescribeStackEventsCommand, { StackName: 'stk' })
-      .resolvesOnce({ StackEvents: [makeEvent('e3'), makeEvent('e2')], NextToken: 'page2' })
+      .resolvesOnce({
+        StackEvents: [makeEvent('e3'), makeEvent('e2')],
+        NextToken: 'page2',
+      })
       .resolvesOnce({ StackEvents: [makeEvent('e1')] });
 
     const gateway = makeGateway();
@@ -443,12 +483,16 @@ describe('FR-4-1(基盤): スタックイベント取得', () => {
 
 describe('§7: GetTemplate(復旧比較・import 基盤)', () => {
   it('§7: getTemplate は TemplateStage を渡し TemplateBody を返す', async () => {
-    cfnMock.on(GetTemplateCommand).resolves({ TemplateBody: 'Resources:\n  Vpc: {}' });
+    cfnMock
+      .on(GetTemplateCommand)
+      .resolves({ TemplateBody: 'Resources:\n  Vpc: {}' });
     const gateway = makeGateway();
 
     const body = await gateway.getTemplate('stk', 'Original');
     expect(body).toBe('Resources:\n  Vpc: {}');
-    expect(cfnMock.commandCalls(GetTemplateCommand)[0].args[0].input).toMatchObject({
+    expect(
+      cfnMock.commandCalls(GetTemplateCommand)[0].args[0].input,
+    ).toMatchObject({
       StackName: 'stk',
       TemplateStage: 'Original',
     });
@@ -458,7 +502,9 @@ describe('§7: GetTemplate(復旧比較・import 基盤)', () => {
     cfnMock.on(GetTemplateCommand).resolves({ TemplateBody: '{}' });
     const gateway = makeGateway();
     await gateway.getTemplate('stk', 'Processed');
-    expect(cfnMock.commandCalls(GetTemplateCommand)[0].args[0].input.TemplateStage).toBe('Processed');
+    expect(
+      cfnMock.commandCalls(GetTemplateCommand)[0].args[0].input.TemplateStage,
+    ).toBe('Processed');
   });
 });
 
@@ -478,7 +524,9 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
 
     expect(detail.status).toBe('CREATE_COMPLETE');
     expect(detail.changes.map((c) => c.logicalResourceId)).toEqual(['A']);
-    expect(cfnMock.commandCalls(DescribeChangeSetCommand).length).toBeGreaterThanOrEqual(2);
+    expect(
+      cfnMock.commandCalls(DescribeChangeSetCommand).length,
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it('waitForChangeSet は FAILED(空変更セット)でも終端として返す', async () => {
@@ -496,8 +544,20 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
   it('waitForStack は終端(*_IN_PROGRESS でない)まで待機し、新着イベントを古い順で onEvent 通知する(重複なし)', async () => {
     cfnMock
       .on(DescribeStacksCommand)
-      .resolvesOnce({ Stacks: [{ StackName: 'stk', StackId: 'id', StackStatus: 'UPDATE_IN_PROGRESS' }] })
-      .resolvesOnce({ Stacks: [{ StackName: 'stk', StackId: 'id', StackStatus: 'UPDATE_COMPLETE' }] });
+      .resolvesOnce({
+        Stacks: [
+          {
+            StackName: 'stk',
+            StackId: 'id',
+            StackStatus: 'UPDATE_IN_PROGRESS',
+          },
+        ],
+      })
+      .resolvesOnce({
+        Stacks: [
+          { StackName: 'stk', StackId: 'id', StackStatus: 'UPDATE_COMPLETE' },
+        ],
+      });
     cfnMock.on(DescribeStackEventsCommand).resolves({
       StackEvents: [makeEvent('e2'), makeEvent('e1')], // newest-first
     });
@@ -531,29 +591,34 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
     expect(resolvedMa).toBe(10);
   });
 
-  it.each(['ThrottlingException', 'Throttling', 'TooManyRequestsException'])(
-    'NFR-3: %s 応答後にリトライして成功する',
-    async (name) => {
-      const sleep = vi.fn(async () => {});
-      cfnMock
-        .on(GetTemplateCommand)
-        .rejectsOnce(throttlingError(name))
-        .resolves({ TemplateBody: 'ok' });
+  it.each([
+    'ThrottlingException',
+    'Throttling',
+    'TooManyRequestsException',
+  ])('NFR-3: %s 応答後にリトライして成功する', async (name) => {
+    const sleep = vi.fn(async () => {});
+    cfnMock
+      .on(GetTemplateCommand)
+      .rejectsOnce(throttlingError(name))
+      .resolves({ TemplateBody: 'ok' });
 
-      const gateway = makeGateway({ sleep });
-      expect(await gateway.getTemplate('stk', 'Original')).toBe('ok');
-      // 初回 + リトライ = 2 回 send。
-      expect(cfnMock.commandCalls(GetTemplateCommand)).toHaveLength(2);
-      expect(sleep).toHaveBeenCalledTimes(1);
-    },
-  );
+    const gateway = makeGateway({ sleep });
+    expect(await gateway.getTemplate('stk', 'Original')).toBe('ok');
+    // 初回 + リトライ = 2 回 send。
+    expect(cfnMock.commandCalls(GetTemplateCommand)).toHaveLength(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
 
   it('NFR-3: Throttling が maxRetries を超えると最終的に throw する(指数バックオフ回数)', async () => {
     const sleep = vi.fn(async () => {});
-    cfnMock.on(ExecuteChangeSetCommand).rejects(throttlingError('ThrottlingException'));
+    cfnMock
+      .on(ExecuteChangeSetCommand)
+      .rejects(throttlingError('ThrottlingException'));
 
     const gateway = makeGateway({ sleep, maxRetries: 2 });
-    await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(/ThrottlingException/);
+    await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
+      /ThrottlingException/,
+    );
     // 初回 + 2 リトライ = 3 回 send、sleep は 2 回。
     expect(cfnMock.commandCalls(ExecuteChangeSetCommand)).toHaveLength(3);
     expect(sleep).toHaveBeenCalledTimes(2);

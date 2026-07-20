@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { DetectedEntry, DetectionResult } from '../../src/core/detect.js';
 import type { RegionGraph } from '../../src/core/graph.js';
-import { buildPlan, computeSkips, type ExecutionPlan, type PlannedOperation } from '../../src/core/plan.js';
-import { makeStackKey, type ChangeType, type StackKey } from '../../src/core/types.js';
+import {
+  buildPlan,
+  computeSkips,
+  type ExecutionPlan,
+  type PlannedOperation,
+} from '../../src/core/plan.js';
+import {
+  type ChangeType,
+  makeStackKey,
+  type StackKey,
+} from '../../src/core/types.js';
 
 const REGION_A = 'ap-northeast-1';
 const REGION_B = 'us-east-1';
@@ -16,12 +25,26 @@ function entry(stackKey: StackKey, changeType: ChangeType): DetectedEntry {
   return { stackKey, changeType };
 }
 
-function graph(region: string, nodes: StackKey[], edges: Array<[StackKey, StackKey]> = []): RegionGraph {
+function graph(
+  region: string,
+  nodes: StackKey[],
+  edges: Array<[StackKey, StackKey]> = [],
+): RegionGraph {
   return { region, nodes, edges: edges.map(([from, to]) => ({ from, to })) };
 }
 
-function kinds(plan: ExecutionPlan): Array<{ region: string; stackKey: StackKey; kind: PlannedOperation['kind'] }> {
-  return plan.regions.flatMap((r) => r.operations.map((op) => ({ region: r.region, stackKey: op.stackKey, kind: op.kind })));
+function kinds(plan: ExecutionPlan): Array<{
+  region: string;
+  stackKey: StackKey;
+  kind: PlannedOperation['kind'];
+}> {
+  return plan.regions.flatMap((r) =>
+    r.operations.map((op) => ({
+      region: r.region,
+      stackKey: op.stackKey,
+      kind: op.kind,
+    })),
+  );
 }
 
 describe('core/plan — FR-9-1: 作成・更新はトポロジカル順、削除は統合グラフの逆順', () => {
@@ -32,7 +55,11 @@ describe('core/plan — FR-9-1: 作成・更新はトポロジカル順、削除
 
     const detection: DetectionResult = {
       // わざと依存順とは逆に並べて入力する。
-      entries: [entry(app, 'modified'), entry(database, 'added'), entry(network, 'added')],
+      entries: [
+        entry(app, 'modified'),
+        entry(database, 'added'),
+        entry(network, 'added'),
+      ],
     };
 
     const currentGraph = graph(
@@ -52,8 +79,16 @@ describe('core/plan — FR-9-1: 作成・更新はトポロジカル順、削除
     });
 
     expect(plan.regions).toHaveLength(1);
-    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([network, database, app]);
-    expect(plan.regions[0].operations.map((op) => op.kind)).toEqual(['create', 'create', 'update']);
+    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([
+      network,
+      database,
+      app,
+    ]);
+    expect(plan.regions[0].operations.map((op) => op.kind)).toEqual([
+      'create',
+      'create',
+      'update',
+    ]);
   });
 
   it('FR-9-1: 削除は統合グラフ(新旧統合)の逆トポロジカル順に並ぶ', () => {
@@ -76,8 +111,13 @@ describe('core/plan — FR-9-1: 作成・更新はトポロジカル順、削除
     });
 
     // トポロジカル順は [network, database]、削除はその逆順: database を先に、network を後に。
-    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([database, network]);
-    expect(plan.regions[0].operations.every((op) => op.kind === 'delete')).toBe(true);
+    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([
+      database,
+      network,
+    ]);
+    expect(plan.regions[0].operations.every((op) => op.kind === 'delete')).toBe(
+      true,
+    );
   });
 
   it('FR-9-1: 同一リージョン内で削除は作成・更新の後に配置される', () => {
@@ -121,7 +161,9 @@ describe('core/plan — FR-9-1: 作成・更新はトポロジカル順、削除
       regionOrder: [REGION_A],
     });
 
-    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([changed]);
+    expect(plan.regions[0].operations.map((op) => op.stackKey)).toEqual([
+      changed,
+    ]);
   });
 });
 
@@ -130,7 +172,9 @@ describe('core/plan — FR-9-3: 計画は順序付き列(直列実行前提だ�
     const a = makeStackKey('a.yaml', REGION_A);
     const b = makeStackKey('b.yaml', REGION_A);
 
-    const detection: DetectionResult = { entries: [entry(a, 'added'), entry(b, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(a, 'added'), entry(b, 'added')],
+    };
     const currentGraph = graph(REGION_A, [a, b]);
 
     const buildInput = {
@@ -155,7 +199,9 @@ describe('core/plan — FR-13-6(順序): リージョン間は設定順の直列
     const stackB = makeStackKey('app.yaml', REGION_B);
 
     // 検知結果の入力順は regionOrder とあえて逆にする。
-    const detection: DetectionResult = { entries: [entry(stackB, 'added'), entry(stackA, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(stackB, 'added'), entry(stackA, 'added')],
+    };
 
     const graphA = graph(REGION_A, [stackA]);
     const graphB = graph(REGION_B, [stackB]);
@@ -180,7 +226,9 @@ describe('core/plan — FR-13-6(順序): リージョン間は設定順の直列
     const stackA = makeStackKey('app.yaml', REGION_A);
     const stackB = makeStackKey('app.yaml', REGION_B);
 
-    const detection: DetectionResult = { entries: [entry(stackA, 'added'), entry(stackB, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(stackA, 'added'), entry(stackB, 'added')],
+    };
     const graphA = graph(REGION_A, [stackA]);
     const graphB = graph(REGION_B, [stackB]);
 
@@ -208,7 +256,11 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const app = makeStackKey('app.yaml', REGION_A);
 
     const detection: DetectionResult = {
-      entries: [entry(network, 'added'), entry(database, 'added'), entry(app, 'added')],
+      entries: [
+        entry(network, 'added'),
+        entry(database, 'added'),
+        entry(app, 'added'),
+      ],
     };
     const currentGraph = graph(
       REGION_A,
@@ -243,7 +295,9 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const failed = makeStackKey('failed.yaml', REGION_A);
     const independent = makeStackKey('independent.yaml', REGION_A);
 
-    const detection: DetectionResult = { entries: [entry(failed, 'added'), entry(independent, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(failed, 'added'), entry(independent, 'added')],
+    };
     const currentGraph = graph(REGION_A, [failed, independent]); // 辺なし = 独立
 
     const plan = buildPlan({
@@ -268,7 +322,9 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const failed = makeStackKey('failed.yaml', REGION_A);
     const independent = makeStackKey('independent.yaml', REGION_A);
 
-    const detection: DetectionResult = { entries: [entry(failed, 'added'), entry(independent, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(failed, 'added'), entry(independent, 'added')],
+    };
     const currentGraph = graph(REGION_A, [failed, independent]);
 
     const plan = buildPlan({
@@ -293,7 +349,9 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const failed = makeStackKey('app.yaml', REGION_A);
     const otherRegionStack = makeStackKey('app.yaml', REGION_B);
 
-    const detection: DetectionResult = { entries: [entry(failed, 'added'), entry(otherRegionStack, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(failed, 'added'), entry(otherRegionStack, 'added')],
+    };
     const graphA = graph(REGION_A, [failed]);
     const graphB = graph(REGION_B, [otherRegionStack]);
 
@@ -330,7 +388,9 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const failed = makeStackKey('app.yaml', REGION_A);
     const otherRegionStack = makeStackKey('app.yaml', REGION_B);
 
-    const detection: DetectionResult = { entries: [entry(failed, 'added'), entry(otherRegionStack, 'added')] };
+    const detection: DetectionResult = {
+      entries: [entry(failed, 'added'), entry(otherRegionStack, 'added')],
+    };
     const graphA = graph(REGION_A, [failed]);
     const graphB = graph(REGION_B, [otherRegionStack]);
 
@@ -367,7 +427,11 @@ describe('core/plan — FR-9-2(判定): computeSkips の純粋判定ロジック
     const after = makeStackKey('after.yaml', REGION_A);
 
     const detection: DetectionResult = {
-      entries: [entry(before, 'added'), entry(failed, 'added'), entry(after, 'added')],
+      entries: [
+        entry(before, 'added'),
+        entry(failed, 'added'),
+        entry(after, 'added'),
+      ],
     };
     const currentGraph = graph(REGION_A, [before, failed, after]); // すべて独立
 

@@ -9,7 +9,11 @@
 
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { CfnSyncError, StateConflictError, type ErrorContext } from './errors.js';
+import {
+  CfnSyncError,
+  type ErrorContext,
+  StateConflictError,
+} from './errors.js';
 import type { StackKey } from './types.js';
 
 /** 破損したステート(不完全 JSON・スキーマ不一致)を検出した際のエラー(FR-1-12, fail-closed)。 */
@@ -46,15 +50,21 @@ export type CfnSyncState = z.infer<typeof CfnSyncStateSchema> & {
  * 不完全な JSON・スキーマ不一致はいずれも `StateCorruptionError` として
  * fail-closed に扱う。
  */
-export function parseState(text: string, context: ErrorContext = {}): CfnSyncState {
+export function parseState(
+  text: string,
+  context: ErrorContext = {},
+): CfnSyncState {
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(text);
   } catch (cause) {
-    throw new StateCorruptionError('ステートの JSON 解析に失敗しました(不完全な JSON の可能性があります)', {
-      ...context,
-      cause,
-    });
+    throw new StateCorruptionError(
+      'ステートの JSON 解析に失敗しました(不完全な JSON の可能性があります)',
+      {
+        ...context,
+        cause,
+      },
+    );
   }
 
   const result = CfnSyncStateSchema.safeParse(parsedJson);
@@ -152,7 +162,10 @@ export function matchAccount(
 }
 
 /** `accountId` を記録した新しいステートを返す(イミュータブル)。 */
-export function withAccountId(state: CfnSyncState, accountId: string): CfnSyncState {
+export function withAccountId(
+  state: CfnSyncState,
+  accountId: string,
+): CfnSyncState {
   return {
     ...state,
     accountId,
@@ -163,7 +176,11 @@ export function withAccountId(state: CfnSyncState, accountId: string): CfnSyncSt
  * スタックエントリを追加または更新した新しいステートを返す(イミュータブル、
  * FR-8-5)。`entry.exports` / `entry.imports` がそのまま記録される。
  */
-export function upsertStackEntry(state: CfnSyncState, key: StackKey, entry: StackEntry): CfnSyncState {
+export function upsertStackEntry(
+  state: CfnSyncState,
+  key: StackKey,
+  entry: StackEntry,
+): CfnSyncState {
   return {
     ...state,
     stacks: {
@@ -174,7 +191,10 @@ export function upsertStackEntry(state: CfnSyncState, key: StackKey, entry: Stac
 }
 
 /** スタックエントリを削除した新しいステートを返す(イミュータブル)。 */
-export function removeStackEntry(state: CfnSyncState, key: StackKey): CfnSyncState {
+export function removeStackEntry(
+  state: CfnSyncState,
+  key: StackKey,
+): CfnSyncState {
   const stacks = { ...state.stacks };
   delete stacks[key];
   return {

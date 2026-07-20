@@ -11,7 +11,10 @@ export function makeStackKey(templatePath: string, region: string): StackKey {
   return `${templatePath}@${region}`;
 }
 
-export function parseStackKey(key: StackKey): { templatePath: string; region: string } {
+export function parseStackKey(key: StackKey): {
+  templatePath: string;
+  region: string;
+} {
   const at = key.lastIndexOf('@');
   if (at <= 0 || at === key.length - 1) {
     throw new Error(`不正なスタックキーです: ${key}`);

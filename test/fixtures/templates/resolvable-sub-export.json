@@ -16,7 +16,9 @@
     },
     "VpcIdWithRegion": {
       "Value": { "Ref": "Vpc" },
-      "Export": { "Name": { "Fn::Sub": "${AWS::StackName}-${AWS::Region}-VpcId" } }
+      "Export": {
+        "Name": { "Fn::Sub": "${AWS::StackName}-${AWS::Region}-VpcId" }
+      }
     }
   }
 }

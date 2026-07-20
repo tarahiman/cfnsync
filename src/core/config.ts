@@ -8,10 +8,10 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { z } from 'zod';
 import { parse as parseYaml } from 'yaml';
-import { makeStackKey, type StackKey } from './types.js';
+import { z } from 'zod';
 import { ConfigError } from './errors.js';
+import { makeStackKey, type StackKey } from './types.js';
 
 /** deploy 時に残存していると検証エラーになるプレースホルダ(design.md §8.2)。 */
 const REQUIRED_PLACEHOLDER = '__REQUIRED__';
@@ -143,7 +143,9 @@ function normalize(data: RawConfig): CfnSyncConfig {
 
   for (const [templatePath, entry] of Object.entries(data.stacks)) {
     const regionOverrides: Record<string, RegionOverrideConfig> = {};
-    for (const [region, override] of Object.entries(entry.regionOverrides ?? {})) {
+    for (const [region, override] of Object.entries(
+      entry.regionOverrides ?? {},
+    )) {
       regionOverrides[region] = {
         parameters: override.parameters ?? {},
         tags: override.tags ?? {},
@@ -178,18 +180,26 @@ function toConfigError(error: z.ZodError): ConfigError {
   const keyPath = issue.path.length > 0 ? issue.path.join('.') : '(root)';
   // stacks.<templatePath>.* 配下のエラーはテンプレートパスを stackKey 文脈として付与する。
   const stackKey =
-    issue.path[0] === 'stacks' && typeof issue.path[1] === 'string' ? issue.path[1] : undefined;
-  return new ConfigError(`設定ファイルの検証に失敗しました: ${keyPath}: ${issue.message}`, {
-    stackKey,
-    cause: error,
-  });
+    issue.path[0] === 'stacks' && typeof issue.path[1] === 'string'
+      ? issue.path[1]
+      : undefined;
+  return new ConfigError(
+    `設定ファイルの検証に失敗しました: ${keyPath}: ${issue.message}`,
+    {
+      stackKey,
+      cause: error,
+    },
+  );
 }
 
 /**
  * 設定内容(YAML パース済みの生オブジェクト)を検証し、型付きの CfnSyncConfig を返す。
  * ファイル I/O を含まない純粋関数(テスト容易性のため loadConfig から分離)。
  */
-export function validateConfig(raw: unknown, opts: ValidateConfigOptions): CfnSyncConfig {
+export function validateConfig(
+  raw: unknown,
+  opts: ValidateConfigOptions,
+): CfnSyncConfig {
   const result = rawConfigSchema.safeParse(raw);
   if (!result.success) {
     throw toConfigError(result.error);
@@ -200,9 +210,12 @@ export function validateConfig(raw: unknown, opts: ValidateConfigOptions): CfnSy
   // FR-11-5: 存在しないテンプレートへの参照を検出する。
   for (const templatePath of Object.keys(config.stacks)) {
     if (!opts.templateExists(templatePath)) {
-      throw new ConfigError(`参照先のテンプレートファイルが存在しません: ${templatePath}`, {
-        stackKey: templatePath,
-      });
+      throw new ConfigError(
+        `参照先のテンプレートファイルが存在しません: ${templatePath}`,
+        {
+          stackKey: templatePath,
+        },
+      );
     }
   }
 
@@ -220,19 +233,25 @@ export function loadConfig(configPath: string): CfnSyncConfig {
   try {
     content = readFileSync(absConfigPath, 'utf-8');
   } catch (cause) {
-    throw new ConfigError(`設定ファイルを読み込めません: ${configPath}`, { cause });
+    throw new ConfigError(`設定ファイルを読み込めません: ${configPath}`, {
+      cause,
+    });
   }
 
   let raw: unknown;
   try {
     raw = parseYaml(content);
   } catch (cause) {
-    throw new ConfigError(`設定ファイルの YAML 解析に失敗しました: ${configPath}`, { cause });
+    throw new ConfigError(
+      `設定ファイルの YAML 解析に失敗しました: ${configPath}`,
+      { cause },
+    );
   }
 
   const baseDir = dirname(absConfigPath);
   return validateConfig(raw, {
-    templateExists: (relativeTemplatePath) => existsSync(resolve(baseDir, relativeTemplatePath)),
+    templateExists: (relativeTemplatePath) =>
+      existsSync(resolve(baseDir, relativeTemplatePath)),
   });
 }
 
@@ -240,7 +259,10 @@ export function loadConfig(configPath: string): CfnSyncConfig {
 // (テンプレート × リージョン)への展開
 // ---------------------------------------------------------------------------
 
-function deriveStackName(prefix: string | undefined, templatePath: string): string {
+function deriveStackName(
+  prefix: string | undefined,
+  templatePath: string,
+): string {
   const fileName = templatePath.split('/').pop() ?? templatePath;
   const baseName = fileName.replace(/\.(ya?ml|json)$/i, '');
   return `${prefix ?? ''}${baseName}`;
@@ -254,8 +276,12 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
   const targets: ResolvedStackTarget[] = [];
 
   for (const [templatePath, entry] of Object.entries(config.stacks)) {
-    const regions = entry.regions && entry.regions.length > 0 ? entry.regions : [config.defaultRegion];
-    const stackName = entry.stackName ?? deriveStackName(config.stackNamePrefix, templatePath);
+    const regions =
+      entry.regions && entry.regions.length > 0
+        ? entry.regions
+        : [config.defaultRegion];
+    const stackName =
+      entry.stackName ?? deriveStackName(config.stackNamePrefix, templatePath);
 
     for (const region of regions) {
       const override = entry.regionOverrides[region];
@@ -277,7 +303,9 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
 }
 
 /** design.md §8.2: 値が __REQUIRED__ のままのパラメータ名を列挙する。 */
-export function findRequiredPlaceholders(target: ResolvedStackTarget): string[] {
+export function findRequiredPlaceholders(
+  target: ResolvedStackTarget,
+): string[] {
   return Object.entries(target.parameters)
     .filter(([, value]) => value === REQUIRED_PLACEHOLDER)
     .map(([key]) => key);

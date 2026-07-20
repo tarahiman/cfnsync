@@ -10,23 +10,41 @@
  */
 
 import {
-  findRequiredPlaceholders,
-  resolveTargets,
   type CfnSyncConfig,
+  findRequiredPlaceholders,
   type ResolvedStackTarget,
+  resolveTargets,
 } from '../core/config.js';
-import { detectChanges, type DetectedEntry, type DetectionResult } from '../core/detect.js';
-import { LockError, StackStateError } from '../core/errors.js';
-import { buildGraphs, mergeGraphs, type RegionGraph, type StackNode } from '../core/graph.js';
-import { buildPlan, computeSkips, type ExecutionPlan, type PlannedOperation } from '../core/plan.js';
 import {
+  type DetectedEntry,
+  type DetectionResult,
+  detectChanges,
+} from '../core/detect.js';
+import { LockError, StackStateError } from '../core/errors.js';
+import {
+  buildGraphs,
+  mergeGraphs,
+  type RegionGraph,
+  type StackNode,
+} from '../core/graph.js';
+import {
+  buildPlan,
+  computeSkips,
+  type ExecutionPlan,
+  type PlannedOperation,
+} from '../core/plan.js';
+import {
+  type CfnSyncState,
   prepareSave,
   removeStackEntry,
-  upsertStackEntry,
-  type CfnSyncState,
   type StackEntry,
+  upsertStackEntry,
 } from '../core/state.js';
-import { analyzeTemplate, templatesEquivalent, type TemplateAnalysis } from '../core/template.js';
+import {
+  analyzeTemplate,
+  type TemplateAnalysis,
+  templatesEquivalent,
+} from '../core/template.js';
 import { parseStackKey, type StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
@@ -42,6 +60,16 @@ import {
   type StackEventLine,
   type StackResult,
 } from '../report/index.js';
+import { DeleteStateSaveError, deleteManagedStack } from './delete.js';
+import {
+  createManagedChangeSet,
+  type ExecutorContext,
+  executeWithReinspection,
+  MANAGEMENT_TAG_KEY,
+  newRunId,
+  prepareStack,
+  reclaimStaleChangeSets,
+} from './executor.js';
 import {
   assertAccountAllowed,
   assertMutationAllowed,
@@ -50,16 +78,6 @@ import {
   resolveConnection,
   verifyStateAccount,
 } from './guard.js';
-import {
-  MANAGEMENT_TAG_KEY,
-  createManagedChangeSet,
-  executeWithReinspection,
-  newRunId,
-  prepareStack,
-  reclaimStaleChangeSets,
-  type ExecutorContext,
-} from './executor.js';
-import { DeleteStateSaveError, deleteManagedStack } from './delete.js';
 
 // ===========================================================================
 // 公開 API(T-15 / T-19 が利用する固定契約)
@@ -146,7 +164,10 @@ export async function deploy(input: {
     if (placeholders.length > 0) required.set(target.stackKey, placeholders);
   }
 
-  let connection: ConnectionInfo = { accountId: '(unresolved)', regions: targetRegions };
+  let connection: ConnectionInfo = {
+    accountId: '(unresolved)',
+    regions: targetRegions,
+  };
 
   // design §5.3 / guard JSDoc: ロック前に 1 → 2 → account → regions の順で fail-closed。
   try {
@@ -154,7 +175,10 @@ export async function deploy(input: {
     const resolved = await resolveConnection(deps.sts);
     assertAccountAllowed(config, resolved.accountId);
     assertRegionsAllowed(config, targetRegions);
-    connection = connectionHeader({ accountId: resolved.accountId, regions: targetRegions });
+    connection = connectionHeader({
+      accountId: resolved.accountId,
+      regions: targetRegions,
+    });
   } catch (error) {
     return failedBeforeLock(connection, required, targets, error);
   }
@@ -191,7 +215,11 @@ export async function deploy(input: {
       required,
     });
   } catch (error) {
-    result = failureResult(connection, requiredResults(required, targets), error);
+    result = failureResult(
+      connection,
+      requiredResults(required, targets),
+      error,
+    );
   }
 
   try {
@@ -213,7 +241,10 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   // deleted の旧リージョンも含め、実計画で触れる全リージョンを AWS 読み取り前に再照合する。
   const plannedRegions = prepared.plan.regions.map((region) => region.region);
   assertRegionsAllowed(ctx.config, plannedRegions);
-  ctx.connection.regions = unique([...ctx.connection.regions, ...plannedRegions]);
+  ctx.connection.regions = unique([
+    ...ctx.connection.regions,
+    ...plannedRegions,
+  ]);
 
   const resultStacks = requiredResults(ctx.required, ctx.targets);
   const report: DeployReport = {
@@ -230,7 +261,12 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
 
   // detect 段階で unchanged のスタックは CloudFormation に一切触れず明示的に報告する。
   for (const entry of prepared.detection.entries) {
-    if (entry.changeType !== 'unchanged' || !entry.target || ctx.required.has(entry.stackKey)) continue;
+    if (
+      entry.changeType !== 'unchanged' ||
+      !entry.target ||
+      ctx.required.has(entry.stackKey)
+    )
+      continue;
     report.diffs.push(
       buildStackDiff({
         stackKey: entry.stackKey,
@@ -254,7 +290,12 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         const operationResult =
           operation.kind === 'delete'
             ? await processDeleted(ctx, operation, report)
-            : await processCreateOrUpdate(ctx, operation, prepared.analyses, report);
+            : await processCreateOrUpdate(
+                ctx,
+                operation,
+                prepared.analyses,
+                report,
+              );
         hasDiff ||= operationResult.hasDiff;
         hasError ||= operationResult.failed === true;
       } catch (error) {
@@ -262,7 +303,11 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         results.push(failedOperationResult(operation, error));
 
         // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
-        if (error instanceof LockError || error instanceof StateSaveError || error instanceof DeleteStateSaveError) {
+        if (
+          error instanceof LockError ||
+          error instanceof StateSaveError ||
+          error instanceof DeleteStateSaveError
+        ) {
           ownershipLost = true;
           break;
         }
@@ -293,7 +338,10 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const currentNodes: StackNode[] = [];
   for (const target of ctx.targets) {
     const source = requiredTemplate(ctx.templates, target.templatePath);
-    const analysis = analyzeTemplate(source, { stackName: target.stackName, region: target.region });
+    const analysis = analyzeTemplate(source, {
+      stackName: target.stackName,
+      region: target.region,
+    });
     analyses.set(target.stackKey, analysis);
     currentNodes.push({
       stackKey: target.stackKey,
@@ -304,26 +352,39 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     });
   }
 
-  const detection = detectChanges({ targets: ctx.targets, templates: ctx.templates, state: ctx.state.state });
+  const detection = detectChanges({
+    targets: ctx.targets,
+    templates: ctx.templates,
+    state: ctx.state.state,
+  });
   // __REQUIRED__ の対象だけを実行計画から外す。target 自体は current graph に残し、
   // 他スタックを誤って deleted 扱いしたり依存辺を消したりしない。
   const executableDetection: DetectionResult = {
-    entries: detection.entries.filter((entry) => !ctx.required.has(entry.stackKey)),
+    entries: detection.entries.filter(
+      (entry) => !ctx.required.has(entry.stackKey),
+    ),
   };
 
   const graphs = buildGraphs(currentNodes);
-  const oldNodes: StackNode[] = Object.entries(ctx.state.state.stacks).map(([stackKey, entry]) => ({
-    stackKey,
-    region: entry.region,
-    // FR-6-5: 欠落は delete usecase が対象だけ拒否する。ここでは安全な空辺として計画に残す。
-    exports: Array.isArray(entry.exports) ? entry.exports : [],
-    imports: Array.isArray(entry.imports) ? entry.imports : [],
-    explicitDependsOn: [],
-  }));
+  const oldNodes: StackNode[] = Object.entries(ctx.state.state.stacks).map(
+    ([stackKey, entry]) => ({
+      stackKey,
+      region: entry.region,
+      // FR-6-5: 欠落は delete usecase が対象だけ拒否する。ここでは安全な空辺として計画に残す。
+      exports: Array.isArray(entry.exports) ? entry.exports : [],
+      imports: Array.isArray(entry.imports) ? entry.imports : [],
+      explicitDependsOn: [],
+    }),
+  );
   const oldGraphs = buildGraphs(oldNodes);
   const mergedGraphs = mergeGraphMaps(graphs, oldGraphs);
   const regionOrder = unique(ctx.targets.map((target) => target.region));
-  const plan = buildPlan({ detection: executableDetection, graphs, mergedGraphs, regionOrder });
+  const plan = buildPlan({
+    detection: executableDetection,
+    graphs,
+    mergedGraphs,
+    regionOrder,
+  });
   return { detection, analyses, graphs, mergedGraphs, plan };
 }
 
@@ -338,10 +399,14 @@ async function processCreateOrUpdate(
   report: DeployReport,
 ): Promise<OperationResult> {
   const target = operation.entry.target;
-  if (!target) throw new Error(`内部エラー: ${operation.stackKey} の target がありません`);
+  if (!target)
+    throw new Error(`内部エラー: ${operation.stackKey} の target がありません`);
   const source = requiredTemplate(ctx.templates, target.templatePath);
   const analysis = analyses.get(operation.stackKey);
-  if (!analysis) throw new Error(`内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`);
+  if (!analysis)
+    throw new Error(
+      `内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`,
+    );
 
   const rawCfn = ctx.deps.cfnFactory(operation.region);
   const cfn = fencedGateway(rawCfn, ctx.deps.backend, ctx.lock);
@@ -362,7 +427,15 @@ async function processCreateOrUpdate(
           { stackKey: target.stackKey, region: target.region },
         );
       }
-      await recoverExistingCreate(ctx, target, source, analysis, existing, cfn, report);
+      await recoverExistingCreate(
+        ctx,
+        target,
+        source,
+        analysis,
+        existing,
+        cfn,
+        report,
+      );
       return { hasDiff: false };
     }
   }
@@ -375,7 +448,8 @@ async function processCreateOrUpdate(
   };
   const prepared = await prepareStack(executor, target.stackName);
   // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。通常パスのみ明示回収する。
-  if (!prepared.reviewInProgress) await reclaimStaleChangeSets(executor, target.stackName);
+  if (!prepared.reviewInProgress)
+    await reclaimStaleChangeSets(executor, target.stackName);
 
   const created = await createManagedChangeSet(executor, {
     target,
@@ -394,7 +468,12 @@ async function processCreateOrUpdate(
     diff.warnings.push(...analysis.warnings);
     report.diffs.push(diff);
     report.result?.stacks.push(stackResult(target, 'no-change'));
-    await saveSuccessfulEntry(ctx, operation.entry, analysis, prepared.kind === 'create' ? 'CREATE' : 'UPDATE');
+    await saveSuccessfulEntry(
+      ctx,
+      operation.entry,
+      analysis,
+      prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+    );
     return { hasDiff: false };
   }
 
@@ -434,18 +513,31 @@ async function processCreateOrUpdate(
   });
 
   if (!isSuccessfulTerminal(final.status)) {
-    const stackEvents = (report.events ?? []).filter((event) => event.stackKey === operation.stackKey);
-    const cause = stackEvents.find((event) => event.resourceStatus.endsWith('_FAILED'));
-    const reason = cause?.resourceStatusReason ?? final.statusReason ?? final.status;
+    const stackEvents = (report.events ?? []).filter(
+      (event) => event.stackKey === operation.stackKey,
+    );
+    const cause = stackEvents.find((event) =>
+      event.resourceStatus.endsWith('_FAILED'),
+    );
+    const reason =
+      cause?.resourceStatusReason ?? final.statusReason ?? final.status;
     const resource = cause ? `${cause.logicalResourceId}: ` : '';
-    throw new StackStateError(`${resource}${reason} (final status: ${final.status})`, {
-      stackKey: operation.stackKey,
-      region: operation.region,
-    });
+    throw new StackStateError(
+      `${resource}${reason} (final status: ${final.status})`,
+      {
+        stackKey: operation.stackKey,
+        region: operation.region,
+      },
+    );
   }
 
   // FR-1-9: waitForStack 完了後、CAS 保存直前に saveSuccessfulEntry が再 fencing する。
-  await saveSuccessfulEntry(ctx, operation.entry, analysis, prepared.kind === 'create' ? 'CREATE' : 'UPDATE');
+  await saveSuccessfulEntry(
+    ctx,
+    operation.entry,
+    analysis,
+    prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+  );
   report.result?.stacks.push(stackResult(target, 'succeeded'));
   return { hasDiff: true };
 }
@@ -456,7 +548,10 @@ async function processDeleted(
   report: DeployReport,
 ): Promise<OperationResult> {
   const stateEntry = operation.entry.stateEntry;
-  if (!stateEntry) throw new Error(`内部エラー: ${operation.stackKey} の stateEntry がありません`);
+  if (!stateEntry)
+    throw new Error(
+      `内部エラー: ${operation.stackKey} の stateEntry がありません`,
+    );
   const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
     stackKey: operation.stackKey,
@@ -511,7 +606,9 @@ async function processDeleted(
   });
 
   if (deleted.outcome === 'refused') {
-    diff.warnings.push(deleted.errorMessage ?? '安全装置により削除を拒否しました');
+    diff.warnings.push(
+      deleted.errorMessage ?? '安全装置により削除を拒否しました',
+    );
     report.result?.stacks.push({
       stackKey: operation.stackKey,
       region: operation.region,
@@ -542,15 +639,23 @@ async function recoverExistingCreate(
   target: ResolvedStackTarget,
   source: string,
   analysis: TemplateAnalysis,
-  existing: NonNullable<Awaited<ReturnType<CloudFormationGateway['describeStack']>>>,
+  existing: NonNullable<
+    Awaited<ReturnType<CloudFormationGateway['describeStack']>>
+  >,
   cfn: CloudFormationGateway,
   report: DeployReport,
 ): Promise<void> {
   const deployedTemplate = await cfn.getTemplate(target.stackName, 'Original');
   const stateId = ctx.deps.backend.stateId();
   const desiredTags = { ...target.tags, [MANAGEMENT_TAG_KEY]: stateId };
-  const verifiableDesiredParameters = omitKeys(target.parameters, analysis.noEchoParams);
-  const verifiableActualParameters = omitKeys(existing.parameters, analysis.noEchoParams);
+  const verifiableDesiredParameters = omitKeys(
+    target.parameters,
+    analysis.noEchoParams,
+  );
+  const verifiableActualParameters = omitKeys(
+    existing.parameters,
+    analysis.noEchoParams,
+  );
 
   let templateMatches: boolean;
   try {
@@ -587,10 +692,14 @@ async function recoverExistingCreate(
   });
   diff.warnings.push(...analysis.warnings);
   if (analysis.noEchoParams.length > 0) {
-    diff.warnings.push(`CREATE 復旧の比較から除外した NoEcho パラメータ: ${analysis.noEchoParams.join(', ')}`);
+    diff.warnings.push(
+      `CREATE 復旧の比較から除外した NoEcho パラメータ: ${analysis.noEchoParams.join(', ')}`,
+    );
   }
   if (target.dependsOn.length > 0) {
-    diff.warnings.push(`CREATE 復旧の比較から除外した dependsOn: ${target.dependsOn.join(', ')}`);
+    diff.warnings.push(
+      `CREATE 復旧の比較から除外した dependsOn: ${target.dependsOn.join(', ')}`,
+    );
   }
   report.diffs.push(diff);
 
@@ -610,11 +719,17 @@ function operationHashSource(
   target: ResolvedStackTarget,
   kind: 'template' | 'inputs',
 ): string {
-  const detected = detectChanges({ targets: [target], templates: ctx.templates, state: ctx.state.state }).entries.find(
-    (entry) => entry.target?.stackKey === target.stackKey,
-  );
-  const value = kind === 'template' ? detected?.templateHash : detected?.inputsHash;
-  if (!value) throw new Error(`内部エラー: ${target.stackKey} の ${kind} hash がありません`);
+  const detected = detectChanges({
+    targets: [target],
+    templates: ctx.templates,
+    state: ctx.state.state,
+  }).entries.find((entry) => entry.target?.stackKey === target.stackKey);
+  const value =
+    kind === 'template' ? detected?.templateHash : detected?.inputsHash;
+  if (!value)
+    throw new Error(
+      `内部エラー: ${target.stackKey} の ${kind} hash がありません`,
+    );
   return value;
 }
 
@@ -626,7 +741,9 @@ async function saveSuccessfulEntry(
 ): Promise<void> {
   const target = detected.target;
   if (!target || !detected.templateHash || !detected.inputsHash) {
-    throw new Error(`内部エラー: ${detected.stackKey} の成功 state 入力が不足しています`);
+    throw new Error(
+      `内部エラー: ${detected.stackKey} の成功 state 入力が不足しています`,
+    );
   }
   const entry: StackEntry = {
     stackName: target.stackName,
@@ -638,17 +755,26 @@ async function saveSuccessfulEntry(
     lastAction,
     lastSuccessAt: now(ctx.deps).toISOString(),
   };
-  await saveState(ctx, upsertStackEntry(ctx.state.state, detected.stackKey, entry));
+  await saveState(
+    ctx,
+    upsertStackEntry(ctx.state.state, detected.stackKey, entry),
+  );
 }
 
-async function saveState(ctx: LockedRunContext, next: CfnSyncState): Promise<void> {
+async function saveState(
+  ctx: LockedRunContext,
+  next: CfnSyncState,
+): Promise<void> {
   await assertFenced(ctx.deps.backend, ctx.lock);
   const payload = prepareSave(next);
   let version: StateVersion;
   try {
     version = await ctx.deps.backend.save(payload, ctx.state.version);
   } catch (cause) {
-    throw new StateSaveError('ステートの CAS 保存に失敗したため、以降の処理を中断します', { cause });
+    throw new StateSaveError(
+      'ステートの CAS 保存に失敗したため、以降の処理を中断します',
+      { cause },
+    );
   }
   ctx.state.state = payload;
   ctx.state.version = version;
@@ -658,9 +784,14 @@ async function saveState(ctx: LockedRunContext, next: CfnSyncState): Promise<voi
 // fencing proxy
 // ===========================================================================
 
-async function assertFenced(backend: StateBackend, lock: LockHandle): Promise<void> {
+async function assertFenced(
+  backend: StateBackend,
+  lock: LockHandle,
+): Promise<void> {
   if (!(await backend.verifyLock(lock))) {
-    throw new LockError('ステートロックの所有権を失いました。以降の副作用を中断します(fencing)');
+    throw new LockError(
+      'ステートロックの所有権を失いました。以降の副作用を中断します(fencing)',
+    );
   }
 }
 
@@ -672,9 +803,12 @@ function fencedGateway(
   return {
     describeStack: (stackName) => gateway.describeStack(stackName),
     listChangeSets: (stackName) => gateway.listChangeSets(stackName),
-    describeChangeSet: (stackName, changeSetName) => gateway.describeChangeSet(stackName, changeSetName),
-    waitForChangeSet: (stackName, changeSetName) => gateway.waitForChangeSet(stackName, changeSetName),
-    describeStackEvents: (stackName, seen) => gateway.describeStackEvents(stackName, seen),
+    describeChangeSet: (stackName, changeSetName) =>
+      gateway.describeChangeSet(stackName, changeSetName),
+    waitForChangeSet: (stackName, changeSetName) =>
+      gateway.waitForChangeSet(stackName, changeSetName),
+    describeStackEvents: (stackName, seen) =>
+      gateway.describeStackEvents(stackName, seen),
     getTemplate: (stackName, stage) => gateway.getTemplate(stackName, stage),
     waitForStack: (stackName, opts) => gateway.waitForStack(stackName, opts),
     async createChangeSet(changeSetInput) {
@@ -722,21 +856,33 @@ function mergeGraphMaps(
 ): Map<string, RegionGraph> {
   const merged = new Map<string, RegionGraph>();
   for (const region of unique([...current.keys(), ...old.keys()])) {
-    const currentGraph = current.get(region) ?? { region, nodes: [], edges: [] };
+    const currentGraph = current.get(region) ?? {
+      region,
+      nodes: [],
+      edges: [],
+    };
     const oldGraph = old.get(region) ?? { region, nodes: [], edges: [] };
     merged.set(region, mergeGraphs(currentGraph, oldGraph));
   }
   return merged;
 }
 
-function requiredTemplate(templates: Map<string, string>, path: string): string {
+function requiredTemplate(
+  templates: Map<string, string>,
+  path: string,
+): string {
   const source = templates.get(path);
-  if (source === undefined) throw new Error(`テンプレート内容が見つかりません: ${path}`);
+  if (source === undefined)
+    throw new Error(`テンプレート内容が見つかりません: ${path}`);
   return source;
 }
 
 function isSuccessfulTerminal(status: string): boolean {
-  return status === 'CREATE_COMPLETE' || status === 'UPDATE_COMPLETE' || status === 'IMPORT_COMPLETE';
+  return (
+    status === 'CREATE_COMPLETE' ||
+    status === 'UPDATE_COMPLETE' ||
+    status === 'IMPORT_COMPLETE'
+  );
 }
 
 function now(deps: DeployDeps): Date {
@@ -747,14 +893,26 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
-function omitKeys(record: Record<string, string>, keys: string[]): Record<string, string> {
+function omitKeys(
+  record: Record<string, string>,
+  keys: string[],
+): Record<string, string> {
   const excluded = new Set(keys);
-  return Object.fromEntries(Object.entries(record).filter(([key]) => !excluded.has(key)));
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) => !excluded.has(key)),
+  );
 }
 
-function recordsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
-  const aEntries = Object.entries(a).sort(([aKey], [bKey]) => aKey.localeCompare(bKey));
-  const bEntries = Object.entries(b).sort(([aKey], [bKey]) => aKey.localeCompare(bKey));
+function recordsEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const aEntries = Object.entries(a).sort(([aKey], [bKey]) =>
+    aKey.localeCompare(bKey),
+  );
+  const bEntries = Object.entries(b).sort(([aKey], [bKey]) =>
+    aKey.localeCompare(bKey),
+  );
   return JSON.stringify(aEntries) === JSON.stringify(bEntries);
 }
 
@@ -762,7 +920,10 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 }
 
-function stackResult(target: ResolvedStackTarget, outcome: StackResult['outcome']): StackResult {
+function stackResult(
+  target: ResolvedStackTarget,
+  outcome: StackResult['outcome'],
+): StackResult {
   return {
     stackKey: target.stackKey,
     region: target.region,
@@ -771,7 +932,10 @@ function stackResult(target: ResolvedStackTarget, outcome: StackResult['outcome'
   };
 }
 
-function resultForOperation(operation: PlannedOperation, outcome: StackResult['outcome']): StackResult {
+function resultForOperation(
+  operation: PlannedOperation,
+  outcome: StackResult['outcome'],
+): StackResult {
   const target = operation.entry.target;
   const stateEntry = operation.entry.stateEntry;
   return {
@@ -782,14 +946,20 @@ function resultForOperation(operation: PlannedOperation, outcome: StackResult['o
   };
 }
 
-function failedOperationResult(operation: PlannedOperation, error: unknown): StackResult {
+function failedOperationResult(
+  operation: PlannedOperation,
+  error: unknown,
+): StackResult {
   const result = resultForOperation(operation, 'failed');
   result.errorMessage = errorMessage(error);
   result.rolledBack = /ROLLBACK/i.test(result.errorMessage);
   return result;
 }
 
-function requiredResults(required: Map<StackKey, string[]>, targets: ResolvedStackTarget[]): StackResult[] {
+function requiredResults(
+  required: Map<StackKey, string[]>,
+  targets: ResolvedStackTarget[],
+): StackResult[] {
   const byKey = new Map(targets.map((target) => [target.stackKey, target]));
   return [...required].map(([stackKey, names]) => {
     const target = byKey.get(stackKey);
@@ -813,7 +983,11 @@ function failedBeforeLock(
   return failureResult(connection, requiredResults(required, targets), error);
 }
 
-function failureResult(connection: ConnectionInfo, existing: StackResult[], error: unknown): DeployResult {
+function failureResult(
+  connection: ConnectionInfo,
+  existing: StackResult[],
+  error: unknown,
+): DeployResult {
   return {
     exitCode: 1,
     hasDiff: false,
@@ -837,7 +1011,10 @@ function failureResult(connection: ConnectionInfo, existing: StackResult[], erro
   };
 }
 
-function appendDeployFailure(result: DeployResult, error: unknown): DeployResult {
+function appendDeployFailure(
+  result: DeployResult,
+  error: unknown,
+): DeployResult {
   const stacks = result.report.result?.stacks ?? [];
   stacks.push({
     stackKey: '(deploy)',

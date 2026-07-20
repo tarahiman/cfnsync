@@ -34,7 +34,9 @@ export class StsGatewayImpl implements StsGateway {
       region: options.region,
       // FR-7-1: profile 指定時のみ、既定クレデンシャルチェーンに profile を適用する。
       // 未指定時は SDK 標準チェーン(環境変数 → プロファイル → IAM ロール)に委ねる(FR-7-2)。
-      ...(options.profile !== undefined ? { credentials: defaultProvider({ profile: options.profile }) } : {}),
+      ...(options.profile !== undefined
+        ? { credentials: defaultProvider({ profile: options.profile }) }
+        : {}),
     });
   }
 

@@ -32,11 +32,11 @@
 import type { CfnSyncConfig } from '../core/config.js';
 import { GuardError } from '../core/errors.js';
 import {
+  type CfnSyncState,
   createInitialState,
   matchAccount,
   prepareSave,
   withAccountId,
-  type CfnSyncState,
 } from '../core/state.js';
 import type { StateBackend, StateVersion, StsGateway } from '../ports/index.js';
 import type { ConnectionInfo } from '../report/index.js';
@@ -52,12 +52,18 @@ import type { ConnectionInfo } from '../report/index.js';
  * STS 解決やステート読み書きより前に失敗することを保証する。
  */
 export function assertMutationAllowed(config: CfnSyncConfig): void {
-  if (config.allowedAccounts === undefined || config.allowedAccounts.length === 0) {
+  if (
+    config.allowedAccounts === undefined ||
+    config.allowedAccounts.length === 0
+  ) {
     throw new GuardError(
       'allowedAccounts が設定されていません。変更系操作(変更セットの作成・実行・スタック削除)には許可アカウントの設定が前提条件です(fail-closed)',
     );
   }
-  if (config.allowedRegions === undefined || config.allowedRegions.length === 0) {
+  if (
+    config.allowedRegions === undefined ||
+    config.allowedRegions.length === 0
+  ) {
     throw new GuardError(
       'allowedRegions が設定されていません。変更系操作(変更セットの作成・実行・スタック削除)には許可リージョンの設定が前提条件です(fail-closed)',
     );
@@ -77,7 +83,9 @@ export function assertMutationAllowed(config: CfnSyncConfig): void {
  * 実装が誤って余剰フィールド(クレデンシャル等)を含む値を返した場合でも、それらは
  * ここで捨てられ、下流(report 等)へ伝播しない(多層防御。FR-7-8)。
  */
-export async function resolveConnection(sts: StsGateway): Promise<{ accountId: string; arn: string }> {
+export async function resolveConnection(
+  sts: StsGateway,
+): Promise<{ accountId: string; arn: string }> {
   const identity = await sts.getCallerIdentity();
   return { accountId: identity.accountId, arn: identity.arn };
 }
@@ -86,7 +94,10 @@ export async function resolveConnection(sts: StsGateway): Promise<{ accountId: s
  * 解決したアカウント ID が `allowedAccounts` に含まれることを照合する
  * (design §8.1-2, FR-7-6)。含まれなければ fail-closed で拒否する。
  */
-export function assertAccountAllowed(config: CfnSyncConfig, accountId: string): void {
+export function assertAccountAllowed(
+  config: CfnSyncConfig,
+  accountId: string,
+): void {
   const allowed = config.allowedAccounts ?? [];
   if (!allowed.includes(accountId)) {
     throw new GuardError(
@@ -103,7 +114,10 @@ export function assertAccountAllowed(config: CfnSyncConfig, accountId: string): 
  * 実行計画中の全対象リージョンが `allowedRegions` に含まれることを照合する
  * (design §8.1-4, FR-13-8)。1 つでも含まれないリージョンがあれば fail-closed で拒否する。
  */
-export function assertRegionsAllowed(config: CfnSyncConfig, regions: string[]): void {
+export function assertRegionsAllowed(
+  config: CfnSyncConfig,
+  regions: string[],
+): void {
   const allowed = new Set(config.allowedRegions ?? []);
   const disallowed = regions.filter((region) => !allowed.has(region));
   if (disallowed.length > 0) {
@@ -168,7 +182,10 @@ export async function verifyStateAccount(input: {
  * 引数に含めても出力には一切現れない(多層防御。report/index.ts の renderText /
  * renderJson と同じ設計)。
  */
-export function connectionHeader(connection: { accountId: string; regions: string[] }): ConnectionInfo {
+export function connectionHeader(connection: {
+  accountId: string;
+  regions: string[];
+}): ConnectionInfo {
   return {
     accountId: connection.accountId,
     regions: [...connection.regions],
@@ -225,7 +242,10 @@ export async function guardMutation(input: {
   });
 
   return {
-    connection: connectionHeader({ accountId: connection.accountId, regions: input.targetRegions }),
+    connection: connectionHeader({
+      accountId: connection.accountId,
+      regions: input.targetRegions,
+    }),
     state,
     version,
   };

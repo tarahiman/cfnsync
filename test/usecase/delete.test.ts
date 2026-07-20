@@ -6,12 +6,22 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { validateConfig, type CfnSyncConfig } from '../../src/core/config.js';
-import { createInitialState, upsertStackEntry, withAccountId, type CfnSyncState, type StackEntry } from '../../src/core/state.js';
+import { type CfnSyncConfig, validateConfig } from '../../src/core/config.js';
+import {
+  type CfnSyncState,
+  createInitialState,
+  type StackEntry,
+  upsertStackEntry,
+  withAccountId,
+} from '../../src/core/state.js';
 import type { CloudFormationGateway } from '../../src/ports/index.js';
-import { deploy } from '../../src/usecase/deploy.js';
 import { deleteManagedStack } from '../../src/usecase/delete.js';
-import { FakeCloudFormationGateway, FakeStateBackend, makeStackSummary } from './fakes.js';
+import { deploy } from '../../src/usecase/deploy.js';
+import {
+  FakeCloudFormationGateway,
+  FakeStateBackend,
+  makeStackSummary,
+} from './fakes.js';
 
 const ACCOUNT = '123456789012';
 const OTHER_ACCOUNT = '999999999999';
@@ -51,7 +61,8 @@ function entry(
 
 function stateWith(entries: Array<[string, StackEntry]>): CfnSyncState {
   let state = withAccountId(createInitialState(), ACCOUNT);
-  for (const [key, stackEntry] of entries) state = upsertStackEntry(state, key, stackEntry);
+  for (const [key, stackEntry] of entries)
+    state = upsertStackEntry(state, key, stackEntry);
   return state;
 }
 
@@ -84,10 +95,18 @@ function setup(initial: CfnSyncState, config = emptyConfig()) {
   return { timeline, backend, cfn, run };
 }
 
-function makeExisting(setupResult: ReturnType<typeof setup>, names: string[]): void {
+function makeExisting(
+  setupResult: ReturnType<typeof setup>,
+  names: string[],
+): void {
   for (const name of names) {
-    setupResult.cfn.stacks.set(name, makeStackSummary({ stackName: name, status: 'UPDATE_COMPLETE' }));
-    setupResult.cfn.waitResults.set(name, [makeStackSummary({ stackName: name, status: 'DELETE_COMPLETE' })]);
+    setupResult.cfn.stacks.set(
+      name,
+      makeStackSummary({ stackName: name, status: 'UPDATE_COMPLETE' }),
+    );
+    setupResult.cfn.waitResults.set(name, [
+      makeStackSummary({ stackName: name, status: 'DELETE_COMPLETE' }),
+    ]);
   }
 }
 
@@ -100,7 +119,11 @@ describe('delete / deploy integration — T-15', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.report.diffs).toContainEqual(
-      expect.objectContaining({ stackName: 'A', operation: 'delete', warnings: [expect.stringContaining('--allow-delete')] }),
+      expect.objectContaining({
+        stackName: 'A',
+        operation: 'delete',
+        warnings: [expect.stringContaining('--allow-delete')],
+      }),
     );
     expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
   });
@@ -108,7 +131,9 @@ describe('delete / deploy integration — T-15', () => {
   it('FR-6-2: allowDelete 指定時だけ削除して DELETE_COMPLETE を待つ。dry-run は指定ありでも削除しない', async () => {
     const dry = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     makeExisting(dry, ['A']);
-    expect((await dry.run({ allowDelete: true, dryRun: true })).exitCode).toBe(2);
+    expect((await dry.run({ allowDelete: true, dryRun: true })).exitCode).toBe(
+      2,
+    );
     expect(dry.cfn.callsOf('deleteStack')).toHaveLength(0);
 
     const apply = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
@@ -116,16 +141,26 @@ describe('delete / deploy integration — T-15', () => {
     const result = await apply.run({ allowDelete: true });
 
     expect(result.exitCode).toBe(0);
-    expect(apply.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['A']);
-    expect(apply.cfn.callsOf('waitForStack').map((call) => call.args[0])).toEqual(['A']);
-    expect(apply.backend.stored?.state.stacks['a.yaml@ap-northeast-1']).toBeUndefined();
+    expect(
+      apply.cfn.callsOf('deleteStack').map((call) => call.args[0]),
+    ).toEqual(['A']);
+    expect(
+      apply.cfn.callsOf('waitForStack').map((call) => call.args[0]),
+    ).toEqual(['A']);
+    expect(
+      apply.backend.stored?.state.stacks['a.yaml@ap-northeast-1'],
+    ).toBeUndefined();
   });
 
   it('FR-6-3: terminationProtection 有効時は解除を試みず DeleteStack も呼ばずエラー報告する', async () => {
     const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     s.cfn.stacks.set(
       'A',
-      makeStackSummary({ stackName: 'A', status: 'UPDATE_COMPLETE', terminationProtection: true }),
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_COMPLETE',
+        terminationProtection: true,
+      }),
     );
 
     const result = await s.run({ allowDelete: true });
@@ -134,7 +169,11 @@ describe('delete / deploy integration — T-15', () => {
     expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
     expect(s.cfn.methodSequence()).not.toContain('updateTerminationProtection');
     expect(result.report.result?.stacks).toContainEqual(
-      expect.objectContaining({ stackName: 'A', outcome: 'failed', errorMessage: expect.stringContaining('削除保護') }),
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        errorMessage: expect.stringContaining('削除保護'),
+      }),
     );
   });
 
@@ -145,11 +184,17 @@ describe('delete / deploy integration — T-15', () => {
     const result = await s.run({ allowDelete: true });
 
     expect(result.exitCode).toBe(0);
-    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['B', 'A']);
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'B',
+      'A',
+    ]);
   });
 
   it('FR-6-5: exports/imports 欠落スタックだけを削除拒否して手動対応を案内し、他は継続する', async () => {
-    const malformed = entry('B') as StackEntry & { exports?: string[]; imports?: string[] };
+    const malformed = entry('B') as StackEntry & {
+      exports?: string[];
+      imports?: string[];
+    };
     delete malformed.exports;
     delete malformed.imports;
     const state = stateWith([
@@ -162,9 +207,15 @@ describe('delete / deploy integration — T-15', () => {
     const result = await s.run({ allowDelete: true });
 
     expect(result.exitCode).toBe(1);
-    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['A']);
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'A',
+    ]);
     expect(result.report.result?.stacks).toContainEqual(
-      expect.objectContaining({ stackName: 'B', outcome: 'failed', errorMessage: expect.stringMatching(/依存情報|手動/) }),
+      expect.objectContaining({
+        stackName: 'B',
+        outcome: 'failed',
+        errorMessage: expect.stringMatching(/依存情報|手動/),
+      }),
     );
   });
 
@@ -189,7 +240,9 @@ describe('delete / deploy integration — T-15', () => {
     const result = await s.run({ allowDelete: true });
 
     expect(result.exitCode).toBe(1);
-    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['B']);
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'B',
+    ]);
     expect(s.backend.saveCalls).toHaveLength(0);
     const deleteIndex = s.timeline.indexOf('cfn.deleteStack');
     expect(s.timeline[deleteIndex - 1]).toBe('backend.verifyLock');
@@ -198,15 +251,24 @@ describe('delete / deploy integration — T-15', () => {
   it('§8.3: 成功ごとに CAS 保存し、2件目失敗時も1件目だけ state から除去済み', async () => {
     const s = setup(dependencyState());
     makeExisting(s, ['A', 'B']);
-    s.cfn.waitResults.set('A', [makeStackSummary({ stackName: 'A', status: 'DELETE_FAILED' })]);
+    s.cfn.waitResults.set('A', [
+      makeStackSummary({ stackName: 'A', status: 'DELETE_FAILED' }),
+    ]);
 
     const result = await s.run({ allowDelete: true });
 
     expect(result.exitCode).toBe(1);
-    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['B', 'A']);
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'B',
+      'A',
+    ]);
     expect(s.backend.saveCalls).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['b.yaml@ap-northeast-1']).toBeUndefined();
-    expect(s.backend.stored?.state.stacks['a.yaml@ap-northeast-1']).toBeDefined();
+    expect(
+      s.backend.stored?.state.stacks['b.yaml@ap-northeast-1'],
+    ).toBeUndefined();
+    expect(
+      s.backend.stored?.state.stacks['a.yaml@ap-northeast-1'],
+    ).toBeDefined();
   });
 
   it('§8.3: deleteManagedStack の公開契約は依存情報を検証してから副作用へ進む', async () => {

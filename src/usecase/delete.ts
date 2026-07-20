@@ -8,7 +8,12 @@
  */
 
 import { LockError, StackStateError } from '../core/errors.js';
-import { prepareSave, removeStackEntry, type CfnSyncState, type StackEntry } from '../core/state.js';
+import {
+  type CfnSyncState,
+  prepareSave,
+  removeStackEntry,
+  type StackEntry,
+} from '../core/state.js';
 import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
@@ -52,11 +57,16 @@ export class DeleteStateSaveError extends Error {}
  * DeleteStateSaveError、DeleteStack/waitForStack の失敗は例外として伝播し、呼び出し側が
  * 後続副作用を停止または失敗方針に従って処理する。
  */
-export async function deleteManagedStack(input: DeleteManagedStackInput): Promise<DeleteManagedStackResult> {
+export async function deleteManagedStack(
+  input: DeleteManagedStackInput,
+): Promise<DeleteManagedStackResult> {
   const { target, summary, cfn, backend, lock } = input;
 
   // FR-6-5: exports/imports が欠落した state からは削除順を安全に復元できない。
-  if (!Array.isArray(target.entry.exports) || !Array.isArray(target.entry.imports)) {
+  if (
+    !Array.isArray(target.entry.exports) ||
+    !Array.isArray(target.entry.imports)
+  ) {
     return {
       outcome: 'refused',
       state: input.state,
@@ -109,8 +119,13 @@ export async function deleteManagedStack(input: DeleteManagedStackInput): Promis
   return { outcome: 'deleted', state: nextState, version: nextVersion };
 }
 
-async function assertDeleteFenced(backend: StateBackend, lock: LockHandle): Promise<void> {
+async function assertDeleteFenced(
+  backend: StateBackend,
+  lock: LockHandle,
+): Promise<void> {
   if (!(await backend.verifyLock(lock))) {
-    throw new LockError('ステートロックの所有権を失いました。以降の削除・保存を中断します(fencing)');
+    throw new LockError(
+      'ステートロックの所有権を失いました。以降の削除・保存を中断します(fencing)',
+    );
   }
 }

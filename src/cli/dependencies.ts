@@ -4,21 +4,34 @@ import { resolve } from 'node:path';
 import { CloudFormationGatewayImpl } from '../aws/cloudformation.js';
 import { StsGatewayImpl } from '../aws/sts.js';
 import { createStateBackend } from '../backend/factory.js';
-import { loadConfig, type CfnSyncConfig } from '../core/config.js';
-import type { CloudFormationGateway, StateBackend, StsGateway } from '../ports/index.js';
-import { deploy, type DeployDeps, type DeployOptions, type DeployResult } from '../usecase/deploy.js';
-import { forceUnlock, type ForceUnlockResult } from '../usecase/forceUnlock.js';
+import { type CfnSyncConfig, loadConfig } from '../core/config.js';
+import type {
+  CloudFormationGateway,
+  StateBackend,
+  StsGateway,
+} from '../ports/index.js';
 import {
-  runImport,
+  type DeployDeps,
+  type DeployOptions,
+  type DeployResult,
+  deploy,
+} from '../usecase/deploy.js';
+import { type ForceUnlockResult, forceUnlock } from '../usecase/forceUnlock.js';
+import {
   type ImportDeps,
   type ImportOptions,
   type ImportResult,
+  runImport,
 } from '../usecase/importer.js';
 
 export interface CliDependencies {
   loadConfig(path: string): CfnSyncConfig;
   readTemplates(config: CfnSyncConfig, configDir: string): Map<string, string>;
-  createBackend(input: { config: CfnSyncConfig; configDir: string; profile?: string }): StateBackend;
+  createBackend(input: {
+    config: CfnSyncConfig;
+    configDir: string;
+    profile?: string;
+  }): StateBackend;
   createCfn(input: { region: string; profile?: string }): CloudFormationGateway;
   createSts(input: { region?: string; profile?: string }): StsGateway;
   deploy(input: {
@@ -34,7 +47,10 @@ export interface CliDependencies {
     deps: ImportDeps;
     options: ImportOptions;
   }): Promise<ImportResult>;
-  forceUnlock(input: { backend: StateBackend; runId: string }): Promise<ForceUnlockResult>;
+  forceUnlock(input: {
+    backend: StateBackend;
+    runId: string;
+  }): Promise<ForceUnlockResult>;
 }
 
 export const defaultCliDependencies: CliDependencies = {
@@ -49,7 +65,8 @@ export const defaultCliDependencies: CliDependencies = {
   },
   createBackend: ({ config, configDir, profile }) =>
     createStateBackend({ stateConfig: config.state, configDir, profile }),
-  createCfn: ({ region, profile }) => new CloudFormationGatewayImpl({ region, profile }),
+  createCfn: ({ region, profile }) =>
+    new CloudFormationGatewayImpl({ region, profile }),
   createSts: ({ region, profile }) => new StsGatewayImpl({ region, profile }),
   deploy,
   runImport,

@@ -15,9 +15,14 @@ export class CfnSyncError extends Error {
 
   constructor(message: string, context: ErrorContext = {}) {
     const parts = [message];
-    if (context.stackKey !== undefined) parts.push(`(stackKey: ${context.stackKey})`);
-    else if (context.region !== undefined) parts.push(`(region: ${context.region})`);
-    super(parts.join(' '), context.cause !== undefined ? { cause: context.cause } : undefined);
+    if (context.stackKey !== undefined)
+      parts.push(`(stackKey: ${context.stackKey})`);
+    else if (context.region !== undefined)
+      parts.push(`(region: ${context.region})`);
+    super(
+      parts.join(' '),
+      context.cause !== undefined ? { cause: context.cause } : undefined,
+    );
     this.name = new.target.name;
     this.stackKey = context.stackKey;
     this.region = context.region;

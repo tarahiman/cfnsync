@@ -4,14 +4,21 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveTargets, validateConfig, type CfnSyncConfig } from '../../src/core/config.js';
-import { computeInputsHash, computeTemplateHash } from '../../src/core/detect.js';
+import {
+  type CfnSyncConfig,
+  resolveTargets,
+  validateConfig,
+} from '../../src/core/config.js';
+import {
+  computeInputsHash,
+  computeTemplateHash,
+} from '../../src/core/detect.js';
 import { StateConflictError } from '../../src/core/errors.js';
 import {
+  type CfnSyncState,
   createInitialState,
   upsertStackEntry,
   withAccountId,
-  type CfnSyncState,
 } from '../../src/core/state.js';
 import { analyzeTemplate } from '../../src/core/template.js';
 import type { CloudFormationGateway } from '../../src/ports/index.js';
@@ -45,29 +52,44 @@ function configOf(): CfnSyncConfig {
       defaultRegion: REGION,
       allowedAccounts: [ACCOUNT],
       allowedRegions: [REGION],
-      stacks: { 'stack.yaml': { stackName: 'ManagedStack', tags: { Version: 'new' } } },
+      stacks: {
+        'stack.yaml': { stackName: 'ManagedStack', tags: { Version: 'new' } },
+      },
     },
     { templateExists: () => true },
   );
 }
 
-function modifiedState(config: CfnSyncConfig, templates: Map<string, string>): CfnSyncState {
+function modifiedState(
+  config: CfnSyncConfig,
+  templates: Map<string, string>,
+): CfnSyncState {
   const target = resolveTargets(config)[0];
   const source = templates.get(target.templatePath) as string;
-  const analysis = analyzeTemplate(source, { stackName: target.stackName, region: target.region });
-  return upsertStackEntry(withAccountId(createInitialState(), ACCOUNT), target.stackKey, {
+  const analysis = analyzeTemplate(source, {
     stackName: target.stackName,
     region: target.region,
-    templateHash: computeTemplateHash(source),
-    inputsHash: 'sha256:old-inputs',
-    exports: analysis.exports,
-    imports: analysis.imports,
-    lastAction: 'UPDATE',
-    lastSuccessAt: '2026-07-19T00:00:00.000Z',
   });
+  return upsertStackEntry(
+    withAccountId(createInitialState(), ACCOUNT),
+    target.stackKey,
+    {
+      stackName: target.stackName,
+      region: target.region,
+      templateHash: computeTemplateHash(source),
+      inputsHash: 'sha256:old-inputs',
+      exports: analysis.exports,
+      imports: analysis.imports,
+      lastAction: 'UPDATE',
+      lastSuccessAt: '2026-07-19T00:00:00.000Z',
+    },
+  );
 }
 
-function desiredInputsHash(config: CfnSyncConfig, templates: Map<string, string>): string {
+function desiredInputsHash(
+  config: CfnSyncConfig,
+  templates: Map<string, string>,
+): string {
   const target = resolveTargets(config)[0];
   const source = templates.get(target.templatePath) as string;
   return computeInputsHash({
@@ -112,7 +134,10 @@ function setup(initial?: CfnSyncState) {
         cfnFactory: (): CloudFormationGateway => cfn,
         sts: {
           async getCallerIdentity() {
-            return { accountId: ACCOUNT, arn: `arn:aws:iam::${ACCOUNT}:role/test` };
+            return {
+              accountId: ACCOUNT,
+              arn: `arn:aws:iam::${ACCOUNT}:role/test`,
+            };
           },
         },
         backend,
@@ -134,17 +159,25 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 function mutationCount(cfn: FakeCloudFormationGateway): number {
   return cfn.calls.filter((call) =>
-    ['createChangeSet', 'deleteChangeSet', 'executeChangeSet', 'deleteStack'].includes(call.method),
+    [
+      'createChangeSet',
+      'deleteChangeSet',
+      'executeChangeSet',
+      'deleteStack',
+    ].includes(call.method),
   ).length;
 }
 
 function reportErrors(result: Awaited<ReturnType<typeof deploy>>): string {
-  return (result.report.result?.stacks ?? []).map((stack) => stack.errorMessage ?? '').join('\n');
+  return (result.report.result?.stacks ?? [])
+    .map((stack) => stack.errorMessage ?? '')
+    .join('\n');
 }
 
 afterEach(() => {
   // FR-2-10(横断): T-18 の全並行シナリオで REVIEW_IN_PROGRESS への DeleteStack を禁止する。
-  for (const cfn of scenarioGateways) expect(cfn.reviewInProgressDeleteCalls).toEqual([]);
+  for (const cfn of scenarioGateways)
+    expect(cfn.reviewInProgressDeleteCalls).toEqual([]);
   scenarioGateways.length = 0;
 });
 
@@ -154,11 +187,19 @@ describe('T-18 concurrency', () => {
     const templates = new Map([['stack.yaml', TEMPLATE]]);
     const s = setup(modifiedState(config, templates));
     s.backend.rejectConcurrentAcquire = true;
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
-    s.cfn.waitResults.set(
+    s.cfn.stacks.set(
       'ManagedStack',
-      [makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' })],
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
     );
+    s.cfn.waitResults.set('ManagedStack', [
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    ]);
     const enteredWait = deferred();
     const finishWait = deferred();
     s.cfn.onWaitForStack = async () => {
@@ -182,9 +223,9 @@ describe('T-18 concurrency', () => {
     const first = await firstPromise;
     expect(first.exitCode).toBe(0);
     expect(s.backend.saveCalls).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      desiredInputsHash(config, templates),
-    );
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe(desiredInputsHash(config, templates));
   });
 
   it('NFR-3 / §4.5 CAS 正本保護: verify=true 直後の所有権交代でも旧実行の保存は StateConflictError', async () => {
@@ -192,7 +233,13 @@ describe('T-18 concurrency', () => {
     const templates = new Map([['stack.yaml', TEMPLATE]]);
     const initial = modifiedState(config, templates);
     const s = setup(initial);
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
+    s.cfn.stacks.set(
+      'ManagedStack',
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
     const authoritative: CfnSyncState = {
       ...initial,
       generation: initial.generation + 1,
@@ -209,8 +256,13 @@ describe('T-18 concurrency', () => {
       // create / execute の fencing に続く、state save 直前の 3 回目で競合窓を作る。
       if (count !== 3 || !verified) return;
       expect(handle.runId).toBe('run1');
-      expect(await s.backend.forceUnlock('run1')).toMatchObject({ released: true });
-      s.backend.stored = { state: authoritative, version: { generation: authoritative.generation } };
+      expect(await s.backend.forceUnlock('run1')).toMatchObject({
+        released: true,
+      });
+      s.backend.stored = {
+        state: authoritative,
+        version: { generation: authoritative.generation },
+      };
       await s.backend.acquireLock({
         runId: 'run2-new-owner',
         startedAt: '2026-07-20T12:00:20.000Z',
@@ -225,9 +277,9 @@ describe('T-18 concurrency', () => {
     expect(s.backend.saveErrors).toHaveLength(1);
     expect(s.backend.saveErrors[0]).toBeInstanceOf(StateConflictError);
     expect(s.backend.stored?.state).toBe(authoritative);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      'sha256:new-run-authoritative',
-    );
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe('sha256:new-run-authoritative');
     expect((await s.backend.readLock())?.runId).toBe('run2-new-owner');
   });
 
@@ -235,11 +287,19 @@ describe('T-18 concurrency', () => {
     const config = configOf();
     const templates = new Map([['stack.yaml', TEMPLATE]]);
     const s = setup(modifiedState(config, templates));
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
-    s.cfn.waitResults.set(
+    s.cfn.stacks.set(
       'ManagedStack',
-      [makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' })],
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
     );
+    s.cfn.waitResults.set('ManagedStack', [
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    ]);
     s.cfn.onWaitForStack = async () => {
       const unlocked = await forceUnlock({ backend: s.backend, runId: 'run1' });
       expect(unlocked).toMatchObject({ exitCode: 0, released: true });
@@ -256,7 +316,9 @@ describe('T-18 concurrency', () => {
     expect(reportErrors(result)).toContain('所有権を失いました');
     expect(s.cfn.callsOf('waitForStack')).toHaveLength(1);
     expect(s.backend.saveCalls).toHaveLength(0);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe('sha256:old-inputs');
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe('sha256:old-inputs');
     expect((await s.backend.readLock())?.runId).toBe('replacement-owner');
   });
 
@@ -264,16 +326,20 @@ describe('T-18 concurrency', () => {
     const s = setup();
     s.cfn.stacks.set(
       'ManagedStack',
-      makeStackSummary({ stackName: 'ManagedStack', status: 'REVIEW_IN_PROGRESS' }),
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'REVIEW_IN_PROGRESS',
+      }),
     );
-    s.cfn.changeSets.set(
-      'ManagedStack',
-      [makeChangeSetSummary(`cfnsync-${STATE_ID}-oldrun-20260720T110000000`)],
-    );
-    s.cfn.waitResults.set(
-      'ManagedStack',
-      [makeStackSummary({ stackName: 'ManagedStack', status: 'CREATE_COMPLETE' })],
-    );
+    s.cfn.changeSets.set('ManagedStack', [
+      makeChangeSetSummary(`cfnsync-${STATE_ID}-oldrun-20260720T110000000`),
+    ]);
+    s.cfn.waitResults.set('ManagedStack', [
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'CREATE_COMPLETE',
+      }),
+    ]);
 
     const result = await s.run();
 
@@ -287,10 +353,18 @@ describe('T-18 concurrency', () => {
     const config = configOf();
     const templates = new Map([['stack.yaml', TEMPLATE]]);
     const s = setup(modifiedState(config, templates));
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
+    s.cfn.stacks.set(
+      'ManagedStack',
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
     s.cfn.onListChangeSets = (stackName, callCount) => {
       if (callCount === 2) {
-        s.cfn.changeSets.set(stackName, [makeChangeSetSummary('human-raced-change-set')]);
+        s.cfn.changeSets.set(stackName, [
+          makeChangeSetSummary('human-raced-change-set'),
+        ]);
       }
     };
 

@@ -4,16 +4,27 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveTargets, validateConfig, type CfnSyncConfig } from '../../src/core/config.js';
-import { computeInputsHash, computeTemplateHash } from '../../src/core/detect.js';
 import {
+  type CfnSyncConfig,
+  resolveTargets,
+  validateConfig,
+} from '../../src/core/config.js';
+import {
+  computeInputsHash,
+  computeTemplateHash,
+} from '../../src/core/detect.js';
+import {
+  type CfnSyncState,
   createInitialState,
   upsertStackEntry,
   withAccountId,
-  type CfnSyncState,
 } from '../../src/core/state.js';
 import { analyzeTemplate } from '../../src/core/template.js';
-import type { CloudFormationGateway, CreateChangeSetInput, StackSummary } from '../../src/ports/index.js';
+import type {
+  CloudFormationGateway,
+  CreateChangeSetInput,
+  StackSummary,
+} from '../../src/ports/index.js';
 import { deploy } from '../../src/usecase/deploy.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import { forceUnlock } from '../../src/usecase/forceUnlock.js';
@@ -79,8 +90,12 @@ function recordedState(
   let state = withAccountId(createInitialState(), ACCOUNT);
   for (const target of resolveTargets(config)) {
     const source = templates.get(target.templatePath);
-    if (source === undefined) throw new Error(`missing test template: ${target.templatePath}`);
-    const analysis = analyzeTemplate(source, { stackName: target.stackName, region: target.region });
+    if (source === undefined)
+      throw new Error(`missing test template: ${target.templatePath}`);
+    const analysis = analyzeTemplate(source, {
+      stackName: target.stackName,
+      region: target.region,
+    });
     state = upsertStackEntry(state, target.stackKey, {
       stackName: target.stackName,
       region: target.region,
@@ -104,7 +119,11 @@ function recordedState(
   return state;
 }
 
-function setup(config: CfnSyncConfig, templates: Map<string, string>, initial: CfnSyncState) {
+function setup(
+  config: CfnSyncConfig,
+  templates: Map<string, string>,
+  initial: CfnSyncState,
+) {
   const timeline: string[] = [];
   const backend = new FakeStateBackend(timeline, initial, STATE_ID);
   const cfn = new FakeCloudFormationGateway(timeline);
@@ -130,7 +149,10 @@ function setup(config: CfnSyncConfig, templates: Map<string, string>, initial: C
         cfnFactory: (): CloudFormationGateway => cfn,
         sts: {
           async getCallerIdentity() {
-            return { accountId: ACCOUNT, arn: `arn:aws:iam::${ACCOUNT}:role/test` };
+            return {
+              accountId: ACCOUNT,
+              arn: `arn:aws:iam::${ACCOUNT}:role/test`,
+            };
           },
         },
         backend,
@@ -142,7 +164,10 @@ function setup(config: CfnSyncConfig, templates: Map<string, string>, initial: C
   return { backend, cfn, run, timeline };
 }
 
-function desiredInputsHash(config: CfnSyncConfig, templates: Map<string, string>): string {
+function desiredInputsHash(
+  config: CfnSyncConfig,
+  templates: Map<string, string>,
+): string {
   const target = resolveTargets(config)[0];
   const source = templates.get(target.templatePath) as string;
   return computeInputsHash({
@@ -184,12 +209,15 @@ function createConfig(): CfnSyncConfig {
 }
 
 function reportErrors(result: Awaited<ReturnType<typeof deploy>>): string {
-  return (result.report.result?.stacks ?? []).map((stack) => stack.errorMessage ?? '').join('\n');
+  return (result.report.result?.stacks ?? [])
+    .map((stack) => stack.errorMessage ?? '')
+    .join('\n');
 }
 
 afterEach(() => {
   // FR-2-10(横断): T-18 の全復旧シナリオで REVIEW_IN_PROGRESS への DeleteStack を禁止する。
-  for (const cfn of scenarioGateways) expect(cfn.reviewInProgressDeleteCalls).toEqual([]);
+  for (const cfn of scenarioGateways)
+    expect(cfn.reviewInProgressDeleteCalls).toEqual([]);
   scenarioGateways.length = 0;
 });
 
@@ -197,15 +225,24 @@ describe('T-18 recovery', () => {
   it('FR-1-11(a): CREATE 成功+保存失敗後、全入力と管理タグが一致すれば再同期して state に記録する', async () => {
     const config = createConfig();
     const templates = new Map([['stack.yaml', TEMPLATE]]);
-    const s = setup(config, templates, withAccountId(createInitialState(), ACCOUNT));
-    s.backend.saveError = new Error('injected: CREATE succeeded but state save failed');
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    s.backend.saveError = new Error(
+      'injected: CREATE succeeded but state save failed',
+    );
 
     const interrupted = await s.run();
 
     expect(interrupted.exitCode).toBe(1);
     expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1']).toBeUndefined();
-    const createInput = s.cfn.callsOf('createChangeSet')[0].args[0] as CreateChangeSetInput;
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toBeUndefined();
+    const createInput = s.cfn.callsOf('createChangeSet')[0]
+      .args[0] as CreateChangeSetInput;
     installExisting(
       s.cfn,
       {
@@ -221,8 +258,13 @@ describe('T-18 recovery', () => {
 
     expect(recovered.exitCode).toBe(0);
     expect(s.cfn.callsOf('createChangeSet')).toHaveLength(1);
-    expect(s.cfn.callsOf('getTemplate').at(-1)?.args).toEqual(['ManagedStack', 'Original']);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1']).toMatchObject({
+    expect(s.cfn.callsOf('getTemplate').at(-1)?.args).toEqual([
+      'ManagedStack',
+      'Original',
+    ]);
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toMatchObject({
       lastAction: 'SYNC',
       inputsHash: desiredInputsHash(config, templates),
     });
@@ -230,11 +272,18 @@ describe('T-18 recovery', () => {
 
   it.each([
     ['管理タグ欠如', { Team: 'platform' }],
-    ['別 state ID', { Team: 'platform', [MANAGEMENT_TAG_KEY]: 'another-state' }],
+    [
+      '別 state ID',
+      { Team: 'platform', [MANAGEMENT_TAG_KEY]: 'another-state' },
+    ],
   ])('FR-1-11(a) 管理タグ fail-closed: %s は再同期せず import を案内する', async (_label, tags) => {
     const config = createConfig();
     const templates = new Map([['stack.yaml', TEMPLATE]]);
-    const s = setup(config, templates, withAccountId(createInitialState(), ACCOUNT));
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
     installExisting(s.cfn, { tags });
 
     const result = await s.run();
@@ -253,7 +302,11 @@ describe('T-18 recovery', () => {
       dependsOn: ['external.yaml'],
     });
     const templates = new Map([['stack.yaml', SECRET_TEMPLATE]]);
-    const s = setup(config, templates, withAccountId(createInitialState(), ACCOUNT));
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
     installExisting(
       s.cfn,
       {
@@ -267,63 +320,91 @@ describe('T-18 recovery', () => {
     const result = await s.run();
 
     expect(result.exitCode).toBe(0);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      desiredInputsHash(config, templates),
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe(desiredInputsHash(config, templates));
+    expect(result.report.diffs[0].warnings.join('\n')).toMatch(
+      /NoEcho.*Secret|Secret.*NoEcho/,
     );
-    expect(result.report.diffs[0].warnings.join('\n')).toMatch(/NoEcho.*Secret|Secret.*NoEcho/);
-    expect(result.report.diffs[0].warnings.join('\n')).toMatch(/dependsOn.*external\.yaml/);
+    expect(result.report.diffs[0].warnings.join('\n')).toMatch(
+      /dependsOn.*external\.yaml/,
+    );
   });
 
-  it.each(['tags', 'capabilities', 'noecho-unmanaged'] as const)(
-    'FR-1-11(a) 不一致(%s): 命名衝突として再同期せず import を案内する',
-    async (variant) => {
-      const secret = variant === 'noecho-unmanaged';
-      const config = secret
-        ? configOf({ stackName: 'ManagedStack', parameters: { Secret: 'local-secret' } })
-        : createConfig();
-      const source = secret ? SECRET_TEMPLATE : TEMPLATE;
-      const templates = new Map([['stack.yaml', source]]);
-      const s = setup(config, templates, withAccountId(createInitialState(), ACCOUNT));
+  it.each([
+    'tags',
+    'capabilities',
+    'noecho-unmanaged',
+  ] as const)('FR-1-11(a) 不一致(%s): 命名衝突として再同期せず import を案内する', async (variant) => {
+    const secret = variant === 'noecho-unmanaged';
+    const config = secret
+      ? configOf({
+          stackName: 'ManagedStack',
+          parameters: { Secret: 'local-secret' },
+        })
+      : createConfig();
+    const source = secret ? SECRET_TEMPLATE : TEMPLATE;
+    const templates = new Map([['stack.yaml', source]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
 
-      if (variant === 'tags') {
-        installExisting(s.cfn, { tags: { Team: 'other', [MANAGEMENT_TAG_KEY]: STATE_ID } });
-      } else if (variant === 'capabilities') {
-        installExisting(s.cfn, { capabilities: [] });
-      } else {
-        installExisting(
-          s.cfn,
-          { parameters: { Secret: 'different' }, tags: {}, capabilities: [] },
-          SECRET_TEMPLATE,
-        );
-      }
+    if (variant === 'tags') {
+      installExisting(s.cfn, {
+        tags: { Team: 'other', [MANAGEMENT_TAG_KEY]: STATE_ID },
+      });
+    } else if (variant === 'capabilities') {
+      installExisting(s.cfn, { capabilities: [] });
+    } else {
+      installExisting(
+        s.cfn,
+        { parameters: { Secret: 'different' }, tags: {}, capabilities: [] },
+        SECRET_TEMPLATE,
+      );
+    }
 
-      const result = await s.run();
+    const result = await s.run();
 
-      expect(result.exitCode).toBe(1);
-      expect(reportErrors(result)).toContain('cfnsync import');
-      expect(s.backend.saveCalls).toHaveLength(0);
-      expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
-      expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
-    },
-  );
+    expect(result.exitCode).toBe(1);
+    expect(reportErrors(result)).toContain('cfnsync import');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
+  });
 
   it('FR-1-11(b): DELETE 成功+保存失敗後、再実行は不存在を確認して state から除去する', async () => {
     const oldConfig = configOf({ stackName: 'ManagedStack' });
     const oldTemplates = new Map([['stack.yaml', TEMPLATE]]);
     const initial = recordedState(oldConfig, oldTemplates);
     const s = setup(configOf(undefined), new Map(), initial);
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'CREATE_COMPLETE' }));
-    s.cfn.waitResults.set(
+    s.cfn.stacks.set(
       'ManagedStack',
-      [makeStackSummary({ stackName: 'ManagedStack', status: 'DELETE_COMPLETE' })],
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'CREATE_COMPLETE',
+      }),
     );
-    s.backend.saveError = new Error('injected: DELETE succeeded but state save failed');
+    s.cfn.waitResults.set('ManagedStack', [
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'DELETE_COMPLETE',
+      }),
+    ]);
+    s.backend.saveError = new Error(
+      'injected: DELETE succeeded but state save failed',
+    );
 
     const interrupted = await s.run({ allowDelete: true });
 
     expect(interrupted.exitCode).toBe(1);
-    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['ManagedStack']);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1']).toBeDefined();
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'ManagedStack',
+    ]);
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toBeDefined();
     s.cfn.stacks.delete('ManagedStack');
     s.backend.saveError = undefined;
 
@@ -331,22 +412,35 @@ describe('T-18 recovery', () => {
 
     expect(recovered.exitCode).toBe(0);
     expect(s.cfn.callsOf('deleteStack')).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1']).toBeUndefined();
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toBeUndefined();
   });
 
   it('FR-1-11(c): UPDATE 成功+保存失敗後、空変更セットを変更なしとして state を再同期する', async () => {
-    const config = configOf({ stackName: 'ManagedStack', tags: { Version: 'new' } });
+    const config = configOf({
+      stackName: 'ManagedStack',
+      tags: { Version: 'new' },
+    });
     const templates = new Map([['stack.yaml', TEMPLATE]]);
     const initial = recordedState(config, templates, { staleInputs: true });
     const s = setup(config, templates, initial);
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
-    s.backend.saveError = new Error('injected: UPDATE succeeded but state save failed');
+    s.cfn.stacks.set(
+      'ManagedStack',
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
+    s.backend.saveError = new Error(
+      'injected: UPDATE succeeded but state save failed',
+    );
 
     expect((await s.run()).exitCode).toBe(1);
     expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      'sha256:before-aws-success',
-    );
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe('sha256:before-aws-success');
     s.backend.saveError = undefined;
     s.cfn.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'FAILED',
@@ -359,16 +453,29 @@ describe('T-18 recovery', () => {
     expect(recovered.report.diffs.at(-1)?.operation).toBe('no-change');
     expect(s.cfn.callsOf('createChangeSet')).toHaveLength(2);
     expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      desiredInputsHash(config, templates),
-    );
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe(desiredInputsHash(config, templates));
   });
 
   it('FR-1-10(復旧): force-unlock 後の再実行が変更検知と変更セット再作成で冪等収束する', async () => {
-    const config = configOf({ stackName: 'ManagedStack', tags: { Version: 'new' } });
+    const config = configOf({
+      stackName: 'ManagedStack',
+      tags: { Version: 'new' },
+    });
     const templates = new Map([['stack.yaml', TEMPLATE]]);
-    const s = setup(config, templates, recordedState(config, templates, { staleInputs: true }));
-    s.cfn.stacks.set('ManagedStack', makeStackSummary({ stackName: 'ManagedStack', status: 'UPDATE_COMPLETE' }));
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { staleInputs: true }),
+    );
+    s.cfn.stacks.set(
+      'ManagedStack',
+      makeStackSummary({
+        stackName: 'ManagedStack',
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
     s.backend.saveError = new Error('injected crash before state save');
 
     expect((await s.run()).exitCode).toBe(1);
@@ -377,7 +484,10 @@ describe('T-18 recovery', () => {
       startedAt: '2026-07-20T12:01:00.000Z',
       owner: 'crashed-ci',
     });
-    const unlocked = await forceUnlock({ backend: s.backend, runId: 'abandoned-run' });
+    const unlocked = await forceUnlock({
+      backend: s.backend,
+      runId: 'abandoned-run',
+    });
     expect(unlocked).toMatchObject({ exitCode: 0, released: true });
     s.backend.saveError = undefined;
     s.cfn.defaultChangeSetDetail = makeChangeSetDetail({
@@ -390,8 +500,8 @@ describe('T-18 recovery', () => {
     expect(recovered.exitCode).toBe(0);
     expect(s.cfn.callsOf('createChangeSet')).toHaveLength(2);
     expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(1);
-    expect(s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash).toBe(
-      desiredInputsHash(config, templates),
-    );
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
+    ).toBe(desiredInputsHash(config, templates));
   });
 });

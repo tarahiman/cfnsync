@@ -10,18 +10,25 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  type GetObjectCommandOutput,
   PutObjectCommand,
+  type PutObjectCommandOutput,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { LockError, StateConflictError } from '../core/errors.js';
 import {
+  type CfnSyncState,
   parseState,
   serializeState,
   sha256Hex,
-  type CfnSyncState,
 } from '../core/state.js';
-import type { LockHandle, LockInfo, StateBackend, StateVersion } from '../ports/index.js';
+import type {
+  LockHandle,
+  LockInfo,
+  StateBackend,
+  StateVersion,
+} from '../ports/index.js';
 
 /** `S3StateBackend` のコンストラクタオプション。 */
 export interface S3StateBackendOptions {
@@ -36,7 +43,9 @@ export interface S3StateBackendOptions {
 
 /** バックエンド識別子から変更セット命名用の短縮ハッシュを導出する(§7)。 */
 function shortStateId(identifier: string): string {
-  return sha256Hex(identifier).replace(/^sha256:/, '').slice(0, 12);
+  return sha256Hex(identifier)
+    .replace(/^sha256:/, '')
+    .slice(0, 12);
 }
 
 function errorName(err: unknown): string | undefined {
@@ -60,7 +69,9 @@ function isPreconditionFailed(err: unknown): boolean {
 
 /** 並行する条件付き書き込みの競合。HTTP 409。 */
 function isConditionalConflict(err: unknown): boolean {
-  return errorName(err) === 'ConditionalRequestConflict' || httpStatus(err) === 409;
+  return (
+    errorName(err) === 'ConditionalRequestConflict' || httpStatus(err) === 409
+  );
 }
 
 /** オブジェクト不存在。`NoSuchKey` / `NotFound` / HTTP 404。 */
@@ -93,10 +104,14 @@ export class S3StateBackend implements StateBackend {
     });
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
-    let output;
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
+    let output: GetObjectCommandOutput;
     try {
-      output = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.key }));
+      output = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: this.key }),
+      );
     } catch (err) {
       if (isNotFound(err)) return undefined; // 初回(NoSuchKey)。
       throw err;
@@ -105,15 +120,23 @@ export class S3StateBackend implements StateBackend {
     if (text === undefined) return undefined;
     // 破損(不完全 JSON・スキーマ不一致)は StateCorruptionError が伝播 = fail-closed。
     const state = parseState(text);
-    return { state, version: { generation: state.generation, etag: output.ETag } };
+    return {
+      state,
+      version: { generation: state.generation, etag: output.ETag },
+    };
   }
 
-  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+  async save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion> {
     // FR-1-6(s3): 既存版は If-Match、初回(ETag なし)は If-None-Match: * で作成する。
     const condition =
-      expected?.etag !== undefined ? { IfMatch: expected.etag } : { IfNoneMatch: '*' };
+      expected?.etag !== undefined
+        ? { IfMatch: expected.etag }
+        : { IfNoneMatch: '*' };
 
-    let output;
+    let output: PutObjectCommandOutput;
     try {
       output = await this.client.send(
         new PutObjectCommand({
@@ -138,8 +161,12 @@ export class S3StateBackend implements StateBackend {
 
   async acquireLock(info: LockInfo): Promise<LockHandle> {
     // FR-1-7 / FR-1-10: <key>.lock を If-None-Match: * で作成し、内容に runId/startedAt/owner を書く。
-    const body = JSON.stringify({ runId: info.runId, startedAt: info.startedAt, owner: info.owner });
-    let output;
+    const body = JSON.stringify({
+      runId: info.runId,
+      startedAt: info.startedAt,
+      owner: info.owner,
+    });
+    let output: PutObjectCommandOutput;
     try {
       output = await this.client.send(
         new PutObjectCommand({
@@ -165,7 +192,7 @@ export class S3StateBackend implements StateBackend {
 
   async verifyLock(handle: LockHandle): Promise<boolean> {
     // FR-1-9: ロックを再読込し runId・ETag が自分と一致すれば所有権あり。消失・不一致は喪失。
-    let output;
+    let output: GetObjectCommandOutput;
     try {
       output = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
@@ -185,16 +212,25 @@ export class S3StateBackend implements StateBackend {
     return parsed.runId === handle.runId && output.ETag === handle.etag;
   }
 
-  async releaseLock(handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
+  async releaseLock(
+    handle: LockHandle,
+  ): Promise<{ released: boolean; reason?: string }> {
     // FR-1-8: DeleteObject If-Match: <取得時 ETag> による条件付き解放。
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: this.lockKey, IfMatch: handle.etag }),
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: this.lockKey,
+          IfMatch: handle.etag,
+        }),
       );
       return { released: true };
     } catch (err) {
       if (isPreconditionFailed(err)) {
-        return { released: false, reason: 'ロックの所有者が交代しているため解放しませんでした' };
+        return {
+          released: false,
+          reason: 'ロックの所有者が交代しているため解放しませんでした',
+        };
       }
       if (isNotFound(err)) {
         // 冪等: 既に解放済み。エラーにしない。
@@ -205,7 +241,7 @@ export class S3StateBackend implements StateBackend {
   }
 
   async readLock(): Promise<LockInfo | undefined> {
-    let output;
+    let output: GetObjectCommandOutput;
     try {
       output = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
@@ -217,23 +253,31 @@ export class S3StateBackend implements StateBackend {
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
     const parsed = JSON.parse(text) as LockInfo;
-    return { runId: parsed.runId, startedAt: parsed.startedAt, owner: parsed.owner };
+    return {
+      runId: parsed.runId,
+      startedAt: parsed.startedAt,
+      owner: parsed.owner,
+    };
   }
 
-  async forceUnlock(runId: string): Promise<{ released: boolean; reason?: string }> {
+  async forceUnlock(
+    runId: string,
+  ): Promise<{ released: boolean; reason?: string }> {
     // FR-1-8 / §5.6: ロックを読み、記録された runId が一致する場合のみ、読み取り時の ETag による
     // If-Match 条件付き削除で解放する。不一致なら DeleteObject を一切呼ばない。
-    let output;
+    let output: GetObjectCommandOutput;
     try {
       output = await this.client.send(
         new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
       );
     } catch (err) {
-      if (isNotFound(err)) return { released: false, reason: 'ロックは存在しません' };
+      if (isNotFound(err))
+        return { released: false, reason: 'ロックは存在しません' };
       throw err;
     }
     const text = await output.Body?.transformToString();
-    if (text === undefined) return { released: false, reason: 'ロックは存在しません' };
+    if (text === undefined)
+      return { released: false, reason: 'ロックは存在しません' };
 
     let parsed: { runId?: string };
     try {
@@ -250,7 +294,11 @@ export class S3StateBackend implements StateBackend {
 
     try {
       await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key: this.lockKey, IfMatch: output.ETag }),
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: this.lockKey,
+          IfMatch: output.ETag,
+        }),
       );
       return { released: true };
     } catch (err) {

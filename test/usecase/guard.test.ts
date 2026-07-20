@@ -11,9 +11,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { GuardError } from '../../src/core/errors.js';
 import type { CfnSyncConfig } from '../../src/core/config.js';
-import { createInitialState, withAccountId, type CfnSyncState } from '../../src/core/state.js';
+import { GuardError } from '../../src/core/errors.js';
+import {
+  type CfnSyncState,
+  createInitialState,
+  withAccountId,
+} from '../../src/core/state.js';
 import type {
   LockHandle,
   LockInfo,
@@ -21,7 +25,7 @@ import type {
   StateVersion,
   StsGateway,
 } from '../../src/ports/index.js';
-import { renderText, type DeployReport } from '../../src/report/index.js';
+import { type DeployReport, renderText } from '../../src/report/index.js';
 import {
   assertAccountAllowed,
   assertMutationAllowed,
@@ -39,7 +43,12 @@ import {
 /** STS GetCallerIdentity のフェイク。呼び出し回数を記録する。 */
 class FakeStsGateway implements StsGateway {
   calls = 0;
-  constructor(private readonly resolveFn: () => Promise<{ accountId: string; arn: string }>) {}
+  constructor(
+    private readonly resolveFn: () => Promise<{
+      accountId: string;
+      arn: string;
+    }>,
+  ) {}
 
   async getCallerIdentity(): Promise<{ accountId: string; arn: string }> {
     this.calls++;
@@ -54,20 +63,33 @@ class FakeStsGateway implements StsGateway {
 class FakeStateBackend implements StateBackend {
   private stored: { state: CfnSyncState; version: StateVersion } | undefined;
   loadCalls = 0;
-  saveCalls: Array<{ state: CfnSyncState; expected: StateVersion | undefined }> = [];
+  saveCalls: Array<{
+    state: CfnSyncState;
+    expected: StateVersion | undefined;
+  }> = [];
 
   constructor(initial?: CfnSyncState) {
     if (initial) {
-      this.stored = { state: initial, version: { generation: initial.generation } };
+      this.stored = {
+        state: initial,
+        version: { generation: initial.generation },
+      };
     }
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
     this.loadCalls++;
-    return this.stored ? { state: this.stored.state, version: this.stored.version } : undefined;
+    return this.stored
+      ? { state: this.stored.state, version: this.stored.version }
+      : undefined;
   }
 
-  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+  async save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion> {
     this.saveCalls.push({ state, expected });
     const currentGeneration = this.stored?.version.generation;
     const expectedGeneration = expected?.generation;
@@ -124,7 +146,10 @@ function baseConfig(overrides: Partial<CfnSyncConfig> = {}): CfnSyncConfig {
   };
 }
 
-function okSts(accountId = ACCOUNT, arn = `arn:aws:iam::${accountId}:role/deploy`): FakeStsGateway {
+function okSts(
+  accountId = ACCOUNT,
+  arn = `arn:aws:iam::${accountId}:role/deploy`,
+): FakeStsGateway {
   return new FakeStsGateway(async () => ({ accountId, arn }));
 }
 
@@ -176,18 +201,24 @@ describe('FR-7-6: STS 解決結果の照合(不一致・解決不能は拒否)',
     const config = baseConfig();
     const sts = okSts(OTHER_ACCOUNT);
     const connection = await resolveConnection(sts);
-    expect(() => assertAccountAllowed(config, connection.accountId)).toThrow(GuardError);
+    expect(() => assertAccountAllowed(config, connection.accountId)).toThrow(
+      GuardError,
+    );
   });
 
   it('FR-7-6: 接続先アカウントが allowedAccounts に含まれる → 何も投げない', async () => {
     const config = baseConfig();
     const sts = okSts(ACCOUNT);
     const connection = await resolveConnection(sts);
-    expect(() => assertAccountAllowed(config, connection.accountId)).not.toThrow();
+    expect(() =>
+      assertAccountAllowed(config, connection.accountId),
+    ).not.toThrow();
   });
 
   it('FR-7-6: STS 解決失敗はそのまま伝播する(呼び出し側で fail-closed)', async () => {
-    const failure = new Error('The security token included in the request is invalid');
+    const failure = new Error(
+      'The security token included in the request is invalid',
+    );
     const sts = new FakeStsGateway(async () => {
       throw failure;
     });
@@ -234,9 +265,9 @@ describe('FR-1-13: ステートアカウントの照合(ロック取得後に再
     const existing = withAccountId(createInitialState(), OTHER_ACCOUNT);
     const backend = new FakeStateBackend(existing);
 
-    await expect(verifyStateAccount({ backend, accountId: ACCOUNT })).rejects.toBeInstanceOf(
-      GuardError,
-    );
+    await expect(
+      verifyStateAccount({ backend, accountId: ACCOUNT }),
+    ).rejects.toBeInstanceOf(GuardError);
     expect(backend.loadCalls).toBe(1);
     expect(backend.saveCalls).toHaveLength(0);
   });
@@ -284,7 +315,12 @@ describe('FR-1-13: ステートアカウントの照合(ロック取得後に再
     const sts = okSts(ACCOUNT);
     const backend = new FakeStateBackend(); // 初回
 
-    const result = await guardMutation({ config, sts, backend, targetRegions: [REGION] });
+    const result = await guardMutation({
+      config,
+      sts,
+      backend,
+      targetRegions: [REGION],
+    });
 
     expect(result.connection.accountId).toBe(ACCOUNT);
     expect(backend.saveCalls).toHaveLength(1); // 初回記録
@@ -298,12 +334,16 @@ describe('FR-1-13: ステートアカウントの照合(ロック取得後に再
 describe('FR-13-8: 対象リージョンの許可リージョン照合', () => {
   it('FR-13-8: allowedRegions に含まれないリージョンが対象に含まれる → GuardError', () => {
     const config = baseConfig({ allowedRegions: [REGION] });
-    expect(() => assertRegionsAllowed(config, [REGION, 'us-east-1'])).toThrow(GuardError);
+    expect(() => assertRegionsAllowed(config, [REGION, 'us-east-1'])).toThrow(
+      GuardError,
+    );
   });
 
   it('FR-13-8: 対象リージョンがすべて allowedRegions に含まれる → 何も投げない', () => {
     const config = baseConfig({ allowedRegions: [REGION, 'us-east-1'] });
-    expect(() => assertRegionsAllowed(config, [REGION, 'us-east-1'])).not.toThrow();
+    expect(() =>
+      assertRegionsAllowed(config, [REGION, 'us-east-1']),
+    ).not.toThrow();
   });
 
   it('FR-13-8: guardMutation は許可されないリージョンで拒否し、ステート照合(backend.load)まで到達しない', async () => {
@@ -312,7 +352,12 @@ describe('FR-13-8: 対象リージョンの許可リージョン照合', () => {
     const backend = new FakeStateBackend();
 
     await expect(
-      guardMutation({ config, sts, backend, targetRegions: [REGION, 'us-east-1'] }),
+      guardMutation({
+        config,
+        sts,
+        backend,
+        targetRegions: [REGION, 'us-east-1'],
+      }),
     ).rejects.toBeInstanceOf(GuardError);
 
     expect(backend.loadCalls).toBe(0);
@@ -330,7 +375,10 @@ describe('FR-7-7: 読み取り専用パスは変更系ガードを経由しな�
     // 変更系の前提条件(assertMutationAllowed)を経由する必要がないことの確認。
     const sts = okSts(ACCOUNT);
     const connection = await resolveConnection(sts);
-    expect(connection).toEqual({ accountId: ACCOUNT, arn: `arn:aws:iam::${ACCOUNT}:role/deploy` });
+    expect(connection).toEqual({
+      accountId: ACCOUNT,
+      arn: `arn:aws:iam::${ACCOUNT}:role/deploy`,
+    });
     expect(sts.calls).toBe(1);
   });
 });
@@ -341,8 +389,14 @@ describe('FR-7-7: 読み取り専用パスは変更系ガードを経由しな�
 
 describe('FR-7-8: 接続先情報の出力(秘匿情報は含めない)', () => {
   it('FR-7-8: connectionHeader はアカウント ID・リージョンを含む ConnectionInfo を返す', () => {
-    const header = connectionHeader({ accountId: ACCOUNT, regions: [REGION, 'us-east-1'] });
-    expect(header).toEqual({ accountId: ACCOUNT, regions: [REGION, 'us-east-1'] });
+    const header = connectionHeader({
+      accountId: ACCOUNT,
+      regions: [REGION, 'us-east-1'],
+    });
+    expect(header).toEqual({
+      accountId: ACCOUNT,
+      regions: [REGION, 'us-east-1'],
+    });
   });
 
   it('FR-7-8: STS 応答に紛れ込んだ秘匿情報(余剰フィールド)は resolveConnection の戻り値に含まれない', async () => {
@@ -350,7 +404,10 @@ describe('FR-7-8: 接続先情報の出力(秘匿情報は含めない)', () => 
       accountId: ACCOUNT,
       arn: `arn:aws:iam::${ACCOUNT}:role/deploy`,
       // フェイクが誤って秘匿情報を返してしまった想定(型としては StsGateway が要求しない余剰フィールド)。
-      ...({ secretAccessKey: 'FAKE-SECRET-DO-NOT-LEAK' } as Record<string, unknown>),
+      ...({ secretAccessKey: 'FAKE-SECRET-DO-NOT-LEAK' } as Record<
+        string,
+        unknown
+      >),
     }));
 
     const connection = await resolveConnection(leaky);
@@ -368,7 +425,12 @@ describe('FR-7-8: 接続先情報の出力(秘匿情報は含めない)', () => 
     }));
     const backend = new FakeStateBackend();
 
-    const result = await guardMutation({ config, sts: leaky, backend, targetRegions: [REGION] });
+    const result = await guardMutation({
+      config,
+      sts: leaky,
+      backend,
+      targetRegions: [REGION],
+    });
 
     const report: DeployReport = { connection: result.connection, diffs: [] };
     const text = renderText(report);

@@ -110,7 +110,8 @@ function buildResourceDiffLine(change: ResourceChange): ResourceDiffLine {
     logicalResourceId: change.logicalResourceId,
     resourceType: change.resourceType,
     // FR-3-2: True(通常の置換)・Conditional(条件次第で置換されうる)のいずれも警告対象とする。
-    replacement: change.replacement === 'True' || change.replacement === 'Conditional',
+    replacement:
+      change.replacement === 'True' || change.replacement === 'Conditional',
     changedProperties: extractChangedProperties(change),
   };
 }
@@ -142,11 +143,19 @@ export function buildStackDiff(input: {
   changes.forEach((change, index) => {
     const line = resources[index];
     if (line.replacement) {
-      warnings.push(`${line.logicalResourceId} (${line.resourceType}) は置換されます`);
+      warnings.push(
+        `${line.logicalResourceId} (${line.resourceType}) は置換されます`,
+      );
     }
     for (const detail of change.details) {
-      if (detail.causingEntity !== undefined && noEchoSet.has(detail.causingEntity)) {
-        const property = detail.target?.name ?? detail.target?.attribute ?? '(不明なプロパティ)';
+      if (
+        detail.causingEntity !== undefined &&
+        noEchoSet.has(detail.causingEntity)
+      ) {
+        const property =
+          detail.target?.name ??
+          detail.target?.attribute ??
+          '(不明なプロパティ)';
         warnings.push(
           `${line.logicalResourceId} の ${property} は NoEcho パラメータ「${detail.causingEntity}」に由来する変更です(値は表示されません)`,
         );
@@ -169,7 +178,10 @@ export function buildStackDiff(input: {
 // ===========================================================================
 
 /** `noEchoParams` に含まれるキーの値を `****` に置換する(NFR-4)。それ以外は変更しない。 */
-export function maskNoEcho(parameters: Record<string, string>, noEchoParams: string[]): Record<string, string> {
+export function maskNoEcho(
+  parameters: Record<string, string>,
+  noEchoParams: string[],
+): Record<string, string> {
   const noEchoSet = new Set(noEchoParams);
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(parameters)) {
@@ -203,7 +215,10 @@ function colorize(text: string, code: string, color: boolean): string {
  * 各スタックの差分(置換は警告強調。FR-3-2)、任意でイベント・結果セクションを
  * 続ける。`opts.color` 未指定時は ANSI エスケープを含めない(CI ログ想定)。
  */
-export function renderText(report: DeployReport, opts: { color?: boolean } = {}): string {
+export function renderText(
+  report: DeployReport,
+  opts: { color?: boolean } = {},
+): string {
   const color = opts.color === true;
   const lines: string[] = [];
 
@@ -215,13 +230,20 @@ export function renderText(report: DeployReport, opts: { color?: boolean } = {})
 
   for (const diff of report.diffs) {
     // FR-13-7: スタックキー(リージョン込み)を明示する。
-    lines.push(`[${diff.operation}] ${diff.stackKey} (stack: ${diff.stackName})`);
+    lines.push(
+      `[${diff.operation}] ${diff.stackKey} (stack: ${diff.stackName})`,
+    );
     if (diff.resources.length === 0) {
       lines.push('  (変更なし)');
     }
     for (const resource of diff.resources) {
-      const flag = resource.replacement ? colorize(' [REPLACEMENT]', '33', color) : '';
-      const props = resource.changedProperties.length > 0 ? resource.changedProperties.join(', ') : '-';
+      const flag = resource.replacement
+        ? colorize(' [REPLACEMENT]', '33', color)
+        : '';
+      const props =
+        resource.changedProperties.length > 0
+          ? resource.changedProperties.join(', ')
+          : '-';
       const label = `${actionSymbol(resource.action)} ${resource.action.padEnd(7)} ${resource.logicalResourceId} (${resource.resourceType})`;
       lines.push(`  ${label}${flag} properties: ${props}`);
     }
@@ -237,8 +259,12 @@ export function renderText(report: DeployReport, opts: { color?: boolean } = {})
   if (report.events && report.events.length > 0) {
     lines.push('== イベント ==');
     for (const event of report.events) {
-      const reason = event.resourceStatusReason ? ` (${event.resourceStatusReason})` : '';
-      lines.push(`  [${event.stackKey}] ${event.timestamp} ${event.logicalResourceId} ${event.resourceStatus}${reason}`);
+      const reason = event.resourceStatusReason
+        ? ` (${event.resourceStatusReason})`
+        : '';
+      lines.push(
+        `  [${event.stackKey}] ${event.timestamp} ${event.logicalResourceId} ${event.resourceStatus}${reason}`,
+      );
     }
     lines.push('');
   }
@@ -246,10 +272,17 @@ export function renderText(report: DeployReport, opts: { color?: boolean } = {})
   if (report.result) {
     lines.push('== 結果 ==');
     for (const stackResult of report.result.stacks) {
-      const flag = stackResult.outcome === 'failed' ? colorize(' [FAILED]', '31', color) : '';
-      const errorPart = stackResult.errorMessage ? ` - ${stackResult.errorMessage}` : '';
+      const flag =
+        stackResult.outcome === 'failed'
+          ? colorize(' [FAILED]', '31', color)
+          : '';
+      const errorPart = stackResult.errorMessage
+        ? ` - ${stackResult.errorMessage}`
+        : '';
       const rollbackPart = stackResult.rolledBack ? ' (rolled back)' : '';
-      lines.push(`  ${stackResult.stackKey}: ${stackResult.outcome}${flag}${errorPart}${rollbackPart}`);
+      lines.push(
+        `  ${stackResult.stackKey}: ${stackResult.outcome}${flag}${errorPart}${rollbackPart}`,
+      );
     }
   }
 

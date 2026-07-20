@@ -5,16 +5,27 @@
  * 接続しない(§10)。各 it の先頭に対応する受け入れ基準 ID を明記する。
  */
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LocalStateBackend } from '../../src/backend/local.js';
-import { createStateBackend } from '../../src/backend/factory.js';
 import { S3StateBackend } from '../../src/aws/s3state.js';
+import { createStateBackend } from '../../src/backend/factory.js';
+import { LocalStateBackend } from '../../src/backend/local.js';
 import { StateConflictError } from '../../src/core/errors.js';
-import { StateCorruptionError } from '../../src/core/state.js';
-import { createInitialState, serializeState, parseState, type CfnSyncState } from '../../src/core/state.js';
+import {
+  type CfnSyncState,
+  createInitialState,
+  parseState,
+  StateCorruptionError,
+  serializeState,
+} from '../../src/core/state.js';
 
 const STATE_FILE = 'cfnsync.state.json';
 
@@ -31,7 +42,10 @@ afterEach(() => {
 });
 
 /** 世代 generation を持つ空ステートを作る。 */
-function stateWith(generation: number, accountId = '123456789012'): CfnSyncState {
+function stateWith(
+  generation: number,
+  accountId = '123456789012',
+): CfnSyncState {
   return { ...createInitialState(), accountId, generation };
 }
 
@@ -62,7 +76,9 @@ describe('LocalStateBackend', () => {
     writeFileSync(statePath, externalText);
 
     // 読込時点(generation 1)に基づく保存は、再読込した世代 2 と不一致で競合する。
-    await expect(backend.save(stateWith(9), loaded!.version)).rejects.toBeInstanceOf(StateConflictError);
+    await expect(
+      backend.save(stateWith(9), loaded!.version),
+    ).rejects.toBeInstanceOf(StateConflictError);
 
     // 競合時はファイルが書き換わらない(外部が書いた世代 2 のまま)。
     expect(readFileSync(statePath, 'utf8')).toBe(externalText);
@@ -71,7 +87,9 @@ describe('LocalStateBackend', () => {
   it('FR-1-6(local): 初回保存(expected undefined)で既にファイルがあれば競合', async () => {
     writeFileSync(statePath, serializeState(stateWith(3)));
     const backend = new LocalStateBackend(statePath);
-    await expect(backend.save(stateWith(1), undefined)).rejects.toBeInstanceOf(StateConflictError);
+    await expect(backend.save(stateWith(1), undefined)).rejects.toBeInstanceOf(
+      StateConflictError,
+    );
   });
 
   it('FR-1-12(local): 原子的置換で .bak に直前の内容が残る', async () => {
@@ -83,7 +101,9 @@ describe('LocalStateBackend', () => {
 
     // 現行は世代 2、直前(世代 1)は .bak に保持される。
     expect(parseState(readFileSync(statePath, 'utf8')).generation).toBe(2);
-    expect(parseState(readFileSync(`${statePath}.bak`, 'utf8')).generation).toBe(1);
+    expect(
+      parseState(readFileSync(`${statePath}.bak`, 'utf8')).generation,
+    ).toBe(1);
   });
 
   it('FR-1-12(local): rename 直前に中断しても元ファイルが無傷で、一時ファイルだけが残る', async () => {
@@ -97,12 +117,16 @@ describe('LocalStateBackend', () => {
         throw new Error('injected crash before rename');
       },
     });
-    await expect(backend.save(stateWith(2), loaded!.version)).rejects.toThrow('injected crash before rename');
+    await expect(backend.save(stateWith(2), loaded!.version)).rejects.toThrow(
+      'injected crash before rename',
+    );
 
     // 元ファイルは無傷(世代 1)。
     expect(parseState(readFileSync(statePath, 'utf8')).generation).toBe(1);
     // rename されなかった一時ファイルがディレクトリに残る。
-    const strays = readdirSync(dir).filter((f) => f !== STATE_FILE && f.includes('.tmp'));
+    const strays = readdirSync(dir).filter(
+      (f) => f !== STATE_FILE && f.includes('.tmp'),
+    );
     expect(strays.length).toBeGreaterThan(0);
   });
 
@@ -114,7 +138,11 @@ describe('LocalStateBackend', () => {
 
   it('local はロックを持たない(design §4.5): 取得は常に成功・検証は常に true', async () => {
     const backend = new LocalStateBackend(statePath);
-    const handle = await backend.acquireLock({ runId: 'r1', startedAt: '2026-07-19T00:00:00Z', owner: 'ci' });
+    const handle = await backend.acquireLock({
+      runId: 'r1',
+      startedAt: '2026-07-19T00:00:00Z',
+      owner: 'ci',
+    });
     expect(handle.runId).toBe('r1');
     expect(await backend.verifyLock(handle)).toBe(true);
     expect(await backend.releaseLock(handle)).toEqual({ released: true });
@@ -128,7 +156,9 @@ describe('LocalStateBackend', () => {
   it('stateId: ステートファイル絶対パスから安定な短縮ハッシュを導出する', async () => {
     const a = new LocalStateBackend(statePath).stateId();
     const b = new LocalStateBackend(statePath).stateId();
-    const other = new LocalStateBackend(join(dir, 'other.state.json')).stateId();
+    const other = new LocalStateBackend(
+      join(dir, 'other.state.json'),
+    ).stateId();
     expect(a).toMatch(/^[0-9a-f]{8,16}$/);
     expect(a).toBe(b);
     expect(a).not.toBe(other);
@@ -137,7 +167,10 @@ describe('LocalStateBackend', () => {
 
 describe('createStateBackend (FR-1-4)', () => {
   it('FR-1-4: backend: local → LocalStateBackend が選択される', () => {
-    const backend = createStateBackend({ stateConfig: { backend: 'local' }, configDir: dir });
+    const backend = createStateBackend({
+      stateConfig: { backend: 'local' },
+      configDir: dir,
+    });
     expect(backend).toBeInstanceOf(LocalStateBackend);
   });
 
@@ -145,7 +178,11 @@ describe('createStateBackend (FR-1-4)', () => {
     const backend = createStateBackend({
       stateConfig: {
         backend: 's3',
-        s3: { bucket: 'my-state', key: 'prod/cfnsync.state.json', region: 'ap-northeast-1' },
+        s3: {
+          bucket: 'my-state',
+          key: 'prod/cfnsync.state.json',
+          region: 'ap-northeast-1',
+        },
       },
       configDir: dir,
     });

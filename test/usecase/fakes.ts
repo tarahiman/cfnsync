@@ -9,22 +9,22 @@
  * 呼び出し順序・呼び出し有無の検証に使える。T-14 以降でも再利用する想定。
  */
 
+import { LockError, StateConflictError } from '../../src/core/errors.js';
+import type { CfnSyncState } from '../../src/core/state.js';
 import type {
   ChangeSetDetail,
   ChangeSetSummary,
   CloudFormationGateway,
   CreateChangeSetInput,
-  StackEvent,
-  StackSummary,
-  TemplateStage,
-  WaitForStackOptions,
   LockHandle,
   LockInfo,
+  StackEvent,
+  StackSummary,
   StateBackend,
   StateVersion,
+  TemplateStage,
+  WaitForStackOptions,
 } from '../../src/ports/index.js';
-import { LockError, StateConflictError } from '../../src/core/errors.js';
-import type { CfnSyncState } from '../../src/core/state.js';
 
 /** フェイクが記録する 1 回分のゲートウェイ呼び出し。 */
 export interface CallRecord {
@@ -59,7 +59,9 @@ export function makeChangeSetSummary(
   };
 }
 
-export function makeChangeSetDetail(overrides: Partial<ChangeSetDetail> = {}): ChangeSetDetail {
+export function makeChangeSetDetail(
+  overrides: Partial<ChangeSetDetail> = {},
+): ChangeSetDetail {
   return {
     status: 'CREATE_COMPLETE',
     changes: [],
@@ -141,7 +143,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   }
 
   private detailFor(changeSetName: string): ChangeSetDetail {
-    return this.changeSetDetails.get(changeSetName) ?? this.defaultChangeSetDetail;
+    return (
+      this.changeSetDetails.get(changeSetName) ?? this.defaultChangeSetDetail
+    );
   }
 
   async describeStack(stackName: string): Promise<StackSummary | undefined> {
@@ -162,17 +166,26 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     return { id: `arn:aws:cloudformation:changeSet/${input.changeSetName}` };
   }
 
-  async describeChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async describeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     this.record('describeChangeSet', stackName, changeSetName);
     return this.detailFor(changeSetName);
   }
 
-  async waitForChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async waitForChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     this.record('waitForChangeSet', stackName, changeSetName);
     return this.detailFor(changeSetName);
   }
 
-  async deleteChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async deleteChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     this.record('deleteChangeSet', stackName, changeSetName);
     const list = this.changeSets.get(stackName);
     if (list) {
@@ -183,7 +196,10 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     }
   }
 
-  async executeChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async executeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     this.record('executeChangeSet', stackName, changeSetName);
   }
 
@@ -200,7 +216,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   ): Promise<StackEvent[]> {
     this.record('describeStackEvents', stackName, seenEventIds);
     const all = this.events.get(stackName) ?? [];
-    return seenEventIds ? all.filter((e) => !seenEventIds.has(e.eventId)) : [...all];
+    return seenEventIds
+      ? all.filter((e) => !seenEventIds.has(e.eventId))
+      : [...all];
   }
 
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
@@ -208,7 +226,10 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     return this.templates.get(stackName) ?? '';
   }
 
-  async waitForStack(stackName: string, opts?: WaitForStackOptions): Promise<StackSummary> {
+  async waitForStack(
+    stackName: string,
+    opts?: WaitForStackOptions,
+  ): Promise<StackSummary> {
     this.record('waitForStack', stackName, opts);
     await this.onWaitForStack?.(stackName);
     for (const event of this.waitEvents.get(stackName) ?? []) {
@@ -218,7 +239,10 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     if (queued && queued.length > 0) {
       return queued.shift() as StackSummary;
     }
-    return this.stacks.get(stackName) ?? makeStackSummary({ stackName, status: 'CREATE_COMPLETE' });
+    return (
+      this.stacks.get(stackName) ??
+      makeStackSummary({ stackName, status: 'CREATE_COMPLETE' })
+    );
   }
 }
 
@@ -230,7 +254,10 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 export class FakeStateBackend implements StateBackend {
   stored: { state: CfnSyncState; version: StateVersion } | undefined;
   readonly calls: CallRecord[] = [];
-  readonly saveCalls: Array<{ state: CfnSyncState; expected: StateVersion | undefined }> = [];
+  readonly saveCalls: Array<{
+    state: CfnSyncState;
+    expected: StateVersion | undefined;
+  }> = [];
   /** save が投げたエラーの記録(T-18 で CAS 競合の型まで検証する)。 */
   readonly saveErrors: Error[] = [];
   verifyLockPlan: boolean[] = [];
@@ -243,7 +270,11 @@ export class FakeStateBackend implements StateBackend {
    * verifyLock の判定を確定した直後、呼び出し元へ返す前に発火する任意フック。
    * 判定と副作用の競合窓に所有権交代を注入できる。
    */
-  onVerifyLock?: (handle: LockHandle, callCount: number, verified: boolean) => void | Promise<void>;
+  onVerifyLock?: (
+    handle: LockHandle,
+    callCount: number,
+    verified: boolean,
+  ) => void | Promise<void>;
   private lock: LockHandle | undefined;
   private verifyLockCalls = 0;
 
@@ -253,7 +284,10 @@ export class FakeStateBackend implements StateBackend {
     private readonly backendStateId = 'aabbccddeeff',
   ) {
     if (initial) {
-      this.stored = { state: initial, version: { generation: initial.generation } };
+      this.stored = {
+        state: initial,
+        version: { generation: initial.generation },
+      };
     }
   }
 
@@ -266,12 +300,19 @@ export class FakeStateBackend implements StateBackend {
     return this.calls.filter((call) => call.method === method);
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
     this.record('load');
-    return this.stored ? { state: this.stored.state, version: this.stored.version } : undefined;
+    return this.stored
+      ? { state: this.stored.state, version: this.stored.version }
+      : undefined;
   }
 
-  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+  async save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion> {
     this.record('save', state, expected);
     this.saveCalls.push({ state, expected });
     if (this.saveError) {
@@ -294,7 +335,10 @@ export class FakeStateBackend implements StateBackend {
 
   async acquireLock(info: LockInfo): Promise<LockHandle> {
     this.record('acquireLock', info);
-    if (this.failAcquire || (this.rejectConcurrentAcquire && this.lock !== undefined)) {
+    if (
+      this.failAcquire ||
+      (this.rejectConcurrentAcquire && this.lock !== undefined)
+    ) {
       throw new LockError('別の実行がロックを保持しています(fake)');
     }
     this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
@@ -312,10 +356,13 @@ export class FakeStateBackend implements StateBackend {
     return verified;
   }
 
-  async releaseLock(handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
+  async releaseLock(
+    handle: LockHandle,
+  ): Promise<{ released: boolean; reason?: string }> {
     this.record('releaseLock', handle);
     this.releaseCalls += 1;
-    if (this.lock?.runId !== handle.runId) return { released: false, reason: 'owner changed(fake)' };
+    if (this.lock?.runId !== handle.runId)
+      return { released: false, reason: 'owner changed(fake)' };
     this.lock = undefined;
     return { released: true };
   }
@@ -323,13 +370,20 @@ export class FakeStateBackend implements StateBackend {
   async readLock(): Promise<LockInfo | undefined> {
     this.record('readLock');
     return this.lock
-      ? { runId: this.lock.runId, startedAt: '2026-07-20T00:00:00.000Z', owner: 'fake' }
+      ? {
+          runId: this.lock.runId,
+          startedAt: '2026-07-20T00:00:00.000Z',
+          owner: 'fake',
+        }
       : undefined;
   }
 
-  async forceUnlock(runId: string): Promise<{ released: boolean; reason?: string }> {
+  async forceUnlock(
+    runId: string,
+  ): Promise<{ released: boolean; reason?: string }> {
     this.record('forceUnlock', runId);
-    if (this.lock?.runId !== runId) return { released: false, reason: 'runId mismatch(fake)' };
+    if (this.lock?.runId !== runId)
+      return { released: false, reason: 'runId mismatch(fake)' };
     this.lock = undefined;
     return { released: true };
   }

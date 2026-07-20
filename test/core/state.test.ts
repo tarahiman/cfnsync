@@ -2,18 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { StateConflictError } from '../../src/core/errors.js';
 import {
   assertGeneration,
+  type CfnSyncState,
   createInitialState,
   matchAccount,
   parseState,
   prepareSave,
   removeStackEntry,
+  type StackEntry,
+  StateCorruptionError,
   serializeState,
   sha256Hex,
-  StateCorruptionError,
   upsertStackEntry,
   withAccountId,
-  type CfnSyncState,
-  type StackEntry,
 } from '../../src/core/state.js';
 
 // design.md §4.3 のステート例そのままの妥当な JSON。
@@ -115,12 +115,20 @@ describe('core/state — §4.3 ステートスキーマ', () => {
   it('§4.3: serializeState は安定した(スタックキー順が固定な)整形 JSON を返す', () => {
     const base = createInitialState();
     const stateA = upsertStackEntry(
-      upsertStackEntry(base, 'b.yaml@ap-northeast-1', makeEntry({ stackName: 'b' })),
+      upsertStackEntry(
+        base,
+        'b.yaml@ap-northeast-1',
+        makeEntry({ stackName: 'b' }),
+      ),
       'a.yaml@ap-northeast-1',
       makeEntry({ stackName: 'a' }),
     );
     const stateB = upsertStackEntry(
-      upsertStackEntry(base, 'a.yaml@ap-northeast-1', makeEntry({ stackName: 'a' })),
+      upsertStackEntry(
+        base,
+        'a.yaml@ap-northeast-1',
+        makeEntry({ stackName: 'a' }),
+      ),
       'b.yaml@ap-northeast-1',
       makeEntry({ stackName: 'b' }),
     );
@@ -152,7 +160,8 @@ describe('core/state — FR-1-6(判定): 世代管理', () => {
 
 describe('core/state — FR-1-12(検出): 破損検出は fail-closed', () => {
   it('FR-1-12: 不完全な JSON(構文エラー)は StateCorruptionError になる', () => {
-    const truncated = '{ "schemaVersion": 1, "accountId": null, "generation": 0, "stacks": {';
+    const truncated =
+      '{ "schemaVersion": 1, "accountId": null, "generation": 0, "stacks": {';
     expect(() => parseState(truncated)).toThrow(StateCorruptionError);
   });
 
@@ -228,10 +237,18 @@ describe('core/state — FR-1-15: ステート未存在(初回)の扱い', () =>
 describe('core/state — FR-8-5(記録): 依存辺(exports/imports)の記録', () => {
   it('FR-8-5: upsertStackEntry は exports / imports を含むエントリを記録する', () => {
     const state = createInitialState();
-    const entry = makeEntry({ exports: ['A-VpcId', 'A-SubnetId'], imports: ['B-Export'] });
+    const entry = makeEntry({
+      exports: ['A-VpcId', 'A-SubnetId'],
+      imports: ['B-Export'],
+    });
     const updated = upsertStackEntry(state, 'a.yaml@ap-northeast-1', entry);
-    expect(updated.stacks['a.yaml@ap-northeast-1'].exports).toEqual(['A-VpcId', 'A-SubnetId']);
-    expect(updated.stacks['a.yaml@ap-northeast-1'].imports).toEqual(['B-Export']);
+    expect(updated.stacks['a.yaml@ap-northeast-1'].exports).toEqual([
+      'A-VpcId',
+      'A-SubnetId',
+    ]);
+    expect(updated.stacks['a.yaml@ap-northeast-1'].imports).toEqual([
+      'B-Export',
+    ]);
   });
 
   it('FR-8-5: upsertStackEntry は元のステートを変更しない(イミュータブル)', () => {
@@ -243,15 +260,33 @@ describe('core/state — FR-8-5(記録): 依存辺(exports/imports)の記録', (
   });
 
   it('FR-8-5: upsertStackEntry は既存エントリを上書きし、他のエントリには影響しない', () => {
-    const state = upsertStackEntry(createInitialState(), 'a.yaml@ap-northeast-1', makeEntry({ exports: ['old'] }));
-    const withB = upsertStackEntry(state, 'b.yaml@ap-northeast-1', makeEntry({ exports: ['b-export'] }));
-    const updated = upsertStackEntry(withB, 'a.yaml@ap-northeast-1', makeEntry({ exports: ['new'] }));
+    const state = upsertStackEntry(
+      createInitialState(),
+      'a.yaml@ap-northeast-1',
+      makeEntry({ exports: ['old'] }),
+    );
+    const withB = upsertStackEntry(
+      state,
+      'b.yaml@ap-northeast-1',
+      makeEntry({ exports: ['b-export'] }),
+    );
+    const updated = upsertStackEntry(
+      withB,
+      'a.yaml@ap-northeast-1',
+      makeEntry({ exports: ['new'] }),
+    );
     expect(updated.stacks['a.yaml@ap-northeast-1'].exports).toEqual(['new']);
-    expect(updated.stacks['b.yaml@ap-northeast-1'].exports).toEqual(['b-export']);
+    expect(updated.stacks['b.yaml@ap-northeast-1'].exports).toEqual([
+      'b-export',
+    ]);
   });
 
   it('FR-8-5: removeStackEntry はスタックエントリをステートから除去する(イミュータブル)', () => {
-    const state = upsertStackEntry(createInitialState(), 'a.yaml@ap-northeast-1', makeEntry());
+    const state = upsertStackEntry(
+      createInitialState(),
+      'a.yaml@ap-northeast-1',
+      makeEntry(),
+    );
     const removed = removeStackEntry(state, 'a.yaml@ap-northeast-1');
     expect(removed.stacks['a.yaml@ap-northeast-1']).toBeUndefined();
     expect(state.stacks['a.yaml@ap-northeast-1']).toBeDefined();
@@ -259,7 +294,9 @@ describe('core/state — FR-8-5(記録): 依存辺(exports/imports)の記録', (
 
   it('FR-8-5: removeStackEntry は存在しないキーを渡しても例外を投げない', () => {
     const state = createInitialState();
-    expect(() => removeStackEntry(state, 'missing.yaml@ap-northeast-1')).not.toThrow();
+    expect(() =>
+      removeStackEntry(state, 'missing.yaml@ap-northeast-1'),
+    ).not.toThrow();
   });
 });
 

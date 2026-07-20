@@ -12,8 +12,8 @@
  * 本モジュールは純粋ロジックのみで、AWS SDK には依存しない(CLAUDE.md の `src/core/` 規約)。
  */
 
-import { parse as parseYaml } from 'yaml';
 import type { CollectionTag, ScalarTag } from 'yaml';
+import { parse as parseYaml } from 'yaml';
 
 /** `analyzeTemplate` に渡す文脈。Export の `Fn::Sub` 解決に用いる。 */
 export interface TemplateAnalysisContext {
@@ -63,7 +63,10 @@ function splitGetAtt(value: string): [string, string] {
   return [value.slice(0, idx), value.slice(idx + 1)];
 }
 
-function scalarTag(tag: string, resolve: (value: string) => unknown): ScalarTag {
+function scalarTag(
+  tag: string,
+  resolve: (value: string) => unknown,
+): ScalarTag {
   return { tag, resolve: (value) => resolve(value) };
 }
 
@@ -141,7 +144,9 @@ function deepEqual(a: unknown, b: unknown): boolean {
     const aKeys = Object.keys(a).sort();
     const bKeys = Object.keys(b).sort();
     if (aKeys.length !== bKeys.length) return false;
-    return aKeys.every((key, i) => key === bKeys[i] && deepEqual(a[key], b[key]));
+    return aKeys.every(
+      (key, i) => key === bKeys[i] && deepEqual(a[key], b[key]),
+    );
   }
 
   return false;
@@ -167,15 +172,21 @@ const SUB_VAR_PATTERN = /\$\{([^}]*)\}/g;
  * 擬似パラメータとして解決する。それ以外の変数(テンプレートパラメータ参照等)を
  * 含む場合は解決不能として `undefined` を返す(design.md §6)。
  */
-function resolveSubTemplate(template: string, ctx: TemplateAnalysisContext): string | undefined {
+function resolveSubTemplate(
+  template: string,
+  ctx: TemplateAnalysisContext,
+): string | undefined {
   let resolvable = true;
-  const resolved = template.replace(SUB_VAR_PATTERN, (_match, rawVarName: string) => {
-    const varName = rawVarName.trim();
-    if (varName === 'AWS::StackName') return ctx.stackName;
-    if (varName === 'AWS::Region') return ctx.region;
-    resolvable = false;
-    return '';
-  });
+  const resolved = template.replace(
+    SUB_VAR_PATTERN,
+    (_match, rawVarName: string) => {
+      const varName = rawVarName.trim();
+      if (varName === 'AWS::StackName') return ctx.stackName;
+      if (varName === 'AWS::Region') return ctx.region;
+      resolvable = false;
+      return '';
+    },
+  );
   return resolvable ? resolved : undefined;
 }
 
@@ -184,7 +195,10 @@ function resolveSubTemplate(template: string, ctx: TemplateAnalysisContext): str
  * のみで構成される場合に解決する。それ以外(テンプレートパラメータ等の動的合成)は
  * `undefined` を返す。
  */
-function resolveExportName(nameValue: unknown, ctx: TemplateAnalysisContext): string | undefined {
+function resolveExportName(
+  nameValue: unknown,
+  ctx: TemplateAnalysisContext,
+): string | undefined {
   if (typeof nameValue === 'string') return nameValue;
   if (isRecord(nameValue) && typeof nameValue['Fn::Sub'] === 'string') {
     return resolveSubTemplate(nameValue['Fn::Sub'], ctx);
@@ -225,9 +239,16 @@ function extractExports(
  * `Fn::ImportValue` の値が静的文字列であれば import として記録する。動的
  * (解決不能な `Fn::Sub` 等)であれば警告とする(design.md §6)。
  */
-function walkForImports(node: unknown, imports: string[], warnings: string[], path: string): void {
+function walkForImports(
+  node: unknown,
+  imports: string[],
+  warnings: string[],
+  path: string,
+): void {
   if (Array.isArray(node)) {
-    node.forEach((item, i) => walkForImports(item, imports, warnings, `${path}[${i}]`));
+    node.forEach((item, i) => {
+      walkForImports(item, imports, warnings, `${path}[${i}]`);
+    });
     return;
   }
   if (!isRecord(node)) return;
@@ -266,7 +287,10 @@ function extractNoEchoParams(template: Record<string, unknown>): string[] {
  * テンプレートソースを解析し、import / export の依存辺・警告・NoEcho パラメータを
  * 抽出する(design.md §6, requirements.md FR-8 / NFR-4)。
  */
-export function analyzeTemplate(source: string, ctx: TemplateAnalysisContext): TemplateAnalysis {
+export function analyzeTemplate(
+  source: string,
+  ctx: TemplateAnalysisContext,
+): TemplateAnalysis {
   const parsed = parseCfnTemplate(source);
   const template = isRecord(parsed) ? parsed : {};
 

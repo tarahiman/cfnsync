@@ -3,12 +3,7 @@
     "terraform": {
       "type": "stdio",
       "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "hashicorp/terraform-mcp-server"
-      ],
+      "args": ["run", "-i", "--rm", "hashicorp/terraform-mcp-server"],
       "env": {}
     },
     "aws-mcp-oauth": {

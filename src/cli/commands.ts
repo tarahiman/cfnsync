@@ -1,12 +1,21 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-import { resolveTargets, type CfnSyncConfig } from '../core/config.js';
+import { type CfnSyncConfig, resolveTargets } from '../core/config.js';
 import { detectChanges } from '../core/detect.js';
-import { buildGraphs, topologicalOrder, type StackNode } from '../core/graph.js';
+import {
+  buildGraphs,
+  type StackNode,
+  topologicalOrder,
+} from '../core/graph.js';
 import { createInitialState } from '../core/state.js';
 import { analyzeTemplate } from '../core/template.js';
-import { renderGraphJson, renderGraphText, renderJson, renderText } from '../report/index.js';
+import {
+  renderGraphJson,
+  renderGraphText,
+  renderJson,
+  renderText,
+} from '../report/index.js';
 import type { CliDependencies } from './dependencies.js';
 
 export type OutputFormat = 'text' | 'json';
@@ -33,15 +42,30 @@ function writeLine(write: (text: string) => void, text: string): void {
   write(text.endsWith('\n') ? text : `${text}\n`);
 }
 
-function effectiveProfile(options: CommonOptions, env: NodeJS.ProcessEnv): string | undefined {
+function effectiveProfile(
+  options: CommonOptions,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
   return options.profile ?? env.AWS_PROFILE;
 }
 
-function effectiveRegion(options: CommonOptions, config: CfnSyncConfig, env: NodeJS.ProcessEnv): string {
-  return options.region ?? env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? config.defaultRegion;
+function effectiveRegion(
+  options: CommonOptions,
+  config: CfnSyncConfig,
+  env: NodeJS.ProcessEnv,
+): string {
+  return (
+    options.region ??
+    env.AWS_REGION ??
+    env.AWS_DEFAULT_REGION ??
+    config.defaultRegion
+  );
 }
 
-function loadInputs(ctx: CommandContext, options: CommonOptions): {
+function loadInputs(
+  ctx: CommandContext,
+  options: CommonOptions,
+): {
   config: CfnSyncConfig;
   configPath: string;
   configDir: string;
@@ -53,7 +77,10 @@ function loadInputs(ctx: CommandContext, options: CommonOptions): {
   const configDir = dirname(configPath);
   const loaded = ctx.deps.loadConfig(options.config);
   const region = effectiveRegion(options, loaded, ctx.env);
-  const config = region === loaded.defaultRegion ? loaded : { ...loaded, defaultRegion: region };
+  const config =
+    region === loaded.defaultRegion
+      ? loaded
+      : { ...loaded, defaultRegion: region };
   return {
     config,
     configPath,
@@ -64,52 +91,78 @@ function loadInputs(ctx: CommandContext, options: CommonOptions): {
   };
 }
 
-function renderStatusText(entries: Array<{
-  stackKey: string;
-  changeType: string;
-  target?: { region: string; stackName: string };
-  stateEntry?: { region: string; stackName: string };
-}>): string {
+function renderStatusText(
+  entries: Array<{
+    stackKey: string;
+    changeType: string;
+    target?: { region: string; stackName: string };
+    stateEntry?: { region: string; stackName: string };
+  }>,
+): string {
   const lines = ['CHANGE    REGION                STACK KEY'];
   for (const entry of entries) {
     const region = entry.target?.region ?? entry.stateEntry?.region ?? '-';
-    lines.push(`${entry.changeType.padEnd(10)}${region.padEnd(22)}${entry.stackKey}`);
+    lines.push(
+      `${entry.changeType.padEnd(10)}${region.padEnd(22)}${entry.stackKey}`,
+    );
   }
   return lines.join('\n');
 }
 
-export async function runStatus(ctx: CommandContext, options: CommonOptions): Promise<0> {
+export async function runStatus(
+  ctx: CommandContext,
+  options: CommonOptions,
+): Promise<0> {
   const input = loadInputs(ctx, options);
-  const loadedState = await ctx.deps.createBackend({
-    config: input.config,
-    configDir: input.configDir,
-    profile: input.profile,
-  }).load();
+  const loadedState = await ctx.deps
+    .createBackend({
+      config: input.config,
+      configDir: input.configDir,
+      profile: input.profile,
+    })
+    .load();
   const result = detectChanges({
     targets: resolveTargets(input.config),
     templates: input.templates,
     state: loadedState?.state ?? createInitialState(),
   });
-  const output = options.output === 'json'
-    ? JSON.stringify({ entries: result.entries.map((entry) => ({
-        stackKey: entry.stackKey,
-        region: entry.target?.region ?? entry.stateEntry?.region,
-        stackName: entry.target?.stackName ?? entry.stateEntry?.stackName,
-        changeType: entry.changeType,
-      })) }, null, 2)
-    : renderStatusText(result.entries);
+  const output =
+    options.output === 'json'
+      ? JSON.stringify(
+          {
+            entries: result.entries.map((entry) => ({
+              stackKey: entry.stackKey,
+              region: entry.target?.region ?? entry.stateEntry?.region,
+              stackName: entry.target?.stackName ?? entry.stateEntry?.stackName,
+              changeType: entry.changeType,
+            })),
+          },
+          null,
+          2,
+        )
+      : renderStatusText(result.entries);
   writeLine(ctx.io.stdout, output);
   return 0;
 }
 
-export async function runGraph(ctx: CommandContext, options: CommonOptions): Promise<0> {
+export async function runGraph(
+  ctx: CommandContext,
+  options: CommonOptions,
+): Promise<0> {
   const input = loadInputs(ctx, options);
   const nodes: StackNode[] = [];
   for (const target of resolveTargets(input.config)) {
     const source = input.templates.get(target.templatePath);
-    if (source === undefined) throw new Error(`テンプレート内容が見つかりません: ${target.templatePath}`);
-    const analysis = analyzeTemplate(source, { stackName: target.stackName, region: target.region });
-    for (const warning of analysis.warnings) writeLine(ctx.io.stderr, `warning: ${warning}`);
+    if (source === undefined)
+      throw new Error(
+        `テンプレート内容が見つかりません: ${target.templatePath}`,
+      );
+    const analysis = analyzeTemplate(source, {
+      stackName: target.stackName,
+      region: target.region,
+    });
+    for (const warning of analysis.warnings)
+      writeLine(ctx.io.stderr, `warning: ${warning}`);
     nodes.push({
       stackKey: target.stackKey,
       region: target.region,
@@ -120,24 +173,48 @@ export async function runGraph(ctx: CommandContext, options: CommonOptions): Pro
   }
   const graphs = buildGraphs(nodes);
   for (const graph of graphs.values()) topologicalOrder(graph);
-  writeLine(ctx.io.stdout, options.output === 'json' ? renderGraphJson(graphs) : renderGraphText(graphs));
+  writeLine(
+    ctx.io.stdout,
+    options.output === 'json'
+      ? renderGraphJson(graphs)
+      : renderGraphText(graphs),
+  );
   return 0;
 }
 
-function deploymentDeps(ctx: CommandContext, input: ReturnType<typeof loadInputs>) {
+function deploymentDeps(
+  ctx: CommandContext,
+  input: ReturnType<typeof loadInputs>,
+) {
   return {
-    cfnFactory: (region: string) => ctx.deps.createCfn({ region, profile: input.profile }),
+    cfnFactory: (region: string) =>
+      ctx.deps.createCfn({ region, profile: input.profile }),
     sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-    backend: ctx.deps.createBackend({ config: input.config, configDir: input.configDir, profile: input.profile }),
-    onEvent: (event: { stackKey: string; resourceStatus: string; logicalResourceId: string }) => {
-      writeLine(ctx.io.stderr, `[${event.stackKey}] ${event.logicalResourceId} ${event.resourceStatus}`);
+    backend: ctx.deps.createBackend({
+      config: input.config,
+      configDir: input.configDir,
+      profile: input.profile,
+    }),
+    onEvent: (event: {
+      stackKey: string;
+      resourceStatus: string;
+      logicalResourceId: string;
+    }) => {
+      writeLine(
+        ctx.io.stderr,
+        `[${event.stackKey}] ${event.logicalResourceId} ${event.resourceStatus}`,
+      );
     },
   };
 }
 
 export async function runDeployment(
   ctx: CommandContext,
-  options: CommonOptions & { dryRun?: boolean; allowDelete?: boolean; onFailure?: 'stop' | 'continue' },
+  options: CommonOptions & {
+    dryRun?: boolean;
+    allowDelete?: boolean;
+    onFailure?: 'stop' | 'continue';
+  },
 ): Promise<0 | 1 | 2> {
   const input = loadInputs(ctx, options);
   const result = await ctx.deps.deploy({
@@ -151,29 +228,51 @@ export async function runDeployment(
       onFailure: options.onFailure ?? 'stop',
     },
   });
-  writeLine(ctx.io.stdout, options.output === 'json' ? renderJson(result.report) : renderText(result.report));
+  writeLine(
+    ctx.io.stdout,
+    options.output === 'json'
+      ? renderJson(result.report)
+      : renderText(result.report),
+  );
   return result.exitCode;
 }
 
 export async function runImporter(
   ctx: CommandContext,
-  options: CommonOptions & { reconcile?: 'remote' | 'local'; writeTemplate?: boolean },
+  options: CommonOptions & {
+    reconcile?: 'remote' | 'local';
+    writeTemplate?: boolean;
+  },
 ): Promise<0 | 1> {
   const input = loadInputs(ctx, options);
   const result = await ctx.deps.runImport({
     config: input.config,
     configPath: input.configPath,
     deps: {
-      cfnFactory: (region) => ctx.deps.createCfn({ region, profile: input.profile }),
+      cfnFactory: (region) =>
+        ctx.deps.createCfn({ region, profile: input.profile }),
       sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-      backend: ctx.deps.createBackend({ config: input.config, configDir: input.configDir, profile: input.profile }),
+      backend: ctx.deps.createBackend({
+        config: input.config,
+        configDir: input.configDir,
+        profile: input.profile,
+      }),
     },
-    options: { reconcile: options.reconcile, writeTemplate: options.writeTemplate === true },
+    options: {
+      reconcile: options.reconcile,
+      writeTemplate: options.writeTemplate === true,
+    },
   });
-  for (const warning of result.report.warnings) writeLine(ctx.io.stderr, `warning: ${warning}`);
-  writeLine(ctx.io.stdout, options.output === 'json'
-    ? JSON.stringify(result.report, null, 2)
-    : result.report.stacks.map((stack) => `${stack.status}: ${stack.stackKey}`).join('\n') || 'import 対象はありません。');
+  for (const warning of result.report.warnings)
+    writeLine(ctx.io.stderr, `warning: ${warning}`);
+  writeLine(
+    ctx.io.stdout,
+    options.output === 'json'
+      ? JSON.stringify(result.report, null, 2)
+      : result.report.stacks
+          .map((stack) => `${stack.status}: ${stack.stackKey}`)
+          .join('\n') || 'import 対象はありません。',
+  );
   return result.exitCode;
 }
 
@@ -184,11 +283,19 @@ export async function runForceUnlock(
 ): Promise<0 | 1> {
   const input = loadInputs(ctx, options);
   const result = await ctx.deps.forceUnlock({
-    backend: ctx.deps.createBackend({ config: input.config, configDir: input.configDir, profile: input.profile }),
+    backend: ctx.deps.createBackend({
+      config: input.config,
+      configDir: input.configDir,
+      profile: input.profile,
+    }),
     runId,
   });
-  writeLine(result.exitCode === 0 ? ctx.io.stdout : ctx.io.stderr,
-    options.output === 'json' ? JSON.stringify(result, null, 2) : result.message);
+  writeLine(
+    result.exitCode === 0 ? ctx.io.stdout : ctx.io.stderr,
+    options.output === 'json'
+      ? JSON.stringify(result, null, 2)
+      : result.message,
+  );
   return result.exitCode;
 }
 

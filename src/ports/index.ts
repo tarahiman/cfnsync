@@ -152,10 +152,16 @@ export interface CloudFormationGateway {
   createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }>;
 
   /** `DescribeChangeSet` を Changes の NextToken で全ページ結合して返す(FR-2 / FR-3)。 */
-  describeChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail>;
+  describeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail>;
 
   /** `DescribeChangeSet` を終端(`CREATE_COMPLETE` / `FAILED` 等)までポーリングして返す。 */
-  waitForChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail>;
+  waitForChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail>;
 
   /** `DeleteChangeSet`(残存回収・空変更セット破棄・plan の後始末。FR-2-3,7)。 */
   deleteChangeSet(stackName: string, changeSetName: string): Promise<void>;
@@ -170,13 +176,19 @@ export interface CloudFormationGateway {
    * `DescribeStackEvents` を全ページ走査し、`seenEventIds` に含まれない新着イベントのみを
    * **古い順**(oldest-first)で返す(FR-4-1。AWS は新しい順に返すため整列する)。
    */
-  describeStackEvents(stackName: string, seenEventIds?: Set<string>): Promise<StackEvent[]>;
+  describeStackEvents(
+    stackName: string,
+    seenEventIds?: Set<string>,
+  ): Promise<StackEvent[]>;
 
   /** `GetTemplate`(`Original` は CREATE 復旧比較・import 用。§7 / FR-10-3)。TemplateBody 文字列を返す。 */
   getTemplate(stackName: string, stage: TemplateStage): Promise<string>;
 
   /** スタック操作が終端ステータスに達するまで待機し、最終要約を返す(FR-4-1)。 */
-  waitForStack(stackName: string, opts?: WaitForStackOptions): Promise<StackSummary>;
+  waitForStack(
+    stackName: string,
+    opts?: WaitForStackOptions,
+  ): Promise<StackSummary>;
 }
 
 // ===========================================================================
@@ -223,7 +235,10 @@ export interface StateBackend {
    * 上書きせず `StateConflictError`。成功時は新しい `StateVersion` を返す。
    * `expected` が `undefined` の場合は新規作成(不存在時のみ成立)。
    */
-  save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion>;
+  save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion>;
 
   /** ロックを取得する(FR-1-7)。取得失敗(他実行が保持)は `LockError`。 */
   acquireLock(info: LockInfo): Promise<LockHandle>;
@@ -235,7 +250,9 @@ export interface StateBackend {
    * 自身のロックであることを検証する条件付き解放(FR-1-8)。所有者交代等で条件不成立なら
    * 削除せず `{ released: false, reason }` を返す。
    */
-  releaseLock(handle: LockHandle): Promise<{ released: boolean; reason?: string }>;
+  releaseLock(
+    handle: LockHandle,
+  ): Promise<{ released: boolean; reason?: string }>;
 
   /** 現在のロック内容を読む(force-unlock 表示用。FR-1-10)。未ロックは `undefined`。 */
   readLock(): Promise<LockInfo | undefined>;

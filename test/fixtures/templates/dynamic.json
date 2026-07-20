@@ -14,7 +14,9 @@
         "Tags": [
           {
             "Key": "SharedSecret",
-            "Value": { "Fn::ImportValue": { "Fn::Sub": "${Environment}-shared-secret" } }
+            "Value": {
+              "Fn::ImportValue": { "Fn::Sub": "${Environment}-shared-secret" }
+            }
           }
         ]
       }

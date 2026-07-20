@@ -12,19 +12,19 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { ResolvedStackTarget } from '../../src/core/config.js';
 import { StackStateError } from '../../src/core/errors.js';
 import { makeStackKey } from '../../src/core/types.js';
-import type { ResolvedStackTarget } from '../../src/core/config.js';
 import {
-  MANAGEMENT_TAG_KEY,
   changeSetName,
   createManagedChangeSet,
+  type ExecutorContext,
   executeWithReinspection,
+  MANAGEMENT_TAG_KEY,
   newRunId,
   parseChangeSetName,
   prepareStack,
   reclaimStaleChangeSets,
-  type ExecutorContext,
 } from '../../src/usecase/executor.js';
 import {
   FakeCloudFormationGateway,
@@ -38,11 +38,22 @@ const RUN_ID = 'run01';
 const STACK = 'my-network';
 const FIXED_NOW = () => new Date('2026-07-20T13:45:01.123Z');
 
-function makeCtx(fake: FakeCloudFormationGateway, overrides: Partial<ExecutorContext> = {}): ExecutorContext {
-  return { cfn: fake, stateId: STATE_ID, runId: RUN_ID, now: FIXED_NOW, ...overrides };
+function makeCtx(
+  fake: FakeCloudFormationGateway,
+  overrides: Partial<ExecutorContext> = {},
+): ExecutorContext {
+  return {
+    cfn: fake,
+    stateId: STATE_ID,
+    runId: RUN_ID,
+    now: FIXED_NOW,
+    ...overrides,
+  };
 }
 
-function makeTarget(overrides: Partial<ResolvedStackTarget> = {}): ResolvedStackTarget {
+function makeTarget(
+  overrides: Partial<ResolvedStackTarget> = {},
+): ResolvedStackTarget {
   return {
     stackKey: makeStackKey('network.yaml', 'ap-northeast-1'),
     templatePath: 'network.yaml',
@@ -67,19 +78,35 @@ function ownChangeSetName(runId = 'oldrun'): string {
 
 describe('changeSetName / parseChangeSetName / newRunId (FR-2-6)', () => {
   it('FR-2-6: 変更セット名は cfnsync-<stateId>-<runId>-<UTCタイムスタンプ> 形式', () => {
-    const name = changeSetName({ stateId: STATE_ID, runId: RUN_ID, now: FIXED_NOW });
+    const name = changeSetName({
+      stateId: STATE_ID,
+      runId: RUN_ID,
+      now: FIXED_NOW,
+    });
     expect(name).toBe('cfnsync-abc123def456-run01-20260720T134501123');
   });
 
   it('FR-2-6: 名前は CloudFormation 制約(先頭英字・英数字とハイフン・128 文字以内)を満たす', () => {
-    const name = changeSetName({ stateId: STATE_ID, runId: RUN_ID, now: FIXED_NOW });
+    const name = changeSetName({
+      stateId: STATE_ID,
+      runId: RUN_ID,
+      now: FIXED_NOW,
+    });
     expect(name.length).toBeLessThanOrEqual(128);
     expect(name).toMatch(/^[A-Za-z][A-Za-z0-9-]*$/);
   });
 
   it('FR-2-6: parseChangeSetName は自ツール由来の変更セットを一意にパースする', () => {
-    const name = changeSetName({ stateId: STATE_ID, runId: RUN_ID, now: FIXED_NOW });
-    expect(parseChangeSetName(name)).toEqual({ tool: true, stateId: STATE_ID, runId: RUN_ID });
+    const name = changeSetName({
+      stateId: STATE_ID,
+      runId: RUN_ID,
+      now: FIXED_NOW,
+    });
+    expect(parseChangeSetName(name)).toEqual({
+      tool: true,
+      stateId: STATE_ID,
+      runId: RUN_ID,
+    });
   });
 
   it('FR-2-6: 非 cfnsync- 名は tool:false(人手・他ツール由来)', () => {
@@ -101,7 +128,11 @@ describe('changeSetName / parseChangeSetName / newRunId (FR-2-6)', () => {
     expect(b).toMatch(/^[A-Za-z0-9]+$/);
     expect(a).not.toBe(b);
     // 生成された runId を名前に埋め込んでも再パース可能であること。
-    expect(parseChangeSetName(changeSetName({ stateId: STATE_ID, runId: a, now: FIXED_NOW }))).toEqual({
+    expect(
+      parseChangeSetName(
+        changeSetName({ stateId: STATE_ID, runId: a, now: FIXED_NOW }),
+      ),
+    ).toEqual({
       tool: true,
       stateId: STATE_ID,
       runId: a,
@@ -123,14 +154,21 @@ describe('prepareStack — スタック状態ガード', () => {
 
   it('FR-2-1: 完了系(CREATE_COMPLETE)スタック → UPDATE', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'CREATE_COMPLETE' }));
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'CREATE_COMPLETE' }),
+    );
     const result = await prepareStack(makeCtx(fake), STACK);
     expect(result.kind).toBe('update');
     expect(result.stackStatus).toBe('CREATE_COMPLETE');
   });
 
   it('FR-2-1: UPDATE_COMPLETE / UPDATE_ROLLBACK_COMPLETE も UPDATE', async () => {
-    for (const status of ['UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE', 'IMPORT_COMPLETE']) {
+    for (const status of [
+      'UPDATE_COMPLETE',
+      'UPDATE_ROLLBACK_COMPLETE',
+      'IMPORT_COMPLETE',
+    ]) {
       const fake = new FakeCloudFormationGateway();
       fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status }));
       const result = await prepareStack(makeCtx(fake), STACK);
@@ -140,8 +178,13 @@ describe('prepareStack — スタック状態ガード', () => {
 
   it('FR-2-4: ROLLBACK_COMPLETE → StackStateError(スタック削除の必要性を含むメッセージ)', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'ROLLBACK_COMPLETE' }));
-    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'ROLLBACK_COMPLETE' }),
+    );
+    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(
+      StackStateError,
+    );
     await expect(prepareStack(makeCtx(fake), STACK)).rejects.toThrow(/削除/);
     // 変更セット作成には進まない。
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
@@ -149,8 +192,13 @@ describe('prepareStack — スタック状態ガード', () => {
 
   it('FR-2-8: *_IN_PROGRESS → StackStateError(並行操作)。変更セットを作成しない', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'UPDATE_IN_PROGRESS' }));
-    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'UPDATE_IN_PROGRESS' }),
+    );
+    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(
+      StackStateError,
+    );
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
   });
@@ -163,26 +211,40 @@ describe('prepareStack — スタック状態ガード', () => {
 describe('prepareStack — REVIEW_IN_PROGRESS (FR-2-10)', () => {
   it('FR-2-10: 自ステートの変更セットのみ個別削除し CREATE 続行。DeleteStack を一切呼ばない', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }));
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }),
+    );
     const stale = ownChangeSetName('oldrun');
-    fake.changeSets.set(STACK, [makeChangeSetSummary(stale, { status: 'CREATE_COMPLETE' })]);
+    fake.changeSets.set(STACK, [
+      makeChangeSetSummary(stale, { status: 'CREATE_COMPLETE' }),
+    ]);
 
     const result = await prepareStack(makeCtx(fake), STACK);
 
     expect(result.kind).toBe('create');
     expect(result.reviewInProgress).toBe(true);
     // 自変更セットは個別に破棄される。
-    expect(fake.callsOf('deleteChangeSet').map((c) => c.args[1])).toEqual([stale]);
+    expect(fake.callsOf('deleteChangeSet').map((c) => c.args[1])).toEqual([
+      stale,
+    ]);
     // **DeleteStack が一切呼ばれないことの明示的アサーション(FR-2-10 の中核)。**
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
   });
 
   it('FR-2-10: 他主体の変更セットが存在 → fail-closed 停止。DeleteStack も CreateChangeSet も呼ばない', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }));
-    fake.changeSets.set(STACK, [makeChangeSetSummary('human-created-changeset')]);
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }),
+    );
+    fake.changeSets.set(STACK, [
+      makeChangeSetSummary('human-created-changeset'),
+    ]);
 
-    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(
+      StackStateError,
+    );
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
@@ -190,10 +252,17 @@ describe('prepareStack — REVIEW_IN_PROGRESS (FR-2-10)', () => {
 
   it('FR-2-10: 別ステート ID の cfnsync- 変更セットが存在 → 停止。DeleteStack を呼ばない', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.stacks.set(STACK, makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }));
-    fake.changeSets.set(STACK, [makeChangeSetSummary('cfnsync-otherstate99-runX-20260101T000000000')]);
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }),
+    );
+    fake.changeSets.set(STACK, [
+      makeChangeSetSummary('cfnsync-otherstate99-runX-20260101T000000000'),
+    ]);
 
-    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(
+      StackStateError,
+    );
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
@@ -209,23 +278,35 @@ describe('reclaimStaleChangeSets (FR-2-7)', () => {
     const stale = ownChangeSetName('oldrun');
     fake.changeSets.set(STACK, [makeChangeSetSummary(stale)]);
 
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).resolves.toBeUndefined();
-    expect(fake.callsOf('deleteChangeSet').map((c) => c.args[1])).toEqual([stale]);
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).resolves.toBeUndefined();
+    expect(fake.callsOf('deleteChangeSet').map((c) => c.args[1])).toEqual([
+      stale,
+    ]);
   });
 
   it('FR-2-7: 別ステート ID の cfnsync- → 削除せず中断', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.changeSets.set(STACK, [makeChangeSetSummary('cfnsync-otherstate99-runX-20260101T000000000')]);
+    fake.changeSets.set(STACK, [
+      makeChangeSetSummary('cfnsync-otherstate99-runX-20260101T000000000'),
+    ]);
 
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 
   it('FR-2-7: 非 cfnsync-(人手・他ツール)→ 削除せず中断', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.changeSets.set(STACK, [makeChangeSetSummary('human-created-changeset')]);
+    fake.changeSets.set(STACK, [
+      makeChangeSetSummary('human-created-changeset'),
+    ]);
 
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 
@@ -233,7 +314,9 @@ describe('reclaimStaleChangeSets (FR-2-7)', () => {
     const fake = new FakeCloudFormationGateway();
     fake.changeSets.set(STACK, [makeChangeSetSummary('cfnsync-malformed')]);
 
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 
@@ -245,14 +328,18 @@ describe('reclaimStaleChangeSets (FR-2-7)', () => {
       makeChangeSetSummary('human-created-changeset'),
     ]);
 
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).rejects.toBeInstanceOf(StackStateError);
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).rejects.toBeInstanceOf(StackStateError);
     // 他主体が存在する時点で、自変更セットにも触れずに中断する。
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 
   it('FR-2-7: 残存なし → 何も削除せず正常終了', async () => {
     const fake = new FakeCloudFormationGateway();
-    await expect(reclaimStaleChangeSets(makeCtx(fake), STACK)).resolves.toBeUndefined();
+    await expect(
+      reclaimStaleChangeSets(makeCtx(fake), STACK),
+    ).resolves.toBeUndefined();
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 });
@@ -269,7 +356,9 @@ describe('createManagedChangeSet', () => {
       templateBody: 'TEMPLATE',
       kind: 'create',
     });
-    const input = fake.callsOf('createChangeSet')[0].args[0] as { changeSetType: string };
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      changeSetType: string;
+    };
     expect(input.changeSetType).toBe('CREATE');
   });
 
@@ -280,19 +369,28 @@ describe('createManagedChangeSet', () => {
       templateBody: 'TEMPLATE',
       kind: 'update',
     });
-    const input = fake.callsOf('createChangeSet')[0].args[0] as { changeSetType: string };
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      changeSetType: string;
+    };
     expect(input.changeSetType).toBe('UPDATE');
   });
 
   it('FR-2-5: 設定の capabilities が CreateChangeSet に渡る', async () => {
     const fake = new FakeCloudFormationGateway();
     await createManagedChangeSet(makeCtx(fake), {
-      target: makeTarget({ capabilities: ['CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'] }),
+      target: makeTarget({
+        capabilities: ['CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+      }),
       templateBody: 'TEMPLATE',
       kind: 'update',
     });
-    const input = fake.callsOf('createChangeSet')[0].args[0] as { capabilities: string[] };
-    expect(input.capabilities).toEqual(['CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND']);
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      capabilities: string[];
+    };
+    expect(input.capabilities).toEqual([
+      'CAPABILITY_NAMED_IAM',
+      'CAPABILITY_AUTO_EXPAND',
+    ]);
   });
 
   it('FR-2-9: 管理タグ cfnsync:state-id=<stateId> が Tags にマージされ、ユーザータグと共存', async () => {
@@ -302,7 +400,9 @@ describe('createManagedChangeSet', () => {
       templateBody: 'TEMPLATE',
       kind: 'create',
     });
-    const input = fake.callsOf('createChangeSet')[0].args[0] as { tags: Record<string, string> };
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      tags: Record<string, string>;
+    };
     expect(input.tags).toEqual({
       Team: 'platform',
       Env: 'prod',
@@ -318,13 +418,17 @@ describe('createManagedChangeSet', () => {
       kind: 'create',
     });
     expect(name).toBe('cfnsync-abc123def456-run01-20260720T134501123');
-    const input = fake.callsOf('createChangeSet')[0].args[0] as { changeSetName: string };
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      changeSetName: string;
+    };
     expect(input.changeSetName).toBe(name);
   });
 
   it('createManagedChangeSet: 成功(CREATE_COMPLETE)→ noChanges false・detail を返す', async () => {
     const fake = new FakeCloudFormationGateway();
-    fake.defaultChangeSetDetail = makeChangeSetDetail({ status: 'CREATE_COMPLETE' });
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'CREATE_COMPLETE',
+    });
     const result = await createManagedChangeSet(makeCtx(fake), {
       target: makeTarget(),
       templateBody: 'TEMPLATE',
@@ -370,7 +474,8 @@ describe('createManagedChangeSet', () => {
     const fake = new FakeCloudFormationGateway();
     fake.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'FAILED',
-      statusReason: 'Template format error: Unresolved resource dependencies [Foo].',
+      statusReason:
+        'Template format error: Unresolved resource dependencies [Foo].',
     });
     await expect(
       createManagedChangeSet(makeCtx(fake), {
@@ -397,8 +502,13 @@ describe('executeWithReinspection (FR-2-11)', () => {
     await executeWithReinspection(makeCtx(fake), STACK, own);
 
     // 呼び出しは「listChangeSets → executeChangeSet」の 2 つのみで、隣接している。
-    expect(fake.methodSequence()).toEqual(['listChangeSets', 'executeChangeSet']);
-    const execIdx = fake.calls.findIndex((c) => c.method === 'executeChangeSet');
+    expect(fake.methodSequence()).toEqual([
+      'listChangeSets',
+      'executeChangeSet',
+    ]);
+    const execIdx = fake.calls.findIndex(
+      (c) => c.method === 'executeChangeSet',
+    );
     expect(execIdx).toBeGreaterThan(0);
     expect(fake.calls[execIdx - 1].method).toBe('listChangeSets');
     expect(fake.callsOf('executeChangeSet')[0].args).toEqual([STACK, own]);
@@ -412,9 +522,9 @@ describe('executeWithReinspection (FR-2-11)', () => {
       makeChangeSetSummary('human-injected-changeset'),
     ]);
 
-    await expect(executeWithReinspection(makeCtx(fake), STACK, own)).rejects.toBeInstanceOf(
-      StackStateError,
-    );
+    await expect(
+      executeWithReinspection(makeCtx(fake), STACK, own),
+    ).rejects.toBeInstanceOf(StackStateError);
     // 暗黙削除を発生させないため、ExecuteChangeSet は呼ばれない。
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
     expect(fake.callsOf('listChangeSets')).toHaveLength(1);
@@ -428,9 +538,9 @@ describe('executeWithReinspection (FR-2-11)', () => {
       makeChangeSetSummary('cfnsync-otherstate99-runX-20260101T000000000'),
     ]);
 
-    await expect(executeWithReinspection(makeCtx(fake), STACK, own)).rejects.toBeInstanceOf(
-      StackStateError,
-    );
+    await expect(
+      executeWithReinspection(makeCtx(fake), STACK, own),
+    ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
   });
 
@@ -446,9 +556,9 @@ describe('executeWithReinspection (FR-2-11)', () => {
       ]);
     };
 
-    await expect(executeWithReinspection(makeCtx(fake), STACK, own)).rejects.toBeInstanceOf(
-      StackStateError,
-    );
+    await expect(
+      executeWithReinspection(makeCtx(fake), STACK, own),
+    ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
   });
 });

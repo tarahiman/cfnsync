@@ -16,12 +16,9 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type {
-  ChangeSetDetail,
-  CloudFormationGateway,
-} from '../ports/index.js';
 import type { ResolvedStackTarget } from '../core/config.js';
 import { StackStateError } from '../core/errors.js';
+import type { ChangeSetDetail, CloudFormationGateway } from '../ports/index.js';
 
 /** 管理タグのキー(§8.4)。値は stateId。CreateChangeSet の Tags に常時マージする(FR-2-9)。 */
 export const MANAGEMENT_TAG_KEY = 'cfnsync:state-id';
@@ -30,7 +27,10 @@ export const MANAGEMENT_TAG_KEY = 'cfnsync:state-id';
 const CHANGESET_PREFIX = 'cfnsync';
 
 /** 「変更なし」を表す StatusReason のパターン(小文字化して部分一致で判定。FR-2-3 / api-notes)。 */
-const NO_CHANGE_REASONS = ["didn't contain changes", 'no updates are to be performed'];
+const NO_CHANGE_REASONS = [
+  "didn't contain changes",
+  'no updates are to be performed',
+];
 
 /**
  * executor 系関数が共有する実行文脈。`stateId` はバックエンド識別子の短縮ハッシュ、
@@ -62,7 +62,11 @@ function pad(value: number, width: number): string {
  * runId(英数字)にハイフンを含まない前提で、`parseChangeSetName` が一意にパースできる。
  * 結果は CloudFormation の制約(先頭英字・英数字とハイフン・128 文字以内)を満たす。
  */
-export function changeSetName(ctx: { stateId: string; runId: string; now?: () => Date }): string {
+export function changeSetName(ctx: {
+  stateId: string;
+  runId: string;
+  now?: () => Date;
+}): string {
   const d = (ctx.now ?? (() => new Date()))();
   const timestamp =
     `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1, 2)}${pad(d.getUTCDate(), 2)}` +
@@ -126,7 +130,10 @@ export interface PrepareResult {
  * - `*_IN_PROGRESS` → `StackStateError`(並行操作。FR-2-8)
  * - その他の完了系 → `UPDATE`
  */
-export async function prepareStack(ctx: ExecutorContext, stackName: string): Promise<PrepareResult> {
+export async function prepareStack(
+  ctx: ExecutorContext,
+  stackName: string,
+): Promise<PrepareResult> {
   const summary = await ctx.cfn.describeStack(stackName);
 
   if (summary === undefined) {
@@ -171,7 +178,10 @@ export async function prepareStack(ctx: ExecutorContext, stackName: string): Pro
  *   何も削除せず `StackStateError` で中断する(fail-closed)。後続の `ExecuteChangeSet` が
  *   他の変更セットを暗黙削除してしまうため、解決後の再実行を案内する。
  */
-export async function reclaimStaleChangeSets(ctx: ExecutorContext, stackName: string): Promise<void> {
+export async function reclaimStaleChangeSets(
+  ctx: ExecutorContext,
+  stackName: string,
+): Promise<void> {
   const summaries = await ctx.cfn.listChangeSets(stackName);
 
   const own: string[] = [];
@@ -237,7 +247,11 @@ export async function createManagedChangeSet(
   input: CreateManagedChangeSetInput,
 ): Promise<CreateManagedChangeSetResult> {
   const { target } = input;
-  const name = changeSetName({ stateId: ctx.stateId, runId: ctx.runId, now: ctx.now });
+  const name = changeSetName({
+    stateId: ctx.stateId,
+    runId: ctx.runId,
+    now: ctx.now,
+  });
   const tags = { ...target.tags, [MANAGEMENT_TAG_KEY]: ctx.stateId };
 
   await ctx.cfn.createChangeSet({
@@ -285,7 +299,9 @@ export async function executeWithReinspection(
   ownChangeSetName: string,
 ): Promise<void> {
   const summaries = await ctx.cfn.listChangeSets(stackName);
-  const others = summaries.filter((summary) => summary.name !== ownChangeSetName);
+  const others = summaries.filter(
+    (summary) => summary.name !== ownChangeSetName,
+  );
 
   if (others.length > 0) {
     throw new StackStateError(

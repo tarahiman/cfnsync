@@ -1,19 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { DependencyCycleError } from '../../src/core/errors.js';
-import { makeStackKey, type StackKey } from '../../src/core/types.js';
 import {
   buildGraphs,
   mergeGraphs,
-  reverseOrder,
-  topologicalOrder,
   type RegionGraph,
+  reverseOrder,
   type StackNode,
+  topologicalOrder,
 } from '../../src/core/graph.js';
+import { makeStackKey, type StackKey } from '../../src/core/types.js';
 
 const REGION_A = 'ap-northeast-1';
 const REGION_B = 'us-east-1';
 
-function node(overrides: Partial<StackNode> & Pick<StackNode, 'stackKey' | 'region'>): StackNode {
+function node(
+  overrides: Partial<StackNode> & Pick<StackNode, 'stackKey' | 'region'>,
+): StackNode {
   return {
     exports: [],
     imports: [],
@@ -23,7 +25,10 @@ function node(overrides: Partial<StackNode> & Pick<StackNode, 'stackKey' | 'regi
 }
 
 /** region 内のグラフを取得するヘルパ(存在しなければテストを失敗させる)。 */
-function graphFor(graphs: Map<string, RegionGraph>, region: string): RegionGraph {
+function graphFor(
+  graphs: Map<string, RegionGraph>,
+  region: string,
+): RegionGraph {
   const graph = graphs.get(region);
   if (!graph) {
     throw new Error(`region ${region} のグラフが見つかりません`);
@@ -52,7 +57,9 @@ describe('core/graph — FR-8-1(構築): Export/ImportValue からの辺の構�
     const graph = graphFor(graphs, REGION_A);
 
     expect(graph.nodes).toEqual([network.stackKey, database.stackKey]);
-    expect(edgeSet(graph)).toEqual(new Set([`${network.stackKey}=>${database.stackKey}`]));
+    expect(edgeSet(graph)).toEqual(
+      new Set([`${network.stackKey}=>${database.stackKey}`]),
+    );
   });
 
   it('FR-8-1: 提供者のいない import 名はエラーにせず辺を張らない(リージョン外・未管理スタックの可能性)', () => {
@@ -88,14 +95,20 @@ describe('core/graph — FR-8-1(構築): Export/ImportValue からの辺の構�
     const graph = graphFor(buildGraphs([network, app1, app2]), REGION_A);
 
     expect(edgeSet(graph)).toEqual(
-      new Set([`${network.stackKey}=>${app1.stackKey}`, `${network.stackKey}=>${app2.stackKey}`]),
+      new Set([
+        `${network.stackKey}=>${app1.stackKey}`,
+        `${network.stackKey}=>${app2.stackKey}`,
+      ]),
     );
   });
 });
 
 describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
   it('FR-8-2: explicitDependsOn(テンプレートパス形式)が自動解析結果とマージされる', () => {
-    const network = node({ stackKey: makeStackKey('network.yaml', REGION_A), region: REGION_A });
+    const network = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+    });
     const app = node({
       stackKey: makeStackKey('app.yaml', REGION_A),
       region: REGION_A,
@@ -105,11 +118,16 @@ describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
 
     const graph = graphFor(buildGraphs([network, app]), REGION_A);
 
-    expect(edgeSet(graph)).toEqual(new Set([`${network.stackKey}=>${app.stackKey}`]));
+    expect(edgeSet(graph)).toEqual(
+      new Set([`${network.stackKey}=>${app.stackKey}`]),
+    );
   });
 
   it('FR-8-2: explicitDependsOn(スタックキー形式)も同一リージョン内のスタックキーに解決される', () => {
-    const network = node({ stackKey: makeStackKey('network.yaml', REGION_A), region: REGION_A });
+    const network = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+    });
     const app = node({
       stackKey: makeStackKey('app.yaml', REGION_A),
       region: REGION_A,
@@ -118,7 +136,9 @@ describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
 
     const graph = graphFor(buildGraphs([network, app]), REGION_A);
 
-    expect(edgeSet(graph)).toEqual(new Set([`${network.stackKey}=>${app.stackKey}`]));
+    expect(edgeSet(graph)).toEqual(
+      new Set([`${network.stackKey}=>${app.stackKey}`]),
+    );
   });
 
   it('FR-8-2: 自動解析の辺と明示依存の辺が同一の場合は重複させない', () => {
@@ -137,7 +157,10 @@ describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
     const graph = graphFor(buildGraphs([network, database]), REGION_A);
 
     expect(graph.edges).toHaveLength(1);
-    expect(graph.edges[0]).toEqual({ from: network.stackKey, to: database.stackKey });
+    expect(graph.edges[0]).toEqual({
+      from: network.stackKey,
+      to: database.stackKey,
+    });
   });
 
   it('FR-8-2: 解決先がグラフに存在しない明示依存は辺を張らない(検証は上位で行う)', () => {
@@ -185,7 +208,9 @@ describe('core/graph — FR-8-4: 循環検出', () => {
 
     expect(thrown).toBeInstanceOf(DependencyCycleError);
     const cycle = (thrown as InstanceType<typeof DependencyCycleError>).cycle;
-    expect(new Set(cycle)).toEqual(new Set([a.stackKey, b.stackKey, c.stackKey]));
+    expect(new Set(cycle)).toEqual(
+      new Set([a.stackKey, b.stackKey, c.stackKey]),
+    );
     expect(cycle).toHaveLength(3);
   });
 
@@ -203,7 +228,10 @@ describe('core/graph — FR-8-4: 循環検出', () => {
       exports: ['B-Out'],
       imports: ['A-Out'],
     });
-    const d = node({ stackKey: makeStackKey('d.yaml', REGION_A), region: REGION_A });
+    const d = node({
+      stackKey: makeStackKey('d.yaml', REGION_A),
+      region: REGION_A,
+    });
 
     const graph = graphFor(buildGraphs([a, b, d]), REGION_A);
 
@@ -270,8 +298,14 @@ describe('core/graph — FR-9-1(順序): トポロジカルソートの決定的
   });
 
   it('FR-9-1: 辺のないグラフは nodes 配列の順序そのままを返す', () => {
-    const x = node({ stackKey: makeStackKey('x.yaml', REGION_A), region: REGION_A });
-    const y = node({ stackKey: makeStackKey('y.yaml', REGION_A), region: REGION_A });
+    const x = node({
+      stackKey: makeStackKey('x.yaml', REGION_A),
+      region: REGION_A,
+    });
+    const y = node({
+      stackKey: makeStackKey('y.yaml', REGION_A),
+      region: REGION_A,
+    });
 
     const graph = graphFor(buildGraphs([x, y]), REGION_A);
     expect(topologicalOrder(graph)).toEqual([x.stackKey, y.stackKey]);
@@ -324,8 +358,16 @@ describe('core/graph — FR-6-4(統合): 新旧グラフの統合と削除順序
     const b = makeStackKey('b.yaml', REGION_A);
     const c = makeStackKey('c.yaml', REGION_A);
 
-    const current: RegionGraph = { region: REGION_A, nodes: [a, b], edges: [{ from: a, to: b }] };
-    const old: RegionGraph = { region: REGION_A, nodes: [b, c], edges: [{ from: c, to: b }] };
+    const current: RegionGraph = {
+      region: REGION_A,
+      nodes: [a, b],
+      edges: [{ from: a, to: b }],
+    };
+    const old: RegionGraph = {
+      region: REGION_A,
+      nodes: [b, c],
+      edges: [{ from: c, to: b }],
+    };
 
     const merged = mergeGraphs(current, old);
 
@@ -337,18 +379,32 @@ describe('core/graph — FR-6-4(統合): 新旧グラフの統合と削除順序
     const a = makeStackKey('a.yaml', REGION_A);
     const b = makeStackKey('b.yaml', REGION_A);
 
-    const current: RegionGraph = { region: REGION_A, nodes: [a, b], edges: [{ from: a, to: b }] };
-    const old: RegionGraph = { region: REGION_A, nodes: [a, b], edges: [{ from: a, to: b }] };
+    const current: RegionGraph = {
+      region: REGION_A,
+      nodes: [a, b],
+      edges: [{ from: a, to: b }],
+    };
+    const old: RegionGraph = {
+      region: REGION_A,
+      nodes: [a, b],
+      edges: [{ from: a, to: b }],
+    };
 
     const merged = mergeGraphs(current, old);
     expect(merged.edges).toHaveLength(1);
   });
 
   it('reverseOrder: 入力配列を変更せず逆順の新しい配列を返す', () => {
-    const order: StackKey[] = [makeStackKey('a.yaml', REGION_A), makeStackKey('b.yaml', REGION_A)];
+    const order: StackKey[] = [
+      makeStackKey('a.yaml', REGION_A),
+      makeStackKey('b.yaml', REGION_A),
+    ];
     const reversed = reverseOrder(order);
     expect(reversed).toEqual([order[1], order[0]]);
-    expect(order).toEqual([makeStackKey('a.yaml', REGION_A), makeStackKey('b.yaml', REGION_A)]);
+    expect(order).toEqual([
+      makeStackKey('a.yaml', REGION_A),
+      makeStackKey('b.yaml', REGION_A),
+    ]);
   });
 });
 
@@ -373,24 +429,41 @@ describe('core/graph — FR-13-6: グラフはリージョンごとに独立', (
   });
 
   it('FR-13-6: リージョンごとに独立したグラフが返り、それぞれの nodes は自リージョンのスタックのみを含む', () => {
-    const networkA = node({ stackKey: makeStackKey('network.yaml', REGION_A), region: REGION_A });
-    const appA = node({ stackKey: makeStackKey('app.yaml', REGION_A), region: REGION_A });
-    const networkB = node({ stackKey: makeStackKey('network.yaml', REGION_B), region: REGION_B });
+    const networkA = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+    });
+    const appA = node({
+      stackKey: makeStackKey('app.yaml', REGION_A),
+      region: REGION_A,
+    });
+    const networkB = node({
+      stackKey: makeStackKey('network.yaml', REGION_B),
+      region: REGION_B,
+    });
 
     const graphs = buildGraphs([networkA, appA, networkB]);
 
-    expect(new Set(graphFor(graphs, REGION_A).nodes)).toEqual(new Set([networkA.stackKey, appA.stackKey]));
+    expect(new Set(graphFor(graphs, REGION_A).nodes)).toEqual(
+      new Set([networkA.stackKey, appA.stackKey]),
+    );
     expect(graphFor(graphs, REGION_B).nodes).toEqual([networkB.stackKey]);
   });
 
   it('FR-13-6: 同一テンプレートパスの異なるリージョン向け explicitDependsOn(テンプレートパス形式)は自リージョン内で解決される', () => {
-    const networkA = node({ stackKey: makeStackKey('network.yaml', REGION_A), region: REGION_A });
+    const networkA = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+    });
     const appA = node({
       stackKey: makeStackKey('app.yaml', REGION_A),
       region: REGION_A,
       explicitDependsOn: ['network.yaml'],
     });
-    const networkB = node({ stackKey: makeStackKey('network.yaml', REGION_B), region: REGION_B });
+    const networkB = node({
+      stackKey: makeStackKey('network.yaml', REGION_B),
+      region: REGION_B,
+    });
     const appB = node({
       stackKey: makeStackKey('app.yaml', REGION_B),
       region: REGION_B,

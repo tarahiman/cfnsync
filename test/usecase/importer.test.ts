@@ -13,10 +13,22 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { parse as parseYaml } from 'yaml';
-import { validateConfig, resolveTargets, type CfnSyncConfig } from '../../src/core/config.js';
-import { computeInputsHash, computeTemplateHash, detectChanges } from '../../src/core/detect.js';
+import {
+  type CfnSyncConfig,
+  resolveTargets,
+  validateConfig,
+} from '../../src/core/config.js';
+import {
+  computeInputsHash,
+  computeTemplateHash,
+  detectChanges,
+} from '../../src/core/detect.js';
 import { LockError, StateConflictError } from '../../src/core/errors.js';
-import { createInitialState, withAccountId, type CfnSyncState } from '../../src/core/state.js';
+import {
+  type CfnSyncState,
+  createInitialState,
+  withAccountId,
+} from '../../src/core/state.js';
 import { parseCfnTemplate } from '../../src/core/template.js';
 import type {
   ChangeSetDetail,
@@ -32,10 +44,10 @@ import type {
 } from '../../src/ports/index.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import {
-  runImport,
   type ImportDeps,
   type ImportFileSystem,
   type ImportOptions,
+  runImport,
 } from '../../src/usecase/importer.js';
 
 // ---------------------------------------------------------------------------
@@ -43,15 +55,25 @@ import {
 // ---------------------------------------------------------------------------
 
 const FIXTURES = new URL('../fixtures/import/', import.meta.url);
-const NETWORK_TEMPLATE = readFileSync(new URL('network.yaml', FIXTURES), 'utf8');
+const NETWORK_TEMPLATE = readFileSync(
+  new URL('network.yaml', FIXTURES),
+  'utf8',
+);
 const APP_TEMPLATE = readFileSync(new URL('app.yaml', FIXTURES), 'utf8');
 const CONFIG_TEXT = readFileSync(new URL('cfnsync.yaml', FIXTURES), 'utf8');
 
 /** デプロイ済みが JSON 形式(書式・キー順が異なるがパース後同値)のバリエーション(FR-10-3)。 */
-const DEPLOYED_JSON = JSON.stringify(parseCfnTemplate(NETWORK_TEMPLATE), null, 2);
+const DEPLOYED_JSON = JSON.stringify(
+  parseCfnTemplate(NETWORK_TEMPLATE),
+  null,
+  2,
+);
 
 /** デプロイ済みがローカルと実質差分を持つバリエーション(FR-10-4)。 */
-const DEPLOYED_DIFFERENT = NETWORK_TEMPLATE.replace('CidrBlock: !Ref VpcCidr', 'CidrBlock: 10.99.0.0/16');
+const DEPLOYED_DIFFERENT = NETWORK_TEMPLATE.replace(
+  'CidrBlock: !Ref VpcCidr',
+  'CidrBlock: 10.99.0.0/16',
+);
 
 const ACCOUNT = '123456789012';
 const OTHER_ACCOUNT = '999999999999';
@@ -99,7 +121,13 @@ function makeSummary(overrides: Partial<StackSummary> = {}): StackSummary {
 }
 
 function emptyDetail(): ChangeSetDetail {
-  return { status: 'CREATE_COMPLETE', changes: [], parameters: {}, tags: {}, capabilities: [] };
+  return {
+    status: 'CREATE_COMPLETE',
+    changes: [],
+    parameters: {},
+    tags: {},
+    capabilities: [],
+  };
 }
 
 /** 全メソッド呼び出しを記録する CloudFormationGateway フェイク(読み取り以外も記録して FR-10-7 を検証)。 */
@@ -130,18 +158,30 @@ class FakeCfn implements CloudFormationGateway {
     this.record('createChangeSet', input);
     return { id: 'cs' };
   }
-  async describeChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async describeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     this.record('describeChangeSet', stackName, changeSetName);
     return emptyDetail();
   }
-  async waitForChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async waitForChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     this.record('waitForChangeSet', stackName, changeSetName);
     return emptyDetail();
   }
-  async deleteChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async deleteChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     this.record('deleteChangeSet', stackName, changeSetName);
   }
-  async executeChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async executeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     this.record('executeChangeSet', stackName, changeSetName);
   }
   async deleteStack(stackName: string): Promise<void> {
@@ -170,7 +210,10 @@ class FakeSts implements StsGateway {
 
   async getCallerIdentity(): Promise<{ accountId: string; arn: string }> {
     this.timeline.push('sts.getCallerIdentity');
-    return { accountId: this.accountId, arn: `arn:aws:iam::${this.accountId}:role/import` };
+    return {
+      accountId: this.accountId,
+      arn: `arn:aws:iam::${this.accountId}:role/import`,
+    };
   }
 }
 
@@ -180,7 +223,10 @@ class FakeSts implements StsGateway {
  */
 class FakeBackend implements StateBackend {
   stored: { state: CfnSyncState; version: StateVersion } | undefined;
-  readonly saveCalls: { state: CfnSyncState; expected: StateVersion | undefined }[] = [];
+  readonly saveCalls: {
+    state: CfnSyncState;
+    expected: StateVersion | undefined;
+  }[] = [];
   /** verifyLock の応答列(先頭から消費。空になったら常に true)。 */
   verifyLockPlan: boolean[] = [];
   failAcquire = false;
@@ -191,16 +237,26 @@ class FakeBackend implements StateBackend {
     initial?: CfnSyncState,
   ) {
     if (initial) {
-      this.stored = { state: initial, version: { generation: initial.generation } };
+      this.stored = {
+        state: initial,
+        version: { generation: initial.generation },
+      };
     }
   }
 
-  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+  async load(): Promise<
+    { state: CfnSyncState; version: StateVersion } | undefined
+  > {
     this.timeline.push('backend.load');
-    return this.stored ? { state: this.stored.state, version: this.stored.version } : undefined;
+    return this.stored
+      ? { state: this.stored.state, version: this.stored.version }
+      : undefined;
   }
 
-  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+  async save(
+    state: CfnSyncState,
+    expected: StateVersion | undefined,
+  ): Promise<StateVersion> {
     this.timeline.push('backend.save');
     this.saveCalls.push({ state, expected });
     if (expected?.generation !== this.stored?.version.generation) {
@@ -221,10 +277,14 @@ class FakeBackend implements StateBackend {
 
   async verifyLock(_handle: LockHandle): Promise<boolean> {
     this.timeline.push('backend.verifyLock');
-    return this.verifyLockPlan.length > 0 ? (this.verifyLockPlan.shift() as boolean) : true;
+    return this.verifyLockPlan.length > 0
+      ? (this.verifyLockPlan.shift() as boolean)
+      : true;
   }
 
-  async releaseLock(_handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
+  async releaseLock(
+    _handle: LockHandle,
+  ): Promise<{ released: boolean; reason?: string }> {
     this.timeline.push('backend.releaseLock');
     this.releaseCalls++;
     return { released: true };
@@ -295,13 +355,17 @@ function setup(opts: SetupOptions = {}) {
   const fs = new FakeFs(timeline);
   const configText = opts.configText ?? CONFIG_TEXT;
   fs.files.set(CONFIG_PATH, configText);
-  for (const [path, content] of Object.entries(opts.files ?? { [NETWORK_ABS]: NETWORK_TEMPLATE })) {
+  for (const [path, content] of Object.entries(
+    opts.files ?? { [NETWORK_ABS]: NETWORK_TEMPLATE },
+  )) {
     fs.files.set(path, content);
   }
 
   const backend = new FakeBackend(
     timeline,
-    opts.initialState === 'none' ? undefined : (opts.initialState ?? recordedState()),
+    opts.initialState === 'none'
+      ? undefined
+      : (opts.initialState ?? recordedState()),
   );
   const sts = new FakeSts(opts.stsAccount ?? ACCOUNT, timeline);
 
@@ -324,11 +388,20 @@ function setup(opts: SetupOptions = {}) {
 }
 
 function run(s: ReturnType<typeof setup>, options: ImportOptions = {}) {
-  return runImport({ config: s.config, configPath: CONFIG_PATH, deps: s.deps, options });
+  return runImport({
+    config: s.config,
+    configPath: CONFIG_PATH,
+    deps: s.deps,
+    options,
+  });
 }
 
 /** デプロイ済みの prod-network を単一リージョンに配置する。 */
-function deployNetwork(s: ReturnType<typeof setup>, template: string, overrides: Partial<StackSummary> = {}): void {
+function deployNetwork(
+  s: ReturnType<typeof setup>,
+  template: string,
+  overrides: Partial<StackSummary> = {},
+): void {
   const cfn = s.cfns.get(REGION)!;
   cfn.stacks.set('prod-network', makeSummary(overrides));
   cfn.templates.set('prod-network', template);
@@ -346,9 +419,10 @@ function configFromWritten(fs: FakeFs): CfnSyncConfig {
 function expectFencedWrites(timeline: string[]): void {
   timeline.forEach((event, index) => {
     if (event.startsWith('fs.write:') || event === 'backend.save') {
-      expect(timeline[index - 1], `書き込み ${event}(index ${index})の直前は verifyLock であること`).toBe(
-        'backend.verifyLock',
-      );
+      expect(
+        timeline[index - 1],
+        `書き込み ${event}(index ${index})の直前は verifyLock であること`,
+      ).toBe('backend.verifyLock');
     }
   });
 }
@@ -371,7 +445,9 @@ describe('FR-10-1: DescribeStacks の結果を cfnsync.yaml へ書き戻す(コ�
 
     // 既存コメントの保持(YAML AST 編集。テキスト再生成では消えるため AST 編集の証跡)。
     expect(text).toContain('# 誤接続防止(FR-7): 許可アカウントとリージョン');
-    expect(text).toContain('# ネットワーク層のスタック(運用者コメント: このブロックは手編集で残すこと)');
+    expect(text).toContain(
+      '# ネットワーク層のスタック(運用者コメント: このブロックは手編集で残すこと)',
+    );
 
     // 既存キー順の保持(version → allowedAccounts → ... → stacks)。
     const idx = (needle: string) => text.indexOf(needle);
@@ -391,7 +467,10 @@ describe('FR-10-1: DescribeStacks の結果を cfnsync.yaml へ書き戻す(コ�
     };
     const entry = written.stacks['network.yaml'];
     expect(entry['stackName']).toBe('prod-network');
-    expect(entry['parameters']).toEqual({ VpcCidr: '10.0.0.0/16', DbPassword: '__REQUIRED__' });
+    expect(entry['parameters']).toEqual({
+      VpcCidr: '10.0.0.0/16',
+      DbPassword: '__REQUIRED__',
+    });
     expect(entry['tags']).toEqual({ Project: 'legacy-app' }); // 管理タグは書き戻さない(§8.4)
     expect(entry['capabilities']).toEqual(['CAPABILITY_NAMED_IAM']);
     expect(text).not.toContain(MANAGEMENT_TAG_KEY);
@@ -612,11 +691,15 @@ describe('FR-10-8: ロック取得後のステート再読込に対するアカ�
     const loadIndex = s.timeline.indexOf('backend.load');
     expect(acquireIndex).toBeGreaterThanOrEqual(0);
     expect(loadIndex).toBeGreaterThan(acquireIndex); // ロック取得前に読んだステートを判断に使わない
-    expect(s.timeline.filter((event) => event === 'backend.load')).toHaveLength(1);
+    expect(s.timeline.filter((event) => event === 'backend.load')).toHaveLength(
+      1,
+    );
   });
 
   it('FR-10-8: ステートのアカウント不一致 → 設定・ステート・テンプレートのいずれにも書き込みゼロで終了', async () => {
-    const s = setup({ initialState: withAccountId(createInitialState(), OTHER_ACCOUNT) });
+    const s = setup({
+      initialState: withAccountId(createInitialState(), OTHER_ACCOUNT),
+    });
     deployNetwork(s, NETWORK_TEMPLATE);
 
     const result = await run(s);
@@ -642,7 +725,9 @@ describe('FR-10-8: ロック取得後のステート再読込に対するアカ�
     expect(s.backend.saveCalls[0].expected).toBeUndefined();
     // 同一ロック区間内(acquireLock 後・releaseLock 前)であること。
     const firstSave = s.timeline.indexOf('backend.save');
-    expect(firstSave).toBeGreaterThan(s.timeline.indexOf('backend.acquireLock'));
+    expect(firstSave).toBeGreaterThan(
+      s.timeline.indexOf('backend.acquireLock'),
+    );
     expect(firstSave).toBeLessThan(s.timeline.indexOf('backend.releaseLock'));
     // 最終的なステートにもアカウント ID とインポート結果が記録されている。
     expect(s.backend.stored!.state.accountId).toBe(ACCOUNT);
@@ -687,7 +772,11 @@ describe('FR-1-9(import): ローカル書き込み直前の所有権検証(fenci
 
     expect(result.exitCode).toBe(0);
     // 書き込みは 3 件(config / template / state save)発生している。
-    expect(s.timeline.filter((e) => e.startsWith('fs.write:') || e === 'backend.save')).toHaveLength(3);
+    expect(
+      s.timeline.filter(
+        (e) => e.startsWith('fs.write:') || e === 'backend.save',
+      ),
+    ).toHaveLength(3);
     // それぞれの直前イベントが verifyLock であること。
     expectFencedWrites(s.timeline);
     // 終了時にロックが解放される(タイムライン末尾)。
@@ -732,7 +821,9 @@ describe('FR-10-10: 対応するスタックが存在しないテンプレート
     const result = await run(s);
 
     expect(result.exitCode).toBe(0);
-    const appReport = result.report.stacks.find((r) => r.templatePath === 'app.yaml');
+    const appReport = result.report.stacks.find(
+      (r) => r.templatePath === 'app.yaml',
+    );
     expect(appReport?.status).toBe('not-found');
     expect(appReport?.recorded).toBe(false);
 
@@ -750,8 +841,13 @@ describe('FR-10-10: 対応するスタックが存在しないテンプレート
       ]),
       state: saved,
     });
-    expect(detection.entries.find((e) => e.stackKey === `app.yaml@${REGION}`)?.changeType).toBe('added');
-    expect(detection.entries.find((e) => e.stackKey === NET_KEY)?.changeType).toBe('unchanged');
+    expect(
+      detection.entries.find((e) => e.stackKey === `app.yaml@${REGION}`)
+        ?.changeType,
+    ).toBe('added');
+    expect(
+      detection.entries.find((e) => e.stackKey === NET_KEY)?.changeType,
+    ).toBe('unchanged');
   });
 });
 
@@ -770,7 +866,12 @@ describe('FR-10-11: exports / imports のステート記録', () => {
     cfn.templates.set('prod-network', NETWORK_TEMPLATE);
     cfn.stacks.set(
       'prod-app',
-      makeSummary({ stackName: 'prod-app', parameters: {}, tags: {}, capabilities: [] }),
+      makeSummary({
+        stackName: 'prod-app',
+        parameters: {},
+        tags: {},
+        capabilities: [],
+      }),
     );
     cfn.templates.set('prod-app', APP_TEMPLATE);
 
@@ -782,7 +883,9 @@ describe('FR-10-11: exports / imports のステート記録', () => {
     expect(saved.stacks[NET_KEY].exports).toEqual(['prod-network-VpcId']);
     expect(saved.stacks[NET_KEY].imports).toEqual([]);
     // app.yaml の !ImportValue prod-network-VpcId が import として記録される。
-    expect(saved.stacks[`app.yaml@${REGION}`].imports).toEqual(['prod-network-VpcId']);
+    expect(saved.stacks[`app.yaml@${REGION}`].imports).toEqual([
+      'prod-network-VpcId',
+    ]);
     expect(saved.stacks[`app.yaml@${REGION}`].exports).toEqual([]);
   });
 });
@@ -804,7 +907,9 @@ describe('FR-13-9: マルチリージョンのインポート', () => {
     const cfn2 = s.cfns.get(REGION2)!;
     cfn2.stacks.set(
       'prod-network',
-      makeSummary({ parameters: { VpcCidr: '10.1.0.0/16', DbPassword: '****' } }),
+      makeSummary({
+        parameters: { VpcCidr: '10.1.0.0/16', DbPassword: '****' },
+      }),
     );
     cfn2.templates.set('prod-network', NETWORK_TEMPLATE);
 
@@ -834,9 +939,17 @@ describe('FR-13-9: マルチリージョンのインポート', () => {
     const entry = written.stacks['network.yaml'] as {
       regionOverrides?: Record<string, { parameters?: Record<string, string> }>;
     };
-    expect(entry.regionOverrides?.[REGION]?.parameters?.['VpcCidr']).toBe('10.0.0.0/16');
-    expect(entry.regionOverrides?.[REGION2]?.parameters?.['VpcCidr']).toBe('10.1.0.0/16');
-    expect(entry.regionOverrides?.[REGION]?.parameters?.['DbPassword']).toBe('__REQUIRED__');
-    expect(entry.regionOverrides?.[REGION2]?.parameters?.['DbPassword']).toBe('__REQUIRED__');
+    expect(entry.regionOverrides?.[REGION]?.parameters?.['VpcCidr']).toBe(
+      '10.0.0.0/16',
+    );
+    expect(entry.regionOverrides?.[REGION2]?.parameters?.['VpcCidr']).toBe(
+      '10.1.0.0/16',
+    );
+    expect(entry.regionOverrides?.[REGION]?.parameters?.['DbPassword']).toBe(
+      '__REQUIRED__',
+    );
+    expect(entry.regionOverrides?.[REGION2]?.parameters?.['DbPassword']).toBe(
+      '__REQUIRED__',
+    );
   });
 });

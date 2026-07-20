@@ -3,13 +3,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { analyzeTemplate, parseCfnTemplate, templatesEquivalent } from '../../src/core/template.js';
+import {
+  analyzeTemplate,
+  parseCfnTemplate,
+  templatesEquivalent,
+} from '../../src/core/template.js';
 
 // tasks.md §4 T-03 の対応表:
 //   FR-8-1(解析) / §6(解決可能 Sub) / §6(解決不能警告) / NFR-4(準備)
 // 各行につき 1 つ以上のテストを用意し、テスト名に ID を明記する。
 
-const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/templates');
+const FIXTURES_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../fixtures/templates',
+);
 
 function readFixture(name: string): string {
   return readFileSync(path.join(FIXTURES_DIR, name), 'utf-8');
@@ -24,8 +31,12 @@ describe('parseCfnTemplate', () => {
   });
 
   it('§6: 短縮タグ入り YAML と完全形 JSON(resolvable-sub-export fixture)が同一結果になる', () => {
-    const yamlResult = parseCfnTemplate(readFixture('resolvable-sub-export.yaml'));
-    const jsonResult = parseCfnTemplate(readFixture('resolvable-sub-export.json'));
+    const yamlResult = parseCfnTemplate(
+      readFixture('resolvable-sub-export.yaml'),
+    );
+    const jsonResult = parseCfnTemplate(
+      readFixture('resolvable-sub-export.json'),
+    );
     expect(yamlResult).toEqual(jsonResult);
   });
 
@@ -83,13 +94,13 @@ EqualsValue: !Equals [a, b]
       IfValue: { 'Fn::If': ['SomeCondition', 'a', 'b'] },
       NotValue: { 'Fn::Not': [{ 'Fn::Equals': ['a', 'b'] }] },
       AndValue: {
-        'Fn::And': [
-          { 'Fn::Equals': ['a', 'b'] },
-          { 'Fn::Equals': ['c', 'd'] },
-        ],
+        'Fn::And': [{ 'Fn::Equals': ['a', 'b'] }, { 'Fn::Equals': ['c', 'd'] }],
       },
       OrValue: {
-        'Fn::Or': [{ 'Fn::Equals': ['a', 'b'] }, { Condition: 'SomeCondition' }],
+        'Fn::Or': [
+          { 'Fn::Equals': ['a', 'b'] },
+          { Condition: 'SomeCondition' },
+        ],
       },
       EqualsValue: { 'Fn::Equals': ['a', 'b'] },
     });
@@ -127,14 +138,18 @@ describe('analyzeTemplate', () => {
   it('§6: 解決不能な動的合成の Export.Name は export とせず警告を返す', () => {
     const result = analyzeTemplate(readFixture('dynamic.yaml'), ctx);
     expect(result.exports).toEqual([]);
-    const exportWarning = result.warnings.find((w) => w.includes('DynamicExport'));
+    const exportWarning = result.warnings.find((w) =>
+      w.includes('DynamicExport'),
+    );
     expect(exportWarning).toBeDefined();
   });
 
   it('§6: 解決不能な動的合成の Fn::ImportValue は import とせず警告を返す', () => {
     const result = analyzeTemplate(readFixture('dynamic.yaml'), ctx);
     expect(result.imports).toEqual([]);
-    const importWarning = result.warnings.find((w) => w.includes('Fn::ImportValue'));
+    const importWarning = result.warnings.find((w) =>
+      w.includes('Fn::ImportValue'),
+    );
     expect(importWarning).toBeDefined();
     expect(result.warnings).toHaveLength(2);
   });
@@ -190,7 +205,9 @@ Parameters:
 
 describe('templatesEquivalent', () => {
   it('YAML(短縮タグ)と JSON(完全形)が同一テンプレートであれば true を返す', () => {
-    expect(templatesEquivalent(readFixture('basic.yaml'), readFixture('basic.json'))).toBe(true);
+    expect(
+      templatesEquivalent(readFixture('basic.yaml'), readFixture('basic.json')),
+    ).toBe(true);
   });
 
   it('キー順・インデント・コメントの違いを無視して同値と判定する', () => {

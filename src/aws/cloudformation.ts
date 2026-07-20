@@ -11,15 +11,16 @@
  */
 
 import {
+  type Capability,
   CloudFormationClient,
   CreateChangeSetCommand,
   DeleteChangeSetCommand,
   DeleteStackCommand,
-  type Capability,
   DescribeChangeSetCommand,
   type DescribeChangeSetCommandOutput,
   DescribeStackEventsCommand,
   DescribeStacksCommand,
+  type DescribeStacksCommandOutput,
   ExecuteChangeSetCommand,
   GetTemplateCommand,
   ListChangeSetsCommand,
@@ -68,7 +69,7 @@ const THROTTLING_ERROR_NAMES = new Set([
 
 function errorName(err: unknown): string | undefined {
   return typeof err === 'object' && err !== null && 'name' in err
-    ? (err as { name?: unknown }).name as string | undefined
+    ? ((err as { name?: unknown }).name as string | undefined)
     : undefined;
 }
 
@@ -83,17 +84,28 @@ function isThrottlingError(err: unknown): boolean {
 
 /** `DescribeStacks` の「スタック不存在」ValidationError を判定する(§7)。 */
 function isStackNotExistError(err: unknown): boolean {
-  return errorName(err) === 'ValidationError' && /does not exist/i.test(errorMessage(err));
+  return (
+    errorName(err) === 'ValidationError' &&
+    /does not exist/i.test(errorMessage(err))
+  );
 }
 
 /** スタックのステータスが終端(進行中でない)か。`REVIEW_IN_PROGRESS` 等の `_IN_PROGRESS` は非終端。 */
 function isStackTerminal(status: string): boolean {
-  return status !== '' && !status.endsWith('_IN_PROGRESS') && !status.endsWith('_PENDING');
+  return (
+    status !== '' &&
+    !status.endsWith('_IN_PROGRESS') &&
+    !status.endsWith('_PENDING')
+  );
 }
 
 /** 変更セットのステータスが終端(`CREATE_COMPLETE` / `FAILED` / `DELETE_*` / `OBSOLETE`)か。 */
 function isChangeSetTerminal(status: string): boolean {
-  return status !== '' && !status.endsWith('_IN_PROGRESS') && !status.endsWith('_PENDING');
+  return (
+    status !== '' &&
+    !status.endsWith('_IN_PROGRESS') &&
+    !status.endsWith('_PENDING')
+  );
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -114,11 +126,18 @@ function pairsToRecord<T>(
   return record;
 }
 
-function recordToParameters(record: Record<string, string>): { ParameterKey: string; ParameterValue: string }[] {
-  return Object.entries(record).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue }));
+function recordToParameters(
+  record: Record<string, string>,
+): { ParameterKey: string; ParameterValue: string }[] {
+  return Object.entries(record).map(([ParameterKey, ParameterValue]) => ({
+    ParameterKey,
+    ParameterValue,
+  }));
 }
 
-function recordToTags(record: Record<string, string>): { Key: string; Value: string }[] {
+function recordToTags(
+  record: Record<string, string>,
+): { Key: string; Value: string }[] {
   return Object.entries(record).map(([Key, Value]) => ({ Key, Value }));
 }
 
@@ -150,7 +169,9 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       maxAttempts: options.maxAttempts ?? 10,
       // FR-7-1: profile 指定時のみ、既定クレデンシャルチェーンに profile を適用する。
       // 未指定時は SDK 標準チェーン(環境変数 → プロファイル → IAM ロール)に委ねる(FR-7-2)。
-      ...(options.profile !== undefined ? { credentials: defaultProvider({ profile: options.profile }) } : {}),
+      ...(options.profile !== undefined
+        ? { credentials: defaultProvider({ profile: options.profile }) }
+        : {}),
     });
   }
 
@@ -175,7 +196,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   }
 
   async describeStack(stackName: string): Promise<StackSummary | undefined> {
-    let output;
+    let output: DescribeStacksCommandOutput;
     try {
       output = await this.withRetry(() =>
         this.client.send(new DescribeStacksCommand({ StackName: stackName })),
@@ -194,10 +215,22 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       stackId: stack.StackId ?? '',
       status: stack.StackStatus ?? '',
       statusReason: stack.StackStatusReason,
-      parameters: pairsToRecord(stack.Parameters, (p) => p.ParameterKey, (p) => p.ParameterValue),
-      tags: pairsToRecord(stack.Tags, (t) => t.Key, (t) => t.Value),
+      parameters: pairsToRecord(
+        stack.Parameters,
+        (p) => p.ParameterKey,
+        (p) => p.ParameterValue,
+      ),
+      tags: pairsToRecord(
+        stack.Tags,
+        (t) => t.Key,
+        (t) => t.Value,
+      ),
       capabilities: stack.Capabilities ?? [],
-      outputs: pairsToRecord(stack.Outputs, (o) => o.OutputKey, (o) => o.OutputValue),
+      outputs: pairsToRecord(
+        stack.Outputs,
+        (o) => o.OutputKey,
+        (o) => o.OutputValue,
+      ),
       terminationProtection: stack.EnableTerminationProtection ?? false,
     };
   }
@@ -209,7 +242,12 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     // §7(Codex 承認条件): NextToken を辿って全ページを走査する。
     do {
       const output = await this.withRetry(() =>
-        this.client.send(new ListChangeSetsCommand({ StackName: stackName, NextToken: nextToken })),
+        this.client.send(
+          new ListChangeSetsCommand({
+            StackName: stackName,
+            NextToken: nextToken,
+          }),
+        ),
       );
       for (const summary of output.Summaries ?? []) {
         summaries.push({
@@ -246,7 +284,10 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     return { id: output.Id ?? '' };
   }
 
-  async describeChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async describeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     const changes: ResourceChange[] = [];
     let nextToken: string | undefined;
     let firstPage: DescribeChangeSetCommandOutput | undefined;
@@ -278,43 +319,78 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       statusReason: first.StatusReason,
       executionStatus: first.ExecutionStatus,
       changes,
-      parameters: pairsToRecord(first.Parameters, (p) => p.ParameterKey, (p) => p.ParameterValue),
-      tags: pairsToRecord(first.Tags, (t) => t.Key, (t) => t.Value),
+      parameters: pairsToRecord(
+        first.Parameters,
+        (p) => p.ParameterKey,
+        (p) => p.ParameterValue,
+      ),
+      tags: pairsToRecord(
+        first.Tags,
+        (t) => t.Key,
+        (t) => t.Value,
+      ),
       capabilities: first.Capabilities ?? [],
     };
   }
 
-  async waitForChangeSet(stackName: string, changeSetName: string): Promise<ChangeSetDetail> {
+  async waitForChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<ChangeSetDetail> {
     const deadline = Date.now() + this.pollTimeoutMs;
     for (;;) {
       const detail = await this.describeChangeSet(stackName, changeSetName);
       if (isChangeSetTerminal(detail.status)) return detail;
       if (Date.now() >= deadline) {
-        throw new AwsError(`変更セットの完了待機がタイムアウトしました: ${changeSetName}`, {
-          stackKey: stackName,
-        });
+        throw new AwsError(
+          `変更セットの完了待機がタイムアウトしました: ${changeSetName}`,
+          {
+            stackKey: stackName,
+          },
+        );
       }
       await this.sleep(this.pollIntervalMs);
     }
   }
 
-  async deleteChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async deleteChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     await this.withRetry(() =>
-      this.client.send(new DeleteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })),
+      this.client.send(
+        new DeleteChangeSetCommand({
+          StackName: stackName,
+          ChangeSetName: changeSetName,
+        }),
+      ),
     );
   }
 
-  async executeChangeSet(stackName: string, changeSetName: string): Promise<void> {
+  async executeChangeSet(
+    stackName: string,
+    changeSetName: string,
+  ): Promise<void> {
     await this.withRetry(() =>
-      this.client.send(new ExecuteChangeSetCommand({ StackName: stackName, ChangeSetName: changeSetName })),
+      this.client.send(
+        new ExecuteChangeSetCommand({
+          StackName: stackName,
+          ChangeSetName: changeSetName,
+        }),
+      ),
     );
   }
 
   async deleteStack(stackName: string): Promise<void> {
-    await this.withRetry(() => this.client.send(new DeleteStackCommand({ StackName: stackName })));
+    await this.withRetry(() =>
+      this.client.send(new DeleteStackCommand({ StackName: stackName })),
+    );
   }
 
-  async describeStackEvents(stackName: string, seenEventIds?: Set<string>): Promise<StackEvent[]> {
+  async describeStackEvents(
+    stackName: string,
+    seenEventIds?: Set<string>,
+  ): Promise<StackEvent[]> {
     const seen = seenEventIds ?? new Set<string>();
     // AWS は新しい順に返す。ページ順(newest-first)で貯め、最後に反転して古い順にする。
     const collectedNewestFirst: StackEvent[] = [];
@@ -322,7 +398,12 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
     do {
       const output = await this.withRetry(() =>
-        this.client.send(new DescribeStackEventsCommand({ StackName: stackName, NextToken: nextToken })),
+        this.client.send(
+          new DescribeStackEventsCommand({
+            StackName: stackName,
+            NextToken: nextToken,
+          }),
+        ),
       );
       const pageEvents = output.StackEvents ?? [];
       let newInPage = 0;
@@ -349,12 +430,17 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
     const output = await this.withRetry(() =>
-      this.client.send(new GetTemplateCommand({ StackName: stackName, TemplateStage: stage })),
+      this.client.send(
+        new GetTemplateCommand({ StackName: stackName, TemplateStage: stage }),
+      ),
     );
     return output.TemplateBody ?? '';
   }
 
-  async waitForStack(stackName: string, opts: WaitForStackOptions = {}): Promise<StackSummary> {
+  async waitForStack(
+    stackName: string,
+    opts: WaitForStackOptions = {},
+  ): Promise<StackSummary> {
     const interval = opts.intervalMs ?? this.pollIntervalMs;
     const timeout = opts.timeoutMs ?? this.pollTimeoutMs;
     const deadline = Date.now() + timeout;
@@ -392,7 +478,10 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       last = summary;
       if (isStackTerminal(summary.status)) return summary;
       if (Date.now() >= deadline) {
-        throw new AwsError(`スタックの完了待機がタイムアウトしました: ${stackName}`, { stackKey: stackName });
+        throw new AwsError(
+          `スタックの完了待機がタイムアウトしました: ${stackName}`,
+          { stackKey: stackName },
+        );
       }
       await this.sleep(interval);
     }
@@ -409,7 +498,11 @@ function normalizeResourceChange(change: {
     Replacement?: string;
     Scope?: string[];
     Details?: {
-      Target?: { Attribute?: string; Name?: string; RequiresRecreation?: string };
+      Target?: {
+        Attribute?: string;
+        Name?: string;
+        RequiresRecreation?: string;
+      };
       Evaluation?: string;
       ChangeSource?: string;
       CausingEntity?: string;

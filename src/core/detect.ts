@@ -9,7 +9,7 @@
  */
 
 import type { ResolvedStackTarget } from './config.js';
-import { sha256Hex, type CfnSyncState, type StackEntry } from './state.js';
+import { type CfnSyncState, type StackEntry, sha256Hex } from './state.js';
 import type { ChangeType, StackKey } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -95,7 +95,10 @@ export function computeInputsHash(input: ComputeInputsHashInput): string {
 // 変更分類本体(design.md §4.4)
 // ---------------------------------------------------------------------------
 
-function getTemplateContent(templates: Map<string, string>, templatePath: string): string {
+function getTemplateContent(
+  templates: Map<string, string>,
+  templatePath: string,
+): string {
   const content = templates.get(templatePath);
   if (content === undefined) {
     throw new Error(`テンプレート内容が見つかりません: ${templatePath}`);
@@ -139,13 +142,23 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
 
     if (stateEntry === undefined) {
       // 設定にありステートになし(新テンプレート or 新リージョン)。
-      entries.push({ stackKey: target.stackKey, changeType: 'added', target, templateHash, inputsHash });
+      entries.push({
+        stackKey: target.stackKey,
+        changeType: 'added',
+        target,
+        templateHash,
+        inputsHash,
+      });
       continue;
     }
 
     if (stateEntry.stackName !== target.stackName) {
       // FR-1-14: スタック名変更 = 旧名の削除 + 新名の新規作成(対で計画する)。
-      entries.push({ stackKey: target.stackKey, changeType: 'deleted', stateEntry });
+      entries.push({
+        stackKey: target.stackKey,
+        changeType: 'deleted',
+        stateEntry,
+      });
       entries.push({
         stackKey: target.stackKey,
         changeType: 'added',
@@ -183,7 +196,11 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
     .filter((key) => !targetStackKeys.has(key))
     .sort();
   for (const key of deletedKeys) {
-    entries.push({ stackKey: key, changeType: 'deleted', stateEntry: state.stacks[key] });
+    entries.push({
+      stackKey: key,
+      changeType: 'deleted',
+      stateEntry: state.stacks[key],
+    });
   }
 
   return { entries };

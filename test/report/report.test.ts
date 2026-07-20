@@ -7,25 +7,28 @@
 
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { makeStackKey } from '../../src/core/types.js';
 import type { RegionGraph } from '../../src/core/graph.js';
+import { makeStackKey } from '../../src/core/types.js';
 import type { ChangeSetDetail, ResourceChange } from '../../src/ports/index.js';
 import {
   buildStackDiff,
+  type ConnectionInfo,
+  type DeployReport,
   maskNoEcho,
   renderGraphJson,
   renderGraphText,
   renderJson,
   renderText,
-  type ConnectionInfo,
-  type DeployReport,
   type StackDiff,
 } from '../../src/report/index.js';
 
 const REGION = 'ap-northeast-1';
 const REGION_B = 'us-east-1';
 
-function change(overrides: Partial<ResourceChange> & Pick<ResourceChange, 'logicalResourceId'>): ResourceChange {
+function change(
+  overrides: Partial<ResourceChange> &
+    Pick<ResourceChange, 'logicalResourceId'>,
+): ResourceChange {
   return {
     action: 'Modify',
     resourceType: 'AWS::EC2::VPC',
@@ -39,7 +42,10 @@ function connection(overrides: Partial<ConnectionInfo> = {}): ConnectionInfo {
   return { accountId: '123456789012', regions: [REGION], ...overrides };
 }
 
-function report(diffs: StackDiff[], overrides: Partial<DeployReport> = {}): DeployReport {
+function report(
+  diffs: StackDiff[],
+  overrides: Partial<DeployReport> = {},
+): DeployReport {
   return { connection: connection(), diffs, ...overrides };
 }
 
@@ -57,12 +63,26 @@ describe('FR-3-1: リソース単位の変更種別・変更プロパティの�
           action: 'Modify',
           resourceType: 'AWS::EC2::VPC',
           details: [
-            { target: { attribute: 'Properties', name: 'CidrBlock' }, evaluation: 'Static' },
-            { target: { attribute: 'Properties', name: 'Tags' }, evaluation: 'Static' },
+            {
+              target: { attribute: 'Properties', name: 'CidrBlock' },
+              evaluation: 'Static',
+            },
+            {
+              target: { attribute: 'Properties', name: 'Tags' },
+              evaluation: 'Static',
+            },
           ],
         }),
-        change({ logicalResourceId: 'Subnet', action: 'Add', resourceType: 'AWS::EC2::Subnet' }),
-        change({ logicalResourceId: 'Old', action: 'Remove', resourceType: 'AWS::EC2::RouteTable' }),
+        change({
+          logicalResourceId: 'Subnet',
+          action: 'Add',
+          resourceType: 'AWS::EC2::Subnet',
+        }),
+        change({
+          logicalResourceId: 'Old',
+          action: 'Remove',
+          resourceType: 'AWS::EC2::RouteTable',
+        }),
       ],
       parameters: {},
       tags: {},
@@ -85,8 +105,14 @@ describe('FR-3-1: リソース単位の変更種別・変更プロパティの�
       resourceType: 'AWS::EC2::VPC',
       changedProperties: ['CidrBlock', 'Tags'],
     });
-    expect(diff.resources[1]).toMatchObject({ action: 'Add', logicalResourceId: 'Subnet' });
-    expect(diff.resources[2]).toMatchObject({ action: 'Remove', logicalResourceId: 'Old' });
+    expect(diff.resources[1]).toMatchObject({
+      action: 'Add',
+      logicalResourceId: 'Subnet',
+    });
+    expect(diff.resources[2]).toMatchObject({
+      action: 'Remove',
+      logicalResourceId: 'Old',
+    });
   });
 
   it('FR-3-1: renderText はリソース単位の変更種別・変更プロパティを含める', () => {
@@ -149,7 +175,9 @@ describe('FR-3-2: Replacement の警告強調', () => {
   it('FR-3-2: Replacement: Conditional も警告扱い(replacement: true)になる', () => {
     const detail: ChangeSetDetail = {
       status: 'CREATE_COMPLETE',
-      changes: [change({ logicalResourceId: 'Vpc', replacement: 'Conditional' })],
+      changes: [
+        change({ logicalResourceId: 'Vpc', replacement: 'Conditional' }),
+      ],
       parameters: {},
       tags: {},
       capabilities: [],
@@ -296,7 +324,9 @@ describe('NFR-4: NoEcho マスク', () => {
   const SECRET = 'S3cr3t-Raw-Value-Do-Not-Leak';
 
   it('NFR-4: maskNoEcho は NoEcho キーの値のみ **** に置換する', () => {
-    const masked = maskNoEcho({ DbPassword: SECRET, Other: 'plain' }, ['DbPassword']);
+    const masked = maskNoEcho({ DbPassword: SECRET, Other: 'plain' }, [
+      'DbPassword',
+    ]);
     expect(masked).toEqual({ DbPassword: '****', Other: 'plain' });
   });
 
@@ -331,7 +361,12 @@ describe('NFR-4: NoEcho マスク', () => {
       changes: [
         change({
           logicalResourceId: 'Db',
-          details: [{ target: { attribute: 'Properties', name: 'MasterUserPassword' }, causingEntity: 'DbPassword' }],
+          details: [
+            {
+              target: { attribute: 'Properties', name: 'MasterUserPassword' },
+              causingEntity: 'DbPassword',
+            },
+          ],
         }),
       ],
       parameters: { DbPassword: SECRET },
@@ -399,7 +434,11 @@ describe('FR-13-7: 出力へのリージョン明示(スタックキー込み)',
       operation: 'create',
       noEchoParams: [],
     });
-    const text = renderText(report([diffA, diffB], { connection: connection({ regions: [REGION, REGION_B] }) }));
+    const text = renderText(
+      report([diffA, diffB], {
+        connection: connection({ regions: [REGION, REGION_B] }),
+      }),
+    );
     expect(text).toContain(`network.yaml@${REGION}`);
     expect(text).toContain(`network.yaml@${REGION_B}`);
   });
@@ -428,7 +467,10 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     expect(text).toContain('database.yaml@' + REGION);
     // database は network に依存することがわかる。
     const databaseIndex = text.indexOf('database.yaml@' + REGION);
-    const dependsLineIndex = text.indexOf('network.yaml@' + REGION, databaseIndex);
+    const dependsLineIndex = text.indexOf(
+      'network.yaml@' + REGION,
+      databaseIndex,
+    );
     expect(dependsLineIndex).toBeGreaterThan(databaseIndex);
   });
 
@@ -437,7 +479,10 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     const parsed = JSON.parse(json);
     expect(parsed.regions).toHaveLength(1);
     expect(parsed.regions[0].region).toBe(REGION);
-    expect(parsed.regions[0].nodes).toEqual(['network.yaml@' + REGION, 'database.yaml@' + REGION]);
+    expect(parsed.regions[0].nodes).toEqual([
+      'network.yaml@' + REGION,
+      'database.yaml@' + REGION,
+    ]);
     expect(parsed.regions[0].edges).toEqual([
       { from: 'network.yaml@' + REGION, to: 'database.yaml@' + REGION },
     ]);
@@ -454,7 +499,10 @@ describe('FR-8-3: 依存マッピングの出力', () => {
 
     const parsed = JSON.parse(renderGraphJson(graphs));
     expect(parsed.regions).toHaveLength(2);
-    expect(parsed.regions.map((r: { region: string }) => r.region)).toEqual([REGION, REGION_B]);
+    expect(parsed.regions.map((r: { region: string }) => r.region)).toEqual([
+      REGION,
+      REGION_B,
+    ]);
   });
 });
 
@@ -464,7 +512,14 @@ describe('FR-8-3: 依存マッピングの出力', () => {
 
 describe('FR-7-8(出力): 接続先の先頭表示', () => {
   it('FR-7-8: renderText の先頭にアカウント ID・リージョンが含まれる', () => {
-    const text = renderText(report([], { connection: connection({ accountId: '999999999999', regions: [REGION, REGION_B] }) }));
+    const text = renderText(
+      report([], {
+        connection: connection({
+          accountId: '999999999999',
+          regions: [REGION, REGION_B],
+        }),
+      }),
+    );
     const lines = text.split('\n').filter((l) => l.trim().length > 0);
     const headerBlock = lines.slice(0, 4).join('\n');
     expect(headerBlock).toContain('999999999999');
@@ -473,14 +528,29 @@ describe('FR-7-8(出力): 接続先の先頭表示', () => {
   });
 
   it('FR-7-8: renderJson の connection フィールドにアカウント ID・リージョンが含まれる', () => {
-    const parsed = JSON.parse(renderJson(report([], { connection: connection({ accountId: '999999999999', regions: [REGION] }) })));
-    expect(parsed.connection).toEqual({ accountId: '999999999999', regions: [REGION] });
+    const parsed = JSON.parse(
+      renderJson(
+        report([], {
+          connection: connection({
+            accountId: '999999999999',
+            regions: [REGION],
+          }),
+        }),
+      ),
+    );
+    expect(parsed.connection).toEqual({
+      accountId: '999999999999',
+      regions: [REGION],
+    });
   });
 
   it('FR-7-8: DeployReport に不正に付与されたクレデンシャルらしき余剰フィールドは renderText / renderJson の出力に一切現れない', () => {
     const rep = report([]) as DeployReport & { credentials?: unknown };
     // usecase 側の実装ミスを想定した防御的テスト: 契約にない秘匿情報が紛れ込んでも出力に漏れないこと。
-    rep.credentials = { accessKeyId: 'AKIAFAKEEXAMPLE', secretAccessKey: 'super-secret-leak-marker' };
+    rep.credentials = {
+      accessKeyId: 'AKIAFAKEEXAMPLE',
+      secretAccessKey: 'super-secret-leak-marker',
+    };
 
     expect(renderText(rep)).not.toContain('super-secret-leak-marker');
     expect(renderJson(rep)).not.toContain('super-secret-leak-marker');

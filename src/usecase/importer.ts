@@ -37,10 +37,10 @@ import { resolveTargets } from '../core/config.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import { GuardError, LockError } from '../core/errors.js';
 import {
-  prepareSave,
-  upsertStackEntry,
   type CfnSyncState,
+  prepareSave,
   type StackEntry,
+  upsertStackEntry,
 } from '../core/state.js';
 import { analyzeTemplate, templatesEquivalent } from '../core/template.js';
 import type { StackKey } from '../core/types.js';
@@ -52,8 +52,12 @@ import type {
   StsGateway,
 } from '../ports/index.js';
 import type { ConnectionInfo } from '../report/index.js';
-import { connectionHeader, resolveConnection, verifyStateAccount } from './guard.js';
 import { MANAGEMENT_TAG_KEY, newRunId } from './executor.js';
+import {
+  connectionHeader,
+  resolveConnection,
+  verifyStateAccount,
+} from './guard.js';
 
 // ===========================================================================
 // 公開 API(T-19 cli への契約)
@@ -118,7 +122,11 @@ export interface ImportReport {
    * - `template-blocking`: 差分 + reconcile 未指定 / ローカル欠如 + write-template 未指定(FR-10-4/5)
    * - `ownership-lost`: 書き込み直前 fencing で所有権喪失(FR-1-9)
    */
-  aborted?: 'lock-unavailable' | 'account-mismatch' | 'template-blocking' | 'ownership-lost';
+  aborted?:
+    | 'lock-unavailable'
+    | 'account-mismatch'
+    | 'template-blocking'
+    | 'ownership-lost';
   warnings: string[];
 }
 
@@ -149,7 +157,10 @@ export async function runImport(input: {
 
   // FR-7-7 / FR-10-8: import は許可設定なしで実行できるが、STS 解決とアカウント照合は必須。
   const connection = await resolveConnection(deps.sts);
-  const header = connectionHeader({ accountId: connection.accountId, regions: uniqueRegions(config) });
+  const header = connectionHeader({
+    accountId: connection.accountId,
+    regions: uniqueRegions(config),
+  });
 
   // 1. ステートロックの取得(FR-10-9)。取得失敗 → 一切の書き込みなしでエラー。
   let lock: LockHandle;
@@ -163,7 +174,11 @@ export async function runImport(input: {
     if (err instanceof LockError) {
       return {
         exitCode: 1,
-        report: emptyReport(header, 'lock-unavailable', `ステートロックを取得できませんでした: ${err.message}`),
+        report: emptyReport(
+          header,
+          'lock-unavailable',
+          `ステートロックを取得できませんでした: ${err.message}`,
+        ),
       };
     }
     throw err;
@@ -174,16 +189,28 @@ export async function runImport(input: {
     //    不一致 → GuardError(書き込みゼロ)/ 未記録 → 同一ロック区間の CAS 保存で記録。
     let stateCtx: { state: CfnSyncState; version: StateVersion | undefined };
     try {
-      stateCtx = await verifyStateAccount({ backend: deps.backend, accountId: connection.accountId });
+      stateCtx = await verifyStateAccount({
+        backend: deps.backend,
+        accountId: connection.accountId,
+      });
     } catch (err) {
       if (err instanceof GuardError) {
-        return { exitCode: 1, report: emptyReport(header, 'account-mismatch', err.message) };
+        return {
+          exitCode: 1,
+          report: emptyReport(header, 'account-mismatch', err.message),
+        };
       }
       throw err;
     }
 
     // 3〜7. AWS からの読み取りと書き込み計画の立案(この段では一切書き込まない)。
-    const plan = await buildImportPlan({ config, configPath, options, fs, deps });
+    const plan = await buildImportPlan({
+      config,
+      configPath,
+      options,
+      fs,
+      deps,
+    });
 
     // FR-10-4 / FR-10-5: 解決不能な差分・欠如がある場合は fail-closed(書き込みゼロ)。
     if (plan.blocked) {
@@ -272,7 +299,11 @@ interface ReflectData {
   capabilities: string[];
   /** 設定上のリージョン数が 2 以上か(FR-13: 2 以上は regionOverrides に書き分ける)。 */
   multiRegion: boolean;
-  regions: { region: string; parameters: Record<string, string>; tags: Record<string, string> }[];
+  regions: {
+    region: string;
+    parameters: Record<string, string>;
+    tags: Record<string, string>;
+  }[];
 }
 
 interface TemplateWrite {
@@ -306,7 +337,10 @@ async function buildImportPlan(args: {
 
   const regionCountByTemplate = new Map<string, number>();
   for (const target of targets) {
-    regionCountByTemplate.set(target.templatePath, (regionCountByTemplate.get(target.templatePath) ?? 0) + 1);
+    regionCountByTemplate.set(
+      target.templatePath,
+      (regionCountByTemplate.get(target.templatePath) ?? 0) + 1,
+    );
   }
 
   const stacks: ImportStackReport[] = [];
@@ -335,13 +369,19 @@ async function buildImportPlan(args: {
     }
 
     // FR-10-7: GetTemplate(Original)(読み取り)。
-    const deployedTemplate = await cfn.getTemplate(target.stackName, 'Original');
+    const deployedTemplate = await cfn.getTemplate(
+      target.stackName,
+      'Original',
+    );
     const deployedAnalysis = analyzeTemplate(deployedTemplate, {
       stackName: summary.stackName,
       region: target.region,
     });
 
-    const configParameters = toConfigParameters(summary.parameters, deployedAnalysis.noEchoParams);
+    const configParameters = toConfigParameters(
+      summary.parameters,
+      deployedAnalysis.noEchoParams,
+    );
     const configTags = toConfigTags(summary.tags);
     const noEchoPlaceholders = Object.keys(configParameters).filter(
       (key) => configParameters[key] === REQUIRED_PLACEHOLDER,
@@ -453,12 +493,22 @@ async function buildImportPlan(args: {
       multiRegion: (regionCountByTemplate.get(target.templatePath) ?? 1) > 1,
       regions: [],
     };
-    reflectData.regions.push({ region: target.region, parameters: configParameters, tags: configTags });
+    reflectData.regions.push({
+      region: target.region,
+      parameters: configParameters,
+      tags: configTags,
+    });
     reflect.set(target.templatePath, reflectData);
 
     // テンプレート書き出しは templatePath 単位で 1 回(最初に決まった内容)。
-    if (writeContent !== undefined && !templateWritesByPath.has(target.templatePath)) {
-      templateWritesByPath.set(target.templatePath, { absPath: templateAbsPath, content: writeContent });
+    if (
+      writeContent !== undefined &&
+      !templateWritesByPath.has(target.templatePath)
+    ) {
+      templateWritesByPath.set(target.templatePath, {
+        absPath: templateAbsPath,
+        content: writeContent,
+      });
     }
 
     stacks.push({
@@ -495,19 +545,46 @@ async function buildImportPlan(args: {
  * 設定上のリージョンが 2 以上の場合はパラメータ・タグを `regionOverrides.<region>` に書き分ける
  * (FR-13-3。リージョン依存の値に対応)。
  */
-function applyReflect(doc: ReturnType<typeof parseDocument>, templatePath: string, reflect: ReflectData): void {
+function applyReflect(
+  doc: ReturnType<typeof parseDocument>,
+  templatePath: string,
+  reflect: ReflectData,
+): void {
   doc.setIn(['stacks', templatePath, 'stackName'], reflect.stackName);
   if (reflect.capabilities.length > 0) {
-    doc.setIn(['stacks', templatePath, 'capabilities'], [...reflect.capabilities]);
+    doc.setIn(
+      ['stacks', templatePath, 'capabilities'],
+      [...reflect.capabilities],
+    );
   }
 
   if (reflect.multiRegion) {
     for (const region of reflect.regions) {
       for (const [key, value] of Object.entries(region.parameters)) {
-        doc.setIn(['stacks', templatePath, 'regionOverrides', region.region, 'parameters', key], value);
+        doc.setIn(
+          [
+            'stacks',
+            templatePath,
+            'regionOverrides',
+            region.region,
+            'parameters',
+            key,
+          ],
+          value,
+        );
       }
       for (const [key, value] of Object.entries(region.tags)) {
-        doc.setIn(['stacks', templatePath, 'regionOverrides', region.region, 'tags', key], value);
+        doc.setIn(
+          [
+            'stacks',
+            templatePath,
+            'regionOverrides',
+            region.region,
+            'tags',
+            key,
+          ],
+          value,
+        );
       }
     }
     return;
@@ -542,13 +619,16 @@ function toConfigParameters(
   const noEchoSet = new Set(noEchoParams);
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(deployedParameters)) {
-    result[key] = noEchoSet.has(key) || value === '****' ? REQUIRED_PLACEHOLDER : value;
+    result[key] =
+      noEchoSet.has(key) || value === '****' ? REQUIRED_PLACEHOLDER : value;
   }
   return result;
 }
 
 /** 管理タグ(`cfnsync:state-id`)は自動付与されるため設定ファイルへは書き戻さない(§8.4)。 */
-function toConfigTags(deployedTags: Record<string, string>): Record<string, string> {
+function toConfigTags(
+  deployedTags: Record<string, string>,
+): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(deployedTags)) {
     if (key === MANAGEMENT_TAG_KEY) continue;

@@ -8,8 +8,8 @@
 
 import { resolve } from 'node:path';
 import { S3StateBackend } from '../aws/s3state.js';
-import { ConfigError } from '../core/errors.js';
 import type { StateConfig } from '../core/config.js';
+import { ConfigError } from '../core/errors.js';
 import type { StateBackend } from '../ports/index.js';
 import { LocalStateBackend } from './local.js';
 
@@ -25,7 +25,9 @@ export interface CreateStateBackendOptions {
 }
 
 /** 設定に応じて対応する `StateBackend` 実装を生成する(FR-1-4)。 */
-export function createStateBackend(options: CreateStateBackendOptions): StateBackend {
+export function createStateBackend(
+  options: CreateStateBackendOptions,
+): StateBackend {
   const { stateConfig, configDir, profile } = options;
 
   if (stateConfig.backend === 'local') {
@@ -35,7 +37,9 @@ export function createStateBackend(options: CreateStateBackendOptions): StateBac
   // backend === 's3'
   if (stateConfig.s3 === undefined) {
     // 通常は config の zod スキーマ(discriminatedUnion)で保証されるが、防御的に確認する。
-    throw new ConfigError('state.backend が s3 ですが、state.s3(bucket/key/region)が未設定です');
+    throw new ConfigError(
+      'state.backend が s3 ですが、state.s3(bucket/key/region)が未設定です',
+    );
   }
   return new S3StateBackend({
     bucket: stateConfig.s3.bucket,

@@ -5,9 +5,9 @@
  * 各 it の先頭に対応する受け入れ基準 ID を明記する。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { mockClient } from 'aws-sdk-client-mock';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // FR-7-1〜3(オプション伝播): profile 指定時に `defaultProvider` が呼ばれることを
 // 検証するためのモック。`src/aws/cloudformation.ts` と同じ流儀(profile 指定時のみ
@@ -21,6 +21,7 @@ vi.mock('@aws-sdk/credential-provider-node', () => ({
 }));
 
 const { StsGatewayImpl } = await import('../../src/aws/sts.js');
+
 import type { StsGateway } from '../../src/ports/index.js';
 
 const stsMock = mockClient(STSClient);
@@ -30,7 +31,9 @@ beforeEach(() => {
   defaultProviderMock.mockClear();
 });
 
-function callerIdentityOutput(overrides: Partial<{ Account: string; Arn: string; UserId: string }> = {}) {
+function callerIdentityOutput(
+  overrides: Partial<{ Account: string; Arn: string; UserId: string }> = {},
+) {
   return {
     Account: '123456789012',
     Arn: 'arn:aws:iam::123456789012:role/deploy',
@@ -55,15 +58,20 @@ describe('FR-7-6(基盤): GetCallerIdentity による接続先解決', () => {
       arn: 'arn:aws:iam::123456789012:role/deploy',
     });
     expect(stsMock.commandCalls(GetCallerIdentityCommand)).toHaveLength(1);
-    expect(stsMock.commandCalls(GetCallerIdentityCommand)[0].args[0].input).toEqual({});
+    expect(
+      stsMock.commandCalls(GetCallerIdentityCommand)[0].args[0].input,
+    ).toEqual({});
   });
 
   it('FR-7-6: 解決失敗(認証エラー)は例外としてそのまま伝播する', async () => {
-    stsMock
-      .on(GetCallerIdentityCommand)
-      .rejects(Object.assign(new Error('The security token included in the request is invalid'), {
-        name: 'InvalidClientTokenId',
-      }));
+    stsMock.on(GetCallerIdentityCommand).rejects(
+      Object.assign(
+        new Error('The security token included in the request is invalid'),
+        {
+          name: 'InvalidClientTokenId',
+        },
+      ),
+    );
     const gateway = new StsGatewayImpl({ region: 'ap-northeast-1' });
 
     await expect(gateway.getCallerIdentity()).rejects.toThrow(
@@ -80,7 +88,10 @@ describe('FR-7-1〜3(オプション伝播): クライアント生成オプシ�
   it('FR-7-3: region オプションが STSClient の config に渡る', async () => {
     const gateway = new StsGatewayImpl({ region: 'eu-west-1' });
     const regionProvider = gateway.client.config.region;
-    const resolvedRegion = typeof regionProvider === 'function' ? await regionProvider() : regionProvider;
+    const resolvedRegion =
+      typeof regionProvider === 'function'
+        ? await regionProvider()
+        : regionProvider;
     expect(resolvedRegion).toBe('eu-west-1');
   });
 
