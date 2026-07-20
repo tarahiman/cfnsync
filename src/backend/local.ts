@@ -60,7 +60,10 @@ export class LocalStateBackend implements StateBackend {
     }
     // 破損(不完全 JSON・スキーマ不一致)は StateCorruptionError が伝播 = fail-closed。
     const state = parseState(text);
-    return { state, version: { generation: state.generation } };
+    return {
+      state,
+      version: { backend: 'local', generation: state.generation },
+    };
   }
 
   async save(
@@ -92,7 +95,11 @@ export class LocalStateBackend implements StateBackend {
             'ステートが既に存在します(初回作成の前提が崩れています)。他の実行が作成した可能性があります',
           );
         }
-      } else if (current === undefined || current !== expected.generation) {
+      } else if (
+        expected.backend !== 'local' ||
+        current === undefined ||
+        current !== expected.generation
+      ) {
         // 読込時点の世代と一致しなければ競合。ファイル消失も検証不能として競合扱い。
         throw new StateConflictError(
           `ステートの世代が読込時点(${expected.generation})から変化しています(現在: ${
@@ -102,7 +109,7 @@ export class LocalStateBackend implements StateBackend {
       }
 
       await this.writeAtomic(serializeState(state));
-      return { generation: state.generation };
+      return { backend: 'local', generation: state.generation };
     } finally {
       await saveLock.close();
       await unlink(saveLockPath).catch((error) => {
@@ -114,7 +121,7 @@ export class LocalStateBackend implements StateBackend {
   // ---- ロック(local は単一環境前提でロックを持たない。design §4.5) ------------
 
   async acquireLock(info: LockInfo): Promise<LockHandle> {
-    return { runId: info.runId };
+    return { backend: 'local', runId: info.runId };
   }
 
   async verifyLock(_handle: LockHandle): Promise<boolean> {

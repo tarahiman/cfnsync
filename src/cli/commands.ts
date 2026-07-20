@@ -1,13 +1,13 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-import type { CfnSyncConfig } from '../core/config.js';
 import {
-  renderGraphJson,
-  renderGraphText,
-  renderJson,
-  renderText,
-} from '../report/index.js';
+  type CfnSyncConfig,
+  renderDeploy,
+  renderGraph,
+  renderStatus,
+  validateEffectiveConfig,
+} from '../usecase/cliBoundary.js';
 import type { CliDependencies } from './dependencies.js';
 
 export type OutputFormat = 'text' | 'json';
@@ -57,6 +57,10 @@ function effectiveRegion(
 function loadBaseInputs(
   ctx: CommandContext,
   options: CommonOptions,
+  loadOptions: {
+    allowMissingTemplates?: boolean;
+    validateTemplateFiles?: boolean;
+  } = {},
 ): {
   config: CfnSyncConfig;
   configPath: string;
@@ -66,12 +70,16 @@ function loadBaseInputs(
 } {
   const configPath = resolve(options.config);
   const configDir = dirname(configPath);
-  const loaded = ctx.deps.loadConfig(options.config);
+  const loaded =
+    Object.keys(loadOptions).length === 0
+      ? ctx.deps.loadConfig(options.config)
+      : ctx.deps.loadConfig(options.config, loadOptions);
   const region = effectiveRegion(options, loaded, ctx.env);
   const config =
     region === loaded.defaultRegion
       ? loaded
       : { ...loaded, defaultRegion: region };
+  validateEffectiveConfig(config);
   return {
     config,
     configPath,
@@ -103,22 +111,6 @@ function cachedCfnFactory(
   };
 }
 
-function renderStatusText(
-  entries: Array<{
-    stackKey: string;
-    changeType: string;
-    region: string;
-  }>,
-): string {
-  const lines = ['CHANGE    REGION                STACK KEY'];
-  for (const entry of entries) {
-    lines.push(
-      `${entry.changeType.padEnd(10)}${entry.region.padEnd(22)}${entry.stackKey}`,
-    );
-  }
-  return lines.join('\n');
-}
-
 export async function runStatus(
   ctx: CommandContext,
   options: CommonOptions,
@@ -133,10 +125,7 @@ export async function runStatus(
       profile: input.profile,
     }),
   });
-  const output =
-    options.output === 'json'
-      ? JSON.stringify(result, null, 2)
-      : renderStatusText(result.entries);
+  const output = renderStatus(result.entries, options.output === 'json');
   writeLine(ctx.io.stdout, output);
   return 0;
 }
@@ -154,9 +143,7 @@ export async function runGraph(
     writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
-    options.output === 'json'
-      ? renderGraphJson(result.graphs)
-      : renderGraphText(result.graphs),
+    renderGraph(result.graphs, options.output === 'json'),
   );
   return 0;
 }
@@ -200,20 +187,18 @@ export async function runDeployment(
   const input = loadInputs(ctx, options);
   const result = await ctx.deps.deploy({
     config: input.config,
-    configDir: input.configDir,
     templates: input.templates,
     deps: deploymentDeps(ctx, input),
     options: {
       dryRun: options.dryRun === true,
       allowDelete: options.allowDelete === true,
       onFailure: options.onFailure ?? 'stop',
+      collectEvents: options.output === 'json',
     },
   });
   writeLine(
     ctx.io.stdout,
-    options.output === 'json'
-      ? renderJson(result.report)
-      : renderText(result.report),
+    renderDeploy(result.report, options.output === 'json'),
   );
   return result.exitCode;
 }
@@ -225,13 +210,16 @@ export async function runImporter(
     writeTemplate?: boolean;
   },
 ): Promise<0 | 1> {
-  const input = loadBaseInputs(ctx, options);
+  const input = loadBaseInputs(ctx, options, {
+    allowMissingTemplates: options.writeTemplate === true,
+  });
   const cfnFactory = cachedCfnFactory((region) =>
     ctx.deps.createCfn({ region, profile: input.profile }),
   );
   const result = await ctx.deps.runImport({
     config: input.config,
     configPath: input.configPath,
+    templatePaths: ctx.deps.resolveTemplatePaths(input.config, input.configDir),
     deps: {
       cfnFactory,
       sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
@@ -264,7 +252,7 @@ export async function runForceUnlock(
   options: CommonOptions,
   runId: string,
 ): Promise<0 | 1> {
-  const input = loadBaseInputs(ctx, options);
+  const input = loadBaseInputs(ctx, options, { validateTemplateFiles: false });
   const result = await ctx.deps.forceUnlock({
     backend: ctx.deps.createBackend({
       config: input.config,

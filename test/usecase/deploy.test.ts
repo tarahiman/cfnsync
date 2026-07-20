@@ -8,10 +8,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
-  resolveDependsOnKey,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
+import { resolveDependsOnKey } from '../../src/core/dependency.js';
 import {
   computeInputsHash,
   computeTemplateHash,
@@ -89,16 +89,13 @@ function configOf(
   stacks: Record<string, unknown>,
   allowedRegions = [REGION],
 ): CfnSyncConfig {
-  return validateConfig(
-    {
-      version: 1,
-      defaultRegion: allowedRegions[0],
-      allowedAccounts: [ACCOUNT],
-      allowedRegions,
-      stacks,
-    },
-    { templateExists: () => true },
-  );
+  return validateConfig({
+    version: 1,
+    defaultRegion: allowedRegions[0],
+    allowedAccounts: [ACCOUNT],
+    allowedRegions,
+    stacks,
+  });
 }
 
 function templatesOf(entries: Record<string, string>): Map<string, string> {
@@ -127,7 +124,7 @@ function recordedState(
       inputsHash: opts.modified
         ? `sha256:old-${target.stackKey}`
         : computeInputsHash({
-            templateContent: source,
+            templateHash: computeTemplateHash(source),
             stackName: target.stackName,
             parameters: target.parameters,
             tags: target.tags,
@@ -667,6 +664,23 @@ describe('deploy — T-14 integration', () => {
     failure.backend.saveError = new Error('injected save failure');
     expect((await failure.run()).exitCode).toBe(1);
     expect(failure.backend.releaseCalls).toBe(1);
+  });
+
+  it('FR-1-8: releaseLock の released:false を警告付き失敗へ反映する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(config, templates, recordedState(config, templates));
+    s.backend.releaseLock = async () => ({
+      released: false,
+      reason: 'owner changed(fake)',
+    });
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks.at(-1)?.errorMessage).toContain(
+      'owner changed(fake)',
+    );
   });
 
   it('FR-1-3 / NFR-3: CAS 保存失敗は onFailure=continue でも後続 AWS 副作用を中断する', async () => {

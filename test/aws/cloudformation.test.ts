@@ -148,10 +148,10 @@ describe('NFR-2: ports インターフェース適合', () => {
         return undefined;
       },
       async save() {
-        return { generation: 1 };
+        return { backend: 'local', generation: 1 };
       },
       async acquireLock() {
-        return { runId: 'run-1' };
+        return { backend: 'local', runId: 'run-1' };
       },
       async verifyLock() {
         return true;
@@ -685,20 +685,24 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
       .rejectsOnce(throttlingError(name))
       .resolves({ TemplateBody: 'ok' });
 
-    const gateway = makeGateway({ sleep });
+    const gateway = makeGateway({ sleep, maxRetries: 1 });
     expect(await gateway.getTemplate('stk', 'Original')).toBe('ok');
     // 初回 + リトライ = 2 回 send。
     expect(cfnMock.commandCalls(GetTemplateCommand)).toHaveLength(2);
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('NFR-3: 最終防衛層は既定 3 attempts で打ち切り、full jitter の指数バックオフを使う', async () => {
+  it('NFR-3: テスト用外側 retry は明示指定時だけ full jitter を使う', async () => {
     const sleep = vi.fn(async () => {});
     cfnMock
       .on(ExecuteChangeSetCommand)
       .rejects(throttlingError('ThrottlingException'));
 
-    const gateway = makeGateway({ sleep, random: () => 0.5 });
+    const gateway = makeGateway({
+      sleep,
+      random: () => 0.5,
+      maxRetries: 2,
+    });
     await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
       /ThrottlingException/,
     );
@@ -724,6 +728,7 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
       baseDelayMs: 100_000,
       random: () => 1,
       maxRetryElapsedMs: 60_000,
+      maxRetries: 2,
     });
     await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
       /ThrottlingException/,

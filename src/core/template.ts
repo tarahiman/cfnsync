@@ -33,6 +33,14 @@ export interface TemplateAnalysis {
   noEchoParams: string[];
 }
 
+/** AST 全走査をテンプレートごとに一度だけ行ったリージョン非依存の中間結果。 */
+export interface StaticTemplateAnalysis {
+  exportCandidates: Array<{ outputName: string; nameValue: unknown }>;
+  imports: string[];
+  warnings: string[];
+  noEchoParams: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -211,34 +219,6 @@ function resolveExportName(
   return undefined;
 }
 
-function extractExports(
-  template: Record<string, unknown>,
-  ctx: TemplateAnalysisContext,
-  warnings: string[],
-): string[] {
-  const outputs = template['Outputs'];
-  if (!isRecord(outputs)) return [];
-
-  const exports: string[] = [];
-  for (const [outputName, outputDef] of Object.entries(outputs)) {
-    if (!isRecord(outputDef)) continue;
-    const exportDef = outputDef['Export'];
-    if (!isRecord(exportDef)) continue;
-
-    const resolved = resolveExportName(exportDef['Name'], ctx);
-    if (resolved !== undefined) {
-      exports.push(resolved);
-    } else {
-      warnings.push(
-        `Outputs.${outputName}.Export.Name を解決できません(動的な合成のため export として扱いません): ${JSON.stringify(
-          exportDef['Name'],
-        )}`,
-      );
-    }
-  }
-  return dedupePreserveOrder(exports);
-}
-
 /**
  * テンプレート全体(Resources / Outputs / Conditions 等すべて)を再帰走査し、
  * `Fn::ImportValue` の値が静的文字列であれば import として記録する。動的
@@ -315,18 +295,55 @@ export function analyzeParsedTemplate(
   parsed: unknown,
   ctx: TemplateAnalysisContext,
 ): TemplateAnalysis {
+  return resolveStaticTemplateAnalysis(analyzeStaticTemplate(parsed), ctx);
+}
+
+/** imports / NoEcho / Export 候補を AST から一度だけ抽出する。 */
+export function analyzeStaticTemplate(parsed: unknown): StaticTemplateAnalysis {
   const template = isRecord(parsed) ? parsed : {};
-
   const warnings: string[] = [];
-  const exports = extractExports(template, ctx, warnings);
-
   const imports: string[] = [];
   walkForImports(template, imports, warnings, []);
+  const exportCandidates: StaticTemplateAnalysis['exportCandidates'] = [];
+  const outputs = template['Outputs'];
+  if (isRecord(outputs)) {
+    for (const [outputName, outputDef] of Object.entries(outputs)) {
+      if (!isRecord(outputDef)) continue;
+      const exportDef = outputDef['Export'];
+      if (!isRecord(exportDef)) continue;
+      exportCandidates.push({ outputName, nameValue: exportDef['Name'] });
+    }
+  }
 
   return {
+    exportCandidates,
     imports: dedupePreserveOrder(imports),
-    exports,
     warnings,
     noEchoParams: extractNoEchoParams(template),
+  };
+}
+
+/** 中間結果の Export 候補だけを stack/region 文脈で解決する。 */
+export function resolveStaticTemplateAnalysis(
+  analysis: StaticTemplateAnalysis,
+  ctx: TemplateAnalysisContext,
+): TemplateAnalysis {
+  const warnings = [...analysis.warnings];
+  const exports: string[] = [];
+  for (const candidate of analysis.exportCandidates) {
+    const resolved = resolveExportName(candidate.nameValue, ctx);
+    if (resolved !== undefined) exports.push(resolved);
+    else {
+      warnings.push(
+        `Outputs.${candidate.outputName}.Export.Name を解決できません(動的な合成のため export として扱いません): ${JSON.stringify(candidate.nameValue)}`,
+      );
+    }
+  }
+
+  return {
+    imports: analysis.imports,
+    exports: dedupePreserveOrder(exports),
+    warnings,
+    noEchoParams: analysis.noEchoParams,
   };
 }

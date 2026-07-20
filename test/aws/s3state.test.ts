@@ -99,17 +99,26 @@ describe('S3StateBackend load/save (FR-1-6 s3)', () => {
     } as never);
     const loaded = await makeBackend().load();
     expect(loaded?.state.generation).toBe(4);
-    expect(loaded?.version).toEqual({ generation: 4, etag: '"etag-4"' });
+    expect(loaded?.version).toEqual({
+      backend: 's3',
+      generation: 4,
+      etag: '"etag-4"',
+    });
   });
 
   it('FR-1-6(s3): 既存版の保存は PutObject If-Match: <読込時 ETag> で行い、新 ETag を返す', async () => {
     s3Mock.on(PutObjectCommand, { Key: KEY }).resolves({ ETag: '"etag-5"' });
     const version = await makeBackend().save(stateWith(5), {
+      backend: 's3',
       generation: 4,
       etag: '"etag-4"',
     });
 
-    expect(version).toEqual({ generation: 5, etag: '"etag-5"' });
+    expect(version).toEqual({
+      backend: 's3',
+      generation: 5,
+      etag: '"etag-5"',
+    });
     const call = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input;
     expect(call.IfMatch).toBe('"etag-4"');
     expect(call.IfNoneMatch).toBeUndefined();
@@ -127,7 +136,11 @@ describe('S3StateBackend load/save (FR-1-6 s3)', () => {
   it('FR-1-6(s3): PreconditionFailed(412)→ StateConflictError(上書きされない)', async () => {
     s3Mock.on(PutObjectCommand, { Key: KEY }).rejects(preconditionFailed());
     await expect(
-      makeBackend().save(stateWith(5), { generation: 4, etag: '"etag-4"' }),
+      makeBackend().save(stateWith(5), {
+        backend: 's3',
+        generation: 4,
+        etag: '"etag-4"',
+      }),
     ).rejects.toBeInstanceOf(StateConflictError);
   });
 
@@ -146,7 +159,11 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
       .resolves({ ETag: '"lock-1"' });
     const handle = await makeBackend().acquireLock(LOCK_INFO);
 
-    expect(handle).toEqual({ runId: 'run-1', etag: '"lock-1"' });
+    expect(handle).toEqual({
+      backend: 's3',
+      runId: 'run-1',
+      etag: '"lock-1"',
+    });
     const call = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input;
     expect(call.Key).toBe(LOCK_KEY);
     expect(call.IfNoneMatch).toBe('*');
@@ -182,6 +199,7 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
   it('FR-1-8: releaseLock は DeleteObject If-Match: <取得時 ETag> で解放する', async () => {
     s3Mock.on(DeleteObjectCommand, { Key: LOCK_KEY }).resolves({});
     const result = await makeBackend().releaseLock({
+      backend: 's3',
       runId: 'run-1',
       etag: '"lock-1"',
     });
@@ -192,8 +210,11 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
     expect(call.IfMatch).toBe('"lock-1"');
   });
 
-  it('FR-1-8: ETag のない handle は解放を拒否し DeleteObject を呼ばない', async () => {
-    const result = await makeBackend().releaseLock({ runId: 'run-1' });
+  it('FR-1-8: local handle は S3 解放に使用できず DeleteObject を呼ばない', async () => {
+    const result = await makeBackend().releaseLock({
+      backend: 'local',
+      runId: 'run-1',
+    });
 
     expect(result.released).toBe(false);
     expect(result.reason).toMatch(/ETag/);
@@ -205,6 +226,7 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
       .on(DeleteObjectCommand, { Key: LOCK_KEY })
       .rejects(preconditionFailed());
     const result = await makeBackend().releaseLock({
+      backend: 's3',
       runId: 'run-1',
       etag: '"lock-1"',
     });
@@ -222,10 +244,12 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
       .rejects(noSuchKey());
     const backend = makeBackend();
     const first = await backend.releaseLock({
+      backend: 's3',
       runId: 'run-1',
       etag: '"lock-1"',
     });
     const second = await backend.releaseLock({
+      backend: 's3',
       runId: 'run-1',
       etag: '"lock-1"',
     });
@@ -246,7 +270,11 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
   });
 
   it('FR-1-9(基盤): verifyLock は runId・ETag が一致すれば true、不一致・消失は false', async () => {
-    const handle = { runId: 'run-1', etag: '"lock-1"' };
+    const handle = {
+      backend: 's3' as const,
+      runId: 'run-1',
+      etag: '"lock-1"',
+    };
 
     // 一致 → true。
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({

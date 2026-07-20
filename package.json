@@ -22,7 +22,7 @@
     "prepack": "pnpm run generate:shrinkwrap && pnpm run clean && pnpm run build && pnpm run verify:dist",
     "prepublishOnly": "pnpm run clean && pnpm run build",
     "test": "vitest run",
-    "lint": "biome check .",
+    "lint": "biome check . && node scripts/check-control-chars.mjs",
     "format": "biome format --write ."
   },
   "dependencies": {

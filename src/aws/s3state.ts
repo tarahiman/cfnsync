@@ -137,7 +137,7 @@ export class S3StateBackend implements StateBackend {
     const state = parseState(text);
     return {
       state,
-      version: { generation: state.generation, etag },
+      version: { backend: 's3', generation: state.generation, etag },
     };
   }
 
@@ -146,8 +146,13 @@ export class S3StateBackend implements StateBackend {
     expected: StateVersion | undefined,
   ): Promise<StateVersion> {
     // FR-1-6(s3): 既存版は If-Match、初回(ETag なし)は If-None-Match: * で作成する。
+    if (expected?.backend === 'local') {
+      throw new StateConflictError(
+        'local backend の state version を S3 保存には使用できません',
+      );
+    }
     const condition = expected
-      ? { IfMatch: requireEtag(expected.etag, 'state version') }
+      ? { IfMatch: expected.etag }
       : { IfNoneMatch: '*' };
 
     let output: PutObjectCommandOutput;
@@ -171,6 +176,7 @@ export class S3StateBackend implements StateBackend {
       throw toAwsError('S3 PutObject(state)', err);
     }
     return {
+      backend: 's3',
       generation: state.generation,
       etag: requireEtag(output.ETag, 'PutObject(state)'),
     };
@@ -205,12 +211,14 @@ export class S3StateBackend implements StateBackend {
       throw toAwsError('S3 PutObject(lock)', err);
     }
     return {
+      backend: 's3',
       runId: info.runId,
       etag: requireEtag(output.ETag, 'PutObject(lock)'),
     };
   }
 
   async verifyLock(handle: LockHandle): Promise<boolean> {
+    if (handle.backend !== 's3') return false;
     // FR-1-9: ロックを再読込し runId・ETag が自分と一致すれば所有権あり。消失・不一致は喪失。
     let output: GetObjectCommandOutput;
     try {
@@ -236,7 +244,7 @@ export class S3StateBackend implements StateBackend {
     handle: LockHandle,
   ): Promise<{ released: boolean; reason?: string }> {
     // FR-1-8: DeleteObject If-Match: <取得時 ETag> による条件付き解放。
-    if (handle.etag === undefined || handle.etag.length === 0) {
+    if (handle.backend !== 's3' || handle.etag.length === 0) {
       return {
         released: false,
         reason:

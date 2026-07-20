@@ -350,7 +350,7 @@ export class FakeStateBackend implements StateBackend {
     if (initial) {
       this.stored = {
         state: initial,
-        version: { generation: initial.generation },
+        version: { backend: 'local', generation: initial.generation },
       };
     }
   }
@@ -392,7 +392,10 @@ export class FakeStateBackend implements StateBackend {
       this.saveErrors.push(error);
       throw error;
     }
-    const version: StateVersion = { generation: state.generation };
+    const version: StateVersion = {
+      backend: 'local',
+      generation: state.generation,
+    };
     this.stored = { state, version };
     return version;
   }
@@ -405,7 +408,11 @@ export class FakeStateBackend implements StateBackend {
     ) {
       throw new LockError('別の実行がロックを保持しています(fake)');
     }
-    this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
+    this.lock = {
+      backend: 's3',
+      runId: info.runId,
+      etag: 'fake-lock-etag',
+    };
     this.lockInfo = { ...info };
     return this.lock;
   }
@@ -451,7 +458,11 @@ export class FakeStateBackend implements StateBackend {
   }
 
   setLock(info: LockInfo): void {
-    this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
+    this.lock = {
+      backend: 's3',
+      runId: info.runId,
+      etag: 'fake-lock-etag',
+    };
     this.lockInfo = { ...info };
   }
 

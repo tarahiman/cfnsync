@@ -13,9 +13,9 @@ import {
   type CfnSyncConfig,
   findRequiredPlaceholders,
   type ResolvedStackTarget,
-  resolveDependsOnKey,
   resolveTargets,
 } from '../core/config.js';
+import { resolveDependsOnKey } from '../core/dependency.js';
 import {
   computeTemplateHash,
   type DetectedEntry,
@@ -23,6 +23,8 @@ import {
   detectChanges,
 } from '../core/detect.js';
 import {
+  ConfigError,
+  InvariantError,
   LockError,
   StackStateError,
   StatePersistenceError,
@@ -47,9 +49,11 @@ import {
   upsertStackEntry,
 } from '../core/state.js';
 import {
-  analyzeParsedTemplate,
+  analyzeStaticTemplate,
   parseCfnTemplate,
   parsedTemplatesEquivalent,
+  resolveStaticTemplateAnalysis,
+  type StaticTemplateAnalysis,
   type TemplateAnalysis,
 } from '../core/template.js';
 import { parseStackKey, type StackKey } from '../core/types.js';
@@ -105,7 +109,7 @@ export interface DeployDeps {
   now?: () => Date;
   /** テスト用の run ID 生成器。省略時は executor.newRunId。 */
   runId?: () => string;
-  /** FR-4-1: 待機中イベントの逐次出力先。report.events にも同時に蓄積する。 */
+  /** FR-4-1: 待機中イベントの逐次出力先。 */
   onEvent?: (event: StackEventLine) => void;
 }
 
@@ -113,6 +117,8 @@ export interface DeployOptions {
   dryRun?: boolean;
   allowDelete?: boolean;
   onFailure?: 'stop' | 'continue';
+  /** JSON 出力など、最終 report にイベント列を含める場合だけ true。既定 true。 */
+  collectEvents?: boolean;
 }
 
 export interface DeployResult {
@@ -161,14 +167,11 @@ interface OperationResult {
 
 export async function deploy(input: {
   config: CfnSyncConfig;
-  configDir: string;
   templates: Map<string, string>;
   deps: DeployDeps;
   options: DeployOptions;
 }): Promise<DeployResult> {
   const { config, templates, deps, options } = input;
-  void input.configDir;
-
   const targets = resolveTargets(config);
   const targetRegions = unique(targets.map((target) => target.region));
   const required = new Map<StackKey, string[]>();
@@ -257,7 +260,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   const report: DeployReport = {
     connection: ctx.connection,
     diffs: [],
-    events: [],
+    ...(ctx.options.collectEvents !== false ? { events: [] } : {}),
     result: { stacks: resultStacks },
   };
   const results = resultStacks;
@@ -274,6 +277,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       mergedGraphs: prepared.mergedGraphs,
       onFailure: ctx.options.onFailure ?? 'stop',
       failureKind: 'deploy',
+      collectContinued: false,
     });
     for (const key of decision.skipped) skipped.add(key);
   }
@@ -353,6 +357,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
             mergedGraphs: prepared.mergedGraphs,
             onFailure: ctx.options.onFailure ?? 'stop',
             failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
+            collectContinued: false,
           });
           for (const key of skipDecision.skipped) skipped.add(key);
         }
@@ -381,6 +386,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           mergedGraphs: prepared.mergedGraphs,
           onFailure: ctx.options.onFailure ?? 'stop',
           failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
+          collectContinued: false,
         });
         for (const key of skipDecision.skipped) skipped.add(key);
       }
@@ -404,6 +410,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const analyses = new Map<StackKey, TemplateAnalysis>();
   const redactors = new Map<StackKey, TextRedactor>();
   const parsedTemplates = new Map<string, unknown>();
+  const staticAnalyses = new Map<string, StaticTemplateAnalysis>();
   const templateHashes = new Map<string, string>();
   const currentNodes: StackNode[] = [];
   for (const target of ctx.targets) {
@@ -412,9 +419,17 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     if (!parsedTemplates.has(target.templatePath)) {
       parsed = parseCfnTemplate(source);
       parsedTemplates.set(target.templatePath, parsed);
+      staticAnalyses.set(target.templatePath, analyzeStaticTemplate(parsed));
       templateHashes.set(target.templatePath, computeTemplateHash(source));
     }
-    const analysis = analyzeParsedTemplate(parsed, {
+    const staticAnalysis = staticAnalyses.get(target.templatePath);
+    if (staticAnalysis === undefined) {
+      throw new InvariantError(
+        `テンプレートの静的解析結果がありません: ${target.templatePath}`,
+        { stackKey: target.stackKey, region: target.region },
+      );
+    }
+    const analysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: target.stackName,
       region: target.region,
     });
@@ -491,12 +506,16 @@ async function processCreateOrUpdate(
 ): Promise<OperationResult> {
   const target = operation.entry.target;
   if (!target)
-    throw new Error(`内部エラー: ${operation.stackKey} の target がありません`);
+    throw new InvariantError(
+      `内部エラー: ${operation.stackKey} の target がありません`,
+      { stackKey: operation.stackKey, region: operation.region },
+    );
   const source = requiredTemplate(ctx.templates, target.templatePath);
   const analysis = analyses.get(operation.stackKey);
   if (!analysis)
-    throw new Error(
+    throw new InvariantError(
       `内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`,
+      { stackKey: operation.stackKey, region: operation.region },
     );
   const redact = redactors.get(operation.stackKey) ?? identityRedactor;
 
@@ -541,6 +560,7 @@ async function processCreateOrUpdate(
 
   const executor: ExecutorContext = {
     cfn,
+    target: { stackKey: target.stackKey, region: target.region },
     stateId: ctx.deps.backend.stateId(),
     runId: ctx.runId,
     now: ctx.deps.now,
@@ -616,6 +636,7 @@ async function processCreateOrUpdate(
 
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
+  let latestFailure: StackEventLine | undefined;
   await executeWithReinspection(
     executor,
     target.stackName,
@@ -647,18 +668,14 @@ async function processCreateOrUpdate(
             ? undefined
             : redact(event.resourceStatusReason),
       };
+      if (event.resourceStatus.endsWith('_FAILED')) latestFailure = line;
       report.events?.push(line);
       ctx.deps.onEvent?.(line);
     },
   });
 
   if (!isSuccessfulTerminal(final.status)) {
-    const stackEvents = (report.events ?? []).filter(
-      (event) => event.stackKey === operation.stackKey,
-    );
-    const cause = stackEvents.find((event) =>
-      event.resourceStatus.endsWith('_FAILED'),
-    );
+    const cause = latestFailure;
     const reason =
       cause?.resourceStatusReason ??
       (final.statusReason === undefined
@@ -709,8 +726,9 @@ async function processDeleted(
 ): Promise<OperationResult> {
   const stateEntry = operation.entry.stateEntry;
   if (!stateEntry)
-    throw new Error(
+    throw new InvariantError(
       `内部エラー: ${operation.stackKey} の stateEntry がありません`,
+      { stackKey: operation.stackKey, region: operation.region },
     );
   const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
@@ -762,6 +780,7 @@ async function processDeleted(
     lock: ctx.lock,
     state: ctx.state.state,
     version: ctx.state.version,
+    knownSummary: existing,
   });
 
   if (deleted.outcome === 'refused') {
@@ -869,7 +888,10 @@ async function recoverExistingCreate(
   report.diffs.push(diff);
 
   if (!templateHash || !inputsHash) {
-    throw new Error(`内部エラー: ${target.stackKey} の hash がありません`);
+    throw new InvariantError(
+      `内部エラー: ${target.stackKey} の hash がありません`,
+      { stackKey: target.stackKey, region: target.region },
+    );
   }
   const entry: DetectedEntry = {
     stackKey: target.stackKey,
@@ -891,8 +913,9 @@ async function saveSuccessfulEntry(
 ): Promise<void> {
   const target = detected.target;
   if (!target || !detected.templateHash || !detected.inputsHash) {
-    throw new Error(
+    throw new InvariantError(
       `内部エラー: ${detected.stackKey} の成功 state 入力が不足しています`,
+      { stackKey: detected.stackKey },
     );
   }
   if (!stackId) {
@@ -1015,7 +1038,9 @@ function requiredTemplate(
 ): string {
   const source = templates.get(path);
   if (source === undefined)
-    throw new Error(`テンプレート内容が見つかりません: ${path}`);
+    throw new ConfigError(`テンプレート内容が見つかりません: ${path}`, {
+      stackKey: path,
+    });
   return source;
 }
 

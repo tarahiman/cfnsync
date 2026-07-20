@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DependencyCycleError } from '../../src/core/errors.js';
+import { ConfigError, DependencyCycleError } from '../../src/core/errors.js';
 import {
   buildGraphs,
   mergeGraphs,
@@ -163,16 +163,14 @@ describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
     });
   });
 
-  it('FR-8-2: 解決先がグラフに存在しない明示依存は辺を張らない(検証は上位で行う)', () => {
+  it('FR-8-2: 解決先がグラフに存在しない明示依存を fail-closed で拒否する', () => {
     const app = node({
       stackKey: makeStackKey('app.yaml', REGION_A),
       region: REGION_A,
       explicitDependsOn: ['not-in-graph.yaml'],
     });
 
-    const graph = graphFor(buildGraphs([app]), REGION_A);
-
-    expect(graph.edges).toEqual([]);
+    expect(() => buildGraphs([app])).toThrow(ConfigError);
   });
 });
 

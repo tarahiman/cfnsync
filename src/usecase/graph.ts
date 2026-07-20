@@ -1,12 +1,18 @@
 import type { CfnSyncConfig } from '../core/config.js';
 import { resolveTargets } from '../core/config.js';
+import { ConfigError } from '../core/errors.js';
 import {
   buildGraphs,
   type RegionGraph,
   type StackNode,
   topologicalOrder,
 } from '../core/graph.js';
-import { analyzeTemplate } from '../core/template.js';
+import {
+  analyzeStaticTemplate,
+  parseCfnTemplate,
+  resolveStaticTemplateAnalysis,
+  type StaticTemplateAnalysis,
+} from '../core/template.js';
 
 export interface GraphResult {
   graphs: Map<string, RegionGraph>;
@@ -20,14 +26,21 @@ export function getGraph(input: {
 }): GraphResult {
   const nodes: StackNode[] = [];
   const warnings: string[] = [];
+  const staticAnalyses = new Map<string, StaticTemplateAnalysis>();
   for (const target of resolveTargets(input.config)) {
     const source = input.templates.get(target.templatePath);
     if (source === undefined) {
-      throw new Error(
+      throw new ConfigError(
         `テンプレート内容が見つかりません: ${target.templatePath}`,
+        { stackKey: target.stackKey, region: target.region },
       );
     }
-    const analysis = analyzeTemplate(source, {
+    let staticAnalysis = staticAnalyses.get(target.templatePath);
+    if (staticAnalysis === undefined) {
+      staticAnalysis = analyzeStaticTemplate(parseCfnTemplate(source));
+      staticAnalyses.set(target.templatePath, staticAnalysis);
+    }
+    const analysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: target.stackName,
       region: target.region,
     });

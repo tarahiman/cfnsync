@@ -44,6 +44,10 @@ function makeCtx(
 ): ExecutorContext {
   return {
     cfn: fake,
+    target: {
+      stackKey: makeStackKey('network.yaml', 'ap-northeast-1'),
+      region: 'ap-northeast-1',
+    },
     stateId: STATE_ID,
     runId: RUN_ID,
     now: FIXED_NOW,

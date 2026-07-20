@@ -26,14 +26,20 @@ import {
 } from '../usecase/importer.js';
 import { getStatus, type StatusResult } from '../usecase/status.js';
 import {
+  type LoadConfigFileOptions,
   loadConfigFile,
   nodeFileSystem,
   readTemplateFiles,
+  resolveTemplatePaths,
 } from './filesystem.js';
 
 export interface CliDependencies {
-  loadConfig(path: string): CfnSyncConfig;
+  loadConfig(path: string, options?: LoadConfigFileOptions): CfnSyncConfig;
   readTemplates(config: CfnSyncConfig, configDir: string): Map<string, string>;
+  resolveTemplatePaths(
+    config: CfnSyncConfig,
+    configDir: string,
+  ): Map<string, string>;
   createBackend(input: {
     config: CfnSyncConfig;
     configDir: string;
@@ -43,7 +49,6 @@ export interface CliDependencies {
   createSts(input: { region?: string; profile?: string }): StsGateway;
   deploy(input: {
     config: CfnSyncConfig;
-    configDir: string;
     templates: Map<string, string>;
     deps: DeployDeps;
     options: DeployOptions;
@@ -51,6 +56,7 @@ export interface CliDependencies {
   runImport(input: {
     config: CfnSyncConfig;
     configPath: string;
+    templatePaths: Map<string, string>;
     deps: Omit<ImportDeps, 'fs'>;
     options: ImportOptions;
   }): Promise<ImportResult>;
@@ -72,6 +78,7 @@ export interface CliDependencies {
 export const defaultCliDependencies: CliDependencies = {
   loadConfig: loadConfigFile,
   readTemplates: readTemplateFiles,
+  resolveTemplatePaths,
   createBackend: ({ config, configDir, profile }) => {
     if (config.state.backend === 'local') {
       return new LocalStateBackend(resolve(configDir, LOCAL_STATE_FILENAME));

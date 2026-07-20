@@ -8,7 +8,7 @@
  *   4. 一致 → `backend.forceUnlock(runId)`(実装側が If-Match 条件付き削除)。
  *      読み取り〜削除間の所有者交代 → released: false が返る → その事実を報告(FR-1-8)。
  *
- * `StateBackend` はこのファイル内に定義したインメモリフェイクに差し替え、実 AWS には
+ * `StateBackend` は共通インメモリフェイクに差し替え、実 AWS には
  * 一切接続しない(§10)。呼び出し記録により「runId 不一致時に backend.forceUnlock が
  * 呼ばれないこと」を検証する。
  */

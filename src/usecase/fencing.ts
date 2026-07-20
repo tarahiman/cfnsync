@@ -110,7 +110,12 @@ export async function withFencedLock<T>(input: {
   }
 
   try {
-    await input.backend.releaseLock(lock);
+    const release = await input.backend.releaseLock(lock);
+    if (!release.released) {
+      throw new LockError(
+        `ステートロックを解放できませんでした: ${release.reason ?? '所有権が一致しません'}`,
+      );
+    }
     return result;
   } catch (error) {
     if (input.onReleaseError) return input.onReleaseError(result, error);

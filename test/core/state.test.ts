@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { StateConflictError } from '../../src/core/errors.js';
+import { StateCorruptionError } from '../../src/core/errors.js';
 import {
-  assertGeneration,
   type CfnSyncState,
   createInitialState,
   matchAccount,
@@ -9,7 +8,6 @@ import {
   prepareSave,
   removeStackEntry,
   type StackEntry,
-  StateCorruptionError,
   serializeState,
   sha256Hex,
   upsertStackEntry,
@@ -186,14 +184,6 @@ describe('core/state — FR-1-6(判定): 世代管理', () => {
     const state: CfnSyncState = { ...createInitialState(), generation: 5 };
     prepareSave(state);
     expect(state.generation).toBe(5);
-  });
-
-  it('FR-1-6: assertGeneration は世代が一致していれば何も投げない', () => {
-    expect(() => assertGeneration(7, 7)).not.toThrow();
-  });
-
-  it('FR-1-6: assertGeneration は世代が不一致なら StateConflictError を投げる', () => {
-    expect(() => assertGeneration(7, 8)).toThrow(StateConflictError);
   });
 });
 

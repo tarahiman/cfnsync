@@ -9,6 +9,7 @@
  */
 
 import type { ResolvedStackTarget } from './config.js';
+import { InvariantError } from './errors.js';
 import { type CfnSyncState, type StackEntry, sha256Hex } from './state.js';
 import type { ChangeType, StackKey } from './types.js';
 
@@ -59,7 +60,7 @@ export function computeTemplateHash(templateContent: string): string {
 }
 
 export interface ComputeInputsHashInput {
-  templateContent: string;
+  templateHash: string;
   stackName: string;
   parameters: Record<string, string>;
   tags: Record<string, string>;
@@ -75,7 +76,7 @@ function sortedEntries(record: Record<string, string>): [string, string][] {
 }
 
 /**
- * §4.3: テンプレート内容 + スタック名 + 実効パラメータ + タグ + Capabilities +
+ * §4.3: テンプレートハッシュ + スタック名 + 実効パラメータ + タグ + Capabilities +
  * 明示依存(dependsOn)の複合ハッシュ。パラメータ・タグはキーでソートしてから
  * 連結するため、オブジェクトのキー順には依存しない決定的な結果になる。
  * JSON.stringify を挟むことでフィールド境界の曖昧さ(値に区切り文字が
@@ -83,7 +84,7 @@ function sortedEntries(record: Record<string, string>): [string, string][] {
  */
 export function computeInputsHash(input: ComputeInputsHashInput): string {
   const canonical = JSON.stringify({
-    templateContent: input.templateContent,
+    templateHash: input.templateHash,
     stackName: input.stackName,
     parameters: sortedEntries(input.parameters),
     tags: sortedEntries(input.tags),
@@ -103,7 +104,12 @@ function getTemplateContent(
 ): string {
   const content = templates.get(templatePath);
   if (content === undefined) {
-    throw new Error(`テンプレート内容が見つかりません: ${templatePath}`);
+    throw new InvariantError(
+      `テンプレート内容が見つかりません: ${templatePath}`,
+      {
+        stackKey: templatePath,
+      },
+    );
   }
   return content;
 }
@@ -135,7 +141,7 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
       input.templateHashes?.get(target.templatePath) ??
       computeTemplateHash(content);
     const inputsHash = computeInputsHash({
-      templateContent: content,
+      templateHash,
       stackName: target.stackName,
       parameters: target.parameters,
       tags: target.tags,

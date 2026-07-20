@@ -18,6 +18,7 @@ import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
   LockHandle,
+  StackSummary,
   StateBackend,
   StateVersion,
 } from '../ports/index.js';
@@ -36,6 +37,8 @@ export interface DeleteManagedStackInput {
   lock: LockHandle;
   state: CfnSyncState;
   version: StateVersion | undefined;
+  /** 呼び出し直前に取得済みの同一スタック要約。重複 DescribeStacks を避ける。 */
+  knownSummary?: StackSummary;
 }
 
 export interface DeleteManagedStackResult {
@@ -98,7 +101,8 @@ export async function deleteManagedStack(
 
   // FR-2 / FR-2-10: DeleteStack の直前に実状態を再取得し、並行操作と
   // REVIEW_IN_PROGRESS を fail-closed に拒否する。競合で既に消えた場合は復旧成功扱い。
-  const summary = await cfn.describeStack(target.entry.stackName);
+  const summary =
+    input.knownSummary ?? (await cfn.describeStack(target.entry.stackName));
   if (summary === undefined || summary.status === 'DELETE_COMPLETE') {
     return saveDeletedState(input);
   }

@@ -176,7 +176,8 @@ describe('FR-1-13: ステートアカウントの照合(ロック取得後に再
     // load 時点の version(未存在なので undefined)を expected として CAS 保存している。
     expect(backend.saveCalls[0].expected).toBeUndefined();
     expect(backend.saveCalls[0].state.accountId).toBe(ACCOUNT);
-    expect(result.version).toEqual({ generation: 1 });
+    expect(result.version).toEqual({ backend: 'local', generation: 1 });
+    expect(result.accountStateInitialized).toBe(true);
   });
 
   it('FR-1-13: ステートは存在するが accountId が null(未記録)の場合も同一区間の CAS 保存で記録される', async () => {
@@ -186,7 +187,10 @@ describe('FR-1-13: ステートアカウントの照合(ロック取得後に再
 
     expect(result.state.accountId).toBe(ACCOUNT);
     expect(backend.saveCalls).toHaveLength(1);
-    expect(backend.saveCalls[0].expected).toEqual({ generation: 0 });
+    expect(backend.saveCalls[0].expected).toEqual({
+      backend: 'local',
+      generation: 0,
+    });
   });
 
   it('FR-1-13: 一致する場合はそのまま返し、backend.save は呼ばれない', async () => {

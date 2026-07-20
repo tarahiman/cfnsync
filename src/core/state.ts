@@ -9,16 +9,10 @@
 
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import {
-  CfnSyncError,
-  type ErrorContext,
-  StateConflictError,
-} from './errors.js';
+import { type ErrorContext, StateCorruptionError } from './errors.js';
 import type { StackKey } from './types.js';
 
 /** 破損したステート(不完全 JSON・スキーマ不一致)を検出した際のエラー(FR-1-12, fail-closed)。 */
-export class StateCorruptionError extends CfnSyncError {}
-
 const StackEntryBaseSchema = z.object({
   stackName: z.string().min(1),
   region: z.string().min(1),
@@ -170,23 +164,6 @@ export function prepareSave(state: CfnSyncState): CfnSyncState {
     schemaVersion: 2,
     generation: state.generation + 1,
   };
-}
-
-/**
- * 読込時点の世代(`loadedGeneration`)と現在の世代(`currentGeneration`)を
- * 比較し、不一致であれば `StateConflictError` を投げる(FR-1-6)。
- */
-export function assertGeneration(
-  loadedGeneration: number,
-  currentGeneration: number,
-  context: ErrorContext = {},
-): void {
-  if (loadedGeneration !== currentGeneration) {
-    throw new StateConflictError(
-      `ステートの世代が一致しません(読込時: ${loadedGeneration}, 現在: ${currentGeneration})。他の実行によって変更されている可能性があります`,
-      context,
-    );
-  }
 }
 
 /**

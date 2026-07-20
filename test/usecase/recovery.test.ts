@@ -6,10 +6,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
-  resolveDependsOnKey,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
+import { resolveDependsOnKey } from '../../src/core/dependency.js';
 import {
   computeInputsHash,
   computeTemplateHash,
@@ -72,16 +72,13 @@ Resources:
 `;
 
 function configOf(stack: Record<string, unknown> | undefined): CfnSyncConfig {
-  return validateConfig(
-    {
-      version: 1,
-      defaultRegion: REGION,
-      allowedAccounts: [ACCOUNT],
-      allowedRegions: [REGION],
-      stacks: stack ? { 'stack.yaml': stack } : {},
-    },
-    { templateExists: () => true },
-  );
+  return validateConfig({
+    version: 1,
+    defaultRegion: REGION,
+    allowedAccounts: [ACCOUNT],
+    allowedRegions: [REGION],
+    stacks: stack ? { 'stack.yaml': stack } : {},
+  });
 }
 
 function recordedState(
@@ -106,7 +103,7 @@ function recordedState(
       inputsHash: options.staleInputs
         ? 'sha256:before-aws-success'
         : computeInputsHash({
-            templateContent: source,
+            templateHash: computeTemplateHash(source),
             stackName: target.stackName,
             parameters: target.parameters,
             tags: target.tags,
@@ -184,7 +181,7 @@ function desiredInputsHash(
     : targets[0];
   const source = templates.get(target.templatePath) as string;
   return computeInputsHash({
-    templateContent: source,
+    templateHash: computeTemplateHash(source),
     stackName: target.stackName,
     parameters: target.parameters,
     tags: target.tags,
@@ -309,24 +306,21 @@ describe('T-18 recovery', () => {
   });
 
   it('FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す', async () => {
-    const config = validateConfig(
-      {
-        version: 1,
-        defaultRegion: REGION,
-        allowedAccounts: [ACCOUNT],
-        allowedRegions: [REGION],
-        stacks: {
-          'external.yaml': { stackName: 'ExternalStack' },
-          'stack.yaml': {
-            stackName: 'ManagedStack',
-            parameters: { Secret: 'local-desired-secret' },
-            tags: { Team: 'platform' },
-            dependsOn: ['external.yaml'],
-          },
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: REGION,
+      allowedAccounts: [ACCOUNT],
+      allowedRegions: [REGION],
+      stacks: {
+        'external.yaml': { stackName: 'ExternalStack' },
+        'stack.yaml': {
+          stackName: 'ManagedStack',
+          parameters: { Secret: 'local-desired-secret' },
+          tags: { Team: 'platform' },
+          dependsOn: ['external.yaml'],
         },
       },
-      { templateExists: () => true },
-    );
+    });
     const templates = new Map([
       ['external.yaml', TEMPLATE],
       ['stack.yaml', SECRET_TEMPLATE],

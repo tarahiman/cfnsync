@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { loadConfigFile } from '../../src/cli/filesystem.js';
 import {
   type CfnSyncConfig,
   findRequiredPlaceholders,
@@ -26,13 +27,8 @@ function minimalRaw(
   };
 }
 
-const alwaysExists = { templateExists: () => true };
-
 function parseFixture(name: string): CfnSyncConfig {
-  return parseConfig(readFileSync(resolve(fixturesDir, name), 'utf8'), {
-    templateExists: (templatePath) =>
-      existsSync(resolve(fixturesDir, templatePath)),
-  });
+  return parseConfig(readFileSync(resolve(fixturesDir, name), 'utf8'));
 }
 
 describe('core/config', () => {
@@ -79,7 +75,7 @@ describe('core/config', () => {
 
   describe('FR-11-2: ステートバックエンド', () => {
     it('FR-11-2: state 省略時は backend: local になる', () => {
-      const config = validateConfig(minimalRaw(), alwaysExists);
+      const config = validateConfig(minimalRaw());
       expect(config.state).toEqual({ backend: 'local' });
     });
 
@@ -95,7 +91,6 @@ describe('core/config', () => {
             },
           },
         }),
-        alwaysExists,
       );
       expect(config.state).toEqual({
         backend: 's3',
@@ -116,7 +111,6 @@ describe('core/config', () => {
               s3: { key: 'state.json', region: 'ap-northeast-1' },
             },
           }),
-          alwaysExists,
         ),
       ).toThrow(ConfigError);
 
@@ -128,7 +122,6 @@ describe('core/config', () => {
               s3: { key: 'state.json', region: 'ap-northeast-1' },
             },
           }),
-          alwaysExists,
         );
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
@@ -145,7 +138,6 @@ describe('core/config', () => {
           stackNamePrefix: 'legacy-app-',
           stacks: { 'network.yaml': {} },
         }),
-        alwaysExists,
       );
       const [target] = resolveTargets(config);
       expect(target.stackName).toBe('legacy-app-network');
@@ -154,7 +146,6 @@ describe('core/config', () => {
     it('FR-11-3: stackNamePrefix 未設定ならファイル名のみが使われる', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'network.yaml': {} } }),
-        alwaysExists,
       );
       const [target] = resolveTargets(config);
       expect(target.stackName).toBe('network');
@@ -169,10 +160,7 @@ describe('core/config', () => {
       'nested/stack.yaml\0outside',
     ])('FR-11-5: テンプレートパス %s は設定ディレクトリ外を指すため ConfigError になる(対象キーを含む)', (templatePath) => {
       try {
-        validateConfig(
-          minimalRaw({ stacks: { [templatePath]: {} } }),
-          alwaysExists,
-        );
+        validateConfig(minimalRaw({ stacks: { [templatePath]: {} } }));
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
@@ -183,18 +171,17 @@ describe('core/config', () => {
     it('FR-11-5: サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'nested/stack.yaml': {} } }),
-        alwaysExists,
       );
       expect(config.stacks['nested/stack.yaml']).toBeDefined();
     });
 
     it('FR-11-5: 存在しないテンプレートへの参照は ConfigError になる(対象パスを含む)', () => {
-      expect(() => parseFixture('missing-template.cfnsync.yaml')).toThrow(
-        ConfigError,
-      );
+      expect(() =>
+        loadConfigFile(resolve(fixturesDir, 'missing-template.cfnsync.yaml')),
+      ).toThrow(ConfigError);
 
       try {
-        parseFixture('missing-template.cfnsync.yaml');
+        loadConfigFile(resolve(fixturesDir, 'missing-template.cfnsync.yaml'));
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
@@ -204,11 +191,36 @@ describe('core/config', () => {
       }
     });
 
+    it('FR-8-2: 自己依存は対象スタックキー付き ConfigError で拒否する', () => {
+      expect(() =>
+        validateConfig(
+          minimalRaw({ stacks: { 'app.yaml': { dependsOn: ['app.yaml'] } } }),
+        ),
+      ).toThrowError(/自分自身.*app\.yaml@ap-northeast-1/);
+    });
+
+    it.each(['', '.', 'a/..'])('FR-11-5: 退化パス %j を拒否する', (path) => {
+      expect(() =>
+        validateConfig(minimalRaw({ stacks: { [path]: {} } })),
+      ).toThrow(ConfigError);
+    });
+
+    it('FR-11-5: 未知キーと正規化後の重複パスを拒否する', () => {
+      expect(() =>
+        validateConfig(minimalRaw({ capabilites: [], stacks: {} })),
+      ).toThrow(ConfigError);
+      expect(() =>
+        validateConfig(
+          minimalRaw({ stacks: { 'x/../app.yaml': {}, 'app.yaml': {} } }),
+        ),
+      ).toThrow(/重複/);
+    });
+
     it('FR-11-5: 必須項目(defaultRegion)の欠落は ConfigError になる(対象キーを含む)', () => {
       const raw = { version: 1, stacks: {} };
-      expect(() => validateConfig(raw, alwaysExists)).toThrow(ConfigError);
+      expect(() => validateConfig(raw)).toThrow(ConfigError);
       try {
-        validateConfig(raw, alwaysExists);
+        validateConfig(raw);
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
@@ -220,9 +232,9 @@ describe('core/config', () => {
       const raw = minimalRaw({
         stacks: { 'network.yaml': { regions: 'ap-northeast-1' } },
       });
-      expect(() => validateConfig(raw, alwaysExists)).toThrow(ConfigError);
+      expect(() => validateConfig(raw)).toThrow(ConfigError);
       try {
-        validateConfig(raw, alwaysExists);
+        validateConfig(raw);
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
@@ -240,7 +252,6 @@ describe('core/config', () => {
               'app.yaml': { dependsOn: ['missing.yaml'] },
             },
           }),
-          alwaysExists,
         ),
       ).toThrowError(/app\.yaml@ap-northeast-1.*region: ap-northeast-1/);
     });
@@ -257,7 +268,6 @@ describe('core/config', () => {
               },
             },
           }),
-          alwaysExists,
         ),
       ).toThrowError(/network\.yaml@ap-northeast-1/);
     });
@@ -270,7 +280,6 @@ describe('core/config', () => {
               'app.yaml': { capabilities: ['CAPABILITY_UNKNOWN'] },
             },
           }),
-          alwaysExists,
         ),
       ).toThrow(ConfigError);
     });
@@ -284,7 +293,6 @@ describe('core/config', () => {
             'network.yaml': { regions: ['us-east-1', 'ap-northeast-1'] },
           },
         }),
-        alwaysExists,
       );
       const targets = resolveTargets(config);
       expect(targets.map((t) => t.region)).toEqual([
@@ -299,7 +307,6 @@ describe('core/config', () => {
           defaultRegion: 'ap-northeast-1',
           stacks: { 'network.yaml': {} },
         }),
-        alwaysExists,
       );
       const targets = resolveTargets(config);
       expect(targets).toHaveLength(1);
@@ -328,7 +335,6 @@ describe('core/config', () => {
             },
           },
         }),
-        alwaysExists,
       );
     });
 
@@ -354,14 +360,13 @@ describe('core/config', () => {
           allowedAccounts: ['123456789012'],
           allowedRegions: ['ap-northeast-1'],
         }),
-        alwaysExists,
       );
       expect(config.allowedAccounts).toEqual(['123456789012']);
       expect(config.allowedRegions).toEqual(['ap-northeast-1']);
     });
 
     it('FR-7-5: allowedAccounts / allowedRegions は省略可能(検証の強制は usecase)', () => {
-      const config = validateConfig(minimalRaw(), alwaysExists);
+      const config = validateConfig(minimalRaw());
       expect(config.allowedAccounts).toBeUndefined();
       expect(config.allowedRegions).toBeUndefined();
     });
@@ -380,7 +385,6 @@ describe('core/config', () => {
             },
           },
         }),
-        alwaysExists,
       );
       const [target] = resolveTargets(config);
       expect(findRequiredPlaceholders(target)).toEqual(['DbPassword']);
@@ -393,7 +397,6 @@ describe('core/config', () => {
             'network.yaml': { parameters: { VpcCidr: '10.0.0.0/16' } },
           },
         }),
-        alwaysExists,
       );
       const [target] = resolveTargets(config);
       expect(findRequiredPlaceholders(target)).toEqual([]);

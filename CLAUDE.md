@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**cfnsync** — a minimal CLI tool that syncs a directory of raw CloudFormation templates to stacks: it detects template add/modify/delete, creates/diffs/executes change sets, and creates/updates/deletes stacks in dependency order. Purpose: ease IaC operation of legacy products that run on hand-written CloudFormation. It deliberately is *not* a new IaC abstraction (no CDK-like layer, no template generation). Target runtime is CI (GitHub Actions, non-interactive); the repo is named `cfn-action`, the tool is `cfnsync`.
+**cfnsync** — a minimal CLI tool that syncs a directory of raw CloudFormation templates to stacks: it detects template add/modify/delete, creates/diffs/executes change sets, and creates/updates/deletes stacks in dependency order. Purpose: ease IaC operation of legacy products that run on hand-written CloudFormation. It deliberately is *not* a new IaC abstraction (no CDK-like layer, no template generation). Target runtime is CI (GitHub Actions, non-interactive); the repository and tool are both named `cfnsync`.
 
 The user communicates in Japanese, and all spec documents are written in Japanese.
 

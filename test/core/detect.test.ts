@@ -61,7 +61,7 @@ function stateEntryFor(
     region: target.region,
     templateHash: computeTemplateHash(content),
     inputsHash: computeInputsHash({
-      templateContent: content,
+      templateHash: computeTemplateHash(content),
       stackName: target.stackName,
       parameters: target.parameters,
       tags: target.tags,
@@ -88,7 +88,7 @@ const BASE_CONTENT = 'Resources:\n  Vpc:\n    Type: AWS::EC2::VPC\n';
 
 describe('core/detect — §4.3: computeInputsHash の複合ハッシュ感度', () => {
   const baseInput = {
-    templateContent: BASE_CONTENT,
+    templateHash: computeTemplateHash(BASE_CONTENT),
     stackName: 'prod-network',
     parameters: { VpcCidr: '10.0.0.0/16' },
     tags: { Project: 'legacy-app' },
@@ -102,10 +102,12 @@ describe('core/detect — §4.3: computeInputsHash の複合ハッシュ感度',
     );
   });
 
-  it('§4.3(1/6 テンプレート内容): templateContent のみ変えるとハッシュが変わる', () => {
+  it('§4.3(1/6 テンプレート): templateHash のみ変えるとハッシュが変わる', () => {
     const changed = {
       ...baseInput,
-      templateContent: 'Resources:\n  Vpc2:\n    Type: AWS::EC2::VPC\n',
+      templateHash: computeTemplateHash(
+        'Resources:\n  Vpc2:\n    Type: AWS::EC2::VPC\n',
+      ),
     };
     expect(computeInputsHash(changed)).not.toBe(computeInputsHash(baseInput));
   });

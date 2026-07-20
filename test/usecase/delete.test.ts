@@ -29,16 +29,13 @@ const REGION = 'ap-northeast-1';
 const FIXED_NOW = () => new Date('2026-07-20T12:00:00.000Z');
 
 function emptyConfig(overrides: Partial<CfnSyncConfig> = {}): CfnSyncConfig {
-  const base = validateConfig(
-    {
-      version: 1,
-      defaultRegion: REGION,
-      allowedAccounts: [ACCOUNT],
-      allowedRegions: [REGION],
-      stacks: {},
-    },
-    { templateExists: () => true },
-  );
+  const base = validateConfig({
+    version: 1,
+    defaultRegion: REGION,
+    allowedAccounts: [ACCOUNT],
+    allowedRegions: [REGION],
+    stacks: {},
+  });
   return { ...base, ...overrides };
 }
 
@@ -134,7 +131,7 @@ function makeExisting(
 }
 
 describe('delete / deploy integration — T-15', () => {
-  it('FR-6-1 / FR-6-2: allowDelete なしでも削除差分と警告を出し、DeleteStack は呼ばない', async () => {
+  it('FR-6-2: allowDelete なしでも削除差分と警告を出し、DeleteStack は呼ばない', async () => {
     const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     makeExisting(s, ['A']);
 
@@ -170,6 +167,7 @@ describe('delete / deploy integration — T-15', () => {
     expect(
       apply.cfn.callsOf('waitForStack').map((call) => call.args[0]),
     ).toEqual([entry('A').stackId]);
+    expect(apply.cfn.callsOf('describeStack')).toHaveLength(1);
     expect(
       apply.backend.stored?.state.stacks['a.yaml@ap-northeast-1'],
     ).toBeUndefined();

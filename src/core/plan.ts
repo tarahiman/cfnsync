@@ -12,6 +12,7 @@
  */
 
 import type { DetectedEntry, DetectionResult } from './detect.js';
+import { InvariantError } from './errors.js';
 import { type RegionGraph, reverseOrder, topologicalOrder } from './graph.js';
 import { parseStackKey, type StackKey } from './types.js';
 
@@ -36,6 +37,11 @@ export interface RegionPlan {
 /** リージョンの出現順は `regionOrder`(設定記載順)に従う(FR-13-6)。 */
 export interface ExecutionPlan {
   regions: RegionPlan[];
+  /** computeSkips が失敗ごとに全計画を再構築しないための内部索引。 */
+  index: {
+    flattened: PlannedOperation[];
+    firstByStackKey: Map<StackKey, number>;
+  };
 }
 
 export interface BuildPlanInput {
@@ -56,6 +62,8 @@ export interface ComputeSkipsInput {
   onFailure: 'stop' | 'continue';
   /** delete 失敗では辺を逆向きに辿り、残存 dependent が必要とする provider を保護する。 */
   failureKind?: 'deploy' | 'delete';
+  /** 実行側は skipped のみ必要なため false にして continue 列の全走査を省略する。 */
+  collectContinued?: boolean;
 }
 
 export interface ComputeSkipsResult {
@@ -164,7 +172,7 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
     const buckets = byRegion.get(region);
     // orderRegions は byRegion のキーのみを返すため必ず存在する。
     if (buckets === undefined) {
-      throw new Error(
+      throw new InvariantError(
         `内部エラー: リージョン ${region} のバケットが見つかりません`,
       );
     }
@@ -201,7 +209,14 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
     return { region, operations };
   });
 
-  return { regions };
+  const flattened = regions.flatMap((region) => region.operations);
+  const firstByStackKey = new Map<StackKey, number>();
+  for (const [index, operation] of flattened.entries()) {
+    if (!firstByStackKey.has(operation.stackKey)) {
+      firstByStackKey.set(operation.stackKey, index);
+    }
+  }
+  return { regions, index: { flattened, firstByStackKey } };
 }
 
 // ---------------------------------------------------------------------------
@@ -282,12 +297,8 @@ function transitiveProviders(
 export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
   const { plan, failedStackKey, mergedGraphs, onFailure } = input;
 
-  const flattened: PlannedOperation[] = plan.regions.flatMap(
-    (r) => r.operations,
-  );
-  const failedIndex = flattened.findIndex(
-    (op) => op.stackKey === failedStackKey,
-  );
+  const flattened = plan.index.flattened;
+  const failedIndex = plan.index.firstByStackKey.get(failedStackKey) ?? -1;
   const failedRegion =
     failedIndex === -1
       ? parseStackKey(failedStackKey).region
@@ -301,6 +312,14 @@ export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
 
   const skipped: StackKey[] = [];
   const continued: StackKey[] = [];
+
+  if (onFailure === 'continue' && input.collectContinued === false) {
+    for (const stackKey of protectedByFailure) {
+      const index = plan.index.firstByStackKey.get(stackKey);
+      if (index !== undefined && index > failedIndex) skipped.push(stackKey);
+    }
+    return { skipped, continued };
+  }
 
   for (let i = failedIndex + 1; i < flattened.length; i += 1) {
     const stackKey = flattened[i].stackKey;

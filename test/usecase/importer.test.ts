@@ -3,16 +3,17 @@
  *
  * 対応 ID: FR-10-1〜FR-10-11 / FR-1-9(import) / FR-13-9。
  * ゲートウェイ(CloudFormationGateway / StsGateway / StateBackend)とファイル IO は
- * すべて本ファイル内のインメモリフェイクに差し替え、実 AWS・実ファイルには一切
+ * 共通フェイクとファイル IO フェイクに差し替え、実 AWS・実ファイルには一切
  * 触れない(design.md §10)。フェイクは **呼び出しを共有 timeline に時系列記録**し、
  * FR-10-8(acquireLock → load の順)や FR-1-9(各書き込み直前の verifyLock 配置)の
- * 順序検証に使う。`test/usecase/fakes.ts` は並行タスクが編集中のため使用しない。
+ * 順序検証に使う。
  */
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { parse as parseYaml } from 'yaml';
+import { resolveTemplatePathWithinConfig } from '../../src/cli/filesystem.js';
 import {
   type CfnSyncConfig,
   resolveTargets,
@@ -143,6 +144,10 @@ class FakeFs implements ImportFileSystem {
   realpath(path: string): string {
     return this.realpaths.get(path) ?? path;
   }
+
+  isFile(path: string): boolean {
+    return this.files.has(path);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +155,7 @@ class FakeFs implements ImportFileSystem {
 // ---------------------------------------------------------------------------
 
 function parseConfig(text: string): CfnSyncConfig {
-  return validateConfig(parseYaml(text), { templateExists: () => true });
+  return validateConfig(parseYaml(text));
 }
 
 /** アカウント記録済みのステート(FR-10-8 の照合を素通りする前提状態)。 */
@@ -216,6 +221,12 @@ function run(s: ReturnType<typeof setup>, options: ImportOptions = {}) {
   return runImport({
     config: s.config,
     configPath: CONFIG_PATH,
+    templatePaths: new Map(
+      Object.keys(s.config.stacks).map((templatePath) => [
+        templatePath,
+        resolveTemplatePathWithinConfig('/project', templatePath, s.fs),
+      ]),
+    ),
     deps: s.deps,
     options,
   });
@@ -409,6 +420,18 @@ describe('FR-10-4: テンプレート差分の扱い', () => {
     expect(s.backend.releaseCalls).toBe(1);
   });
 
+  it('FR-1-13: 初回 account state 保存後に template-blocking となった副作用を分離して報告する', async () => {
+    const s = setup({ initialState: 'none' });
+    deployNetwork(s, DEPLOYED_DIFFERENT);
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.accountStateInitialized).toBe(true);
+    expect(result.report.importEntriesSaved).toBe(false);
+    expect(result.report.stateSaved).toBe(true);
+  });
+
   it('FR-10-4: --reconcile remote → デプロイ済みテンプレートでローカルを上書きする', async () => {
     const s = setup();
     deployNetwork(s, DEPLOYED_DIFFERENT);
@@ -421,7 +444,7 @@ describe('FR-10-4: テンプレート差分の扱い', () => {
     expect(result.report.stateSaved).toBe(true);
   });
 
-  it('FR-10-4: テンプレート書き込み先が symlink 経由で設定ディレクトリ外になる場合は書き込みゼロで拒否する', async () => {
+  it('FR-10-4: テンプレート書き込み先が symlink 経由で設定ディレクトリ外になる場合は書き込みゼロで拒否する', () => {
     const configText = `version: 1
 defaultRegion: ap-northeast-1
 stacks:
@@ -437,7 +460,7 @@ stacks:
     s.fs.realpaths.set(nestedPath, '/outside/network.yaml');
     deployNetwork(s, DEPLOYED_DIFFERENT);
 
-    await expect(run(s, { reconcile: 'remote' })).rejects.toThrow(
+    expect(() => run(s, { reconcile: 'remote' })).toThrow(
       /nested\/network\.yaml|設定ディレクトリ外/,
     );
     expect(s.fs.writes).toHaveLength(0);
@@ -522,7 +545,7 @@ describe('FR-10-6: templateHash / inputsHash はデプロイ済み内容に基�
     // Capabilities +デプロイ済みテンプレート本文に基づく。
     expect(entry.inputsHash).toBe(
       computeInputsHash({
-        templateContent: DEPLOYED_DIFFERENT,
+        templateHash: computeTemplateHash(DEPLOYED_DIFFERENT),
         stackName: 'prod-network',
         parameters: { VpcCidr: '10.0.0.0/16', DbPassword: '__REQUIRED__' },
         tags: { Project: 'legacy-app' },
@@ -672,6 +695,20 @@ describe('FR-10-9: ステートロックの取得', () => {
 // ===========================================================================
 
 describe('FR-1-9(import): ローカル書き込み直前の所有権検証(fencing)', () => {
+  it('FR-1-8: releaseLock の released:false を警告付き exit 1 へ反映する', async () => {
+    const s = setup();
+    deployNetwork(s, NETWORK_TEMPLATE);
+    s.backend.releaseLock = async () => ({
+      released: false,
+      reason: 'owner changed(fake)',
+    });
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.warnings.join('\n')).toContain('owner changed(fake)');
+  });
+
   it('FR-1-9(import): cfnsync.yaml・テンプレート・ステート保存の各書き込み直前ごとに verifyLock が配置される(時系列検証)', async () => {
     const s = setup();
     deployNetwork(s, DEPLOYED_DIFFERENT);
@@ -835,6 +872,29 @@ describe('FR-10-11: exports / imports のステート記録', () => {
 // ===========================================================================
 
 describe('FR-13-9: マルチリージョンのインポート', () => {
+  it('FR-13-9: リージョン間でテンプレートが異なる場合は対象リージョンを列挙して書き込みを拒否する', async () => {
+    const s = setup({
+      configText: MULTI_REGION_CONFIG,
+      regions: [REGION, REGION2],
+    });
+    for (const [region, template] of [
+      [REGION, NETWORK_TEMPLATE],
+      [REGION2, DEPLOYED_DIFFERENT],
+    ] as const) {
+      const cfn = s.cfns.get(region)!;
+      cfn.stacks.set('prod-network', makeSummary());
+      cfn.templates.set('prod-network', template);
+    }
+
+    const result = await run(s, { reconcile: 'remote' });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.warnings.join('\n')).toContain(REGION);
+    expect(result.report.warnings.join('\n')).toContain(REGION2);
+    expect(s.fs.writes).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
   it('FR-13-9: 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる', async () => {
     const s = setup({
       configText: MULTI_REGION_CONFIG,

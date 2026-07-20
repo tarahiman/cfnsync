@@ -258,7 +258,7 @@ function actionSymbol(action: string): string {
 }
 
 function colorize(text: string, code: string, color: boolean): string {
-  return color ? `[${code}m${text}[0m` : text;
+  return color ? `\x1b[${code}m${text}\x1b[0m` : text;
 }
 
 /**

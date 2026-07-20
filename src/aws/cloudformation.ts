@@ -3,11 +3,8 @@
  *
  * design.md §7(変更セットライフサイクル)/ §9(リトライ)/ NFR-3 に対応する。
  *
- * リトライについての注意(scratchpad/api-notes.md):
- *   `aws-sdk-client-mock` は `send` をスタブするため SDK 内部のリトライミドルウェアは
- *   モックでは動かない。そこで (a) クライアントを `retryMode: 'adaptive'` で構成しつつ、
- *   (b) スロットリング応答に対してはゲートウェイ層の薄いリトライヘルパ(`withRetry`)で
- *   指数バックオフ再試行する。ポーリング間隔・sleep はコンストラクタ注入でテスト短縮可能。
+ * 本番のリトライは SDK の adaptive retry へ一本化する。外側リトライは既定 0 で、
+ * SDK middleware を通らないテストクライアントの障害注入時だけ明示的に有効化できる。
  */
 
 import {
@@ -47,7 +44,7 @@ export interface CloudFormationGatewayOptions {
   profile?: string;
   /** SDK クライアントの maxAttempts(NFR-3)。既定 10。 */
   maxAttempts?: number;
-  /** SDK の retry exhausted 後に行う最大再試行回数。既定 2(初回を含め 3 attempts)。 */
+  /** テスト用外側再試行回数。本番既定は 0。 */
   maxRetries?: number;
   /** スロットリングリトライの基底バックオフ(ms)。既定 100。 */
   baseDelayMs?: number;
@@ -156,8 +153,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: CloudFormationGatewayOptions) {
-    // SDK adaptive retry が尽きた後だけ働く最終防衛層。初回を含め最大 3 回送信する。
-    this.maxRetries = options.maxRetries ?? 2;
+    this.maxRetries = options.maxRetries ?? 0;
     this.baseDelayMs = options.baseDelayMs ?? 100;
     this.maxRetryElapsedMs = options.maxRetryElapsedMs ?? 60_000;
     this.random = options.random ?? Math.random;

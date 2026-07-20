@@ -28,19 +28,16 @@
  * `guard.ts` の契約(`verifyStateAccount` はロック取得後に呼ぶ)・`ports` は変更しない。
  */
 
-import { dirname, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 
-import type {
-  Capability,
-  CfnSyncConfig,
-  ResolvedStackTarget,
-} from '../core/config.js';
-import { resolveDependsOnKey, resolveTargets } from '../core/config.js';
+import type { Capability, CfnSyncConfig } from '../core/config.js';
+import { resolveTargets } from '../core/config.js';
 import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
+import { resolveDependsOnKey } from '../core/dependency.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import {
   GuardError,
+  InvariantError,
   LockError,
   StackStateError,
   StatePersistenceError,
@@ -51,11 +48,12 @@ import {
   type StackEntry,
 } from '../core/state.js';
 import {
-  analyzeParsedTemplate,
+  analyzeStaticTemplate,
   parseCfnTemplate,
   parsedTemplatesEquivalent,
+  resolveStaticTemplateAnalysis,
+  type StaticTemplateAnalysis,
 } from '../core/template.js';
-import { resolveTemplatePathWithinConfig } from '../core/templatePath.js';
 import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
@@ -83,6 +81,7 @@ export interface ImportFileSystem {
   writeFile(path: string, content: string): void;
   exists(path: string): boolean;
   realpath(path: string): string;
+  isFile(path: string): boolean;
 }
 
 export interface ImportDeps {
@@ -129,6 +128,10 @@ export interface ImportReport {
   configWritten: boolean;
   /** ステートを保存したか(FR-10-6)。 */
   stateSaved: boolean;
+  /** 初回 accountId の state 保存を行ったか。 */
+  accountStateInitialized: boolean;
+  /** import entry の state 保存を行ったか。 */
+  importEntriesSaved: boolean;
   /**
    * 中断・失敗の理由。
    * - `lock-unavailable`: ロック取得失敗(FR-10-9)
@@ -156,18 +159,12 @@ export interface ImportResult {
 export async function runImport(input: {
   config: CfnSyncConfig;
   configPath: string;
+  templatePaths: Map<string, string>;
   deps: ImportDeps;
   options: ImportOptions;
 }): Promise<ImportResult> {
-  const { config, configPath, deps, options } = input;
+  const { config, configPath, templatePaths, deps, options } = input;
   const fs = deps.fs;
-  const configDir = dirname(resolve(configPath));
-  const templatePaths = new Map(
-    Object.keys(config.stacks).map((templatePath) => [
-      templatePath,
-      resolveTemplatePathWithinConfig(configDir, templatePath, fs),
-    ]),
-  );
 
   // FR-7-7 / FR-10-8: import は許可設定なしで実行できるが、STS 解決とアカウント照合は必須。
   const connection = await resolveConnection(deps.sts);
@@ -191,6 +188,7 @@ export async function runImport(input: {
         let stateCtx: {
           state: CfnSyncState;
           version: StateVersion | undefined;
+          accountStateInitialized: boolean;
         };
         try {
           stateCtx = await verifyStateAccount({
@@ -216,7 +214,6 @@ export async function runImport(input: {
         return runImportLocked({
           config,
           configPath,
-          configDir,
           deps,
           fs,
           options,
@@ -226,6 +223,16 @@ export async function runImport(input: {
           stateCtx,
         });
       },
+      onReleaseError: (result, error) => ({
+        exitCode: 1,
+        report: {
+          ...result.report,
+          warnings: [
+            ...result.report.warnings,
+            `ロック解放に失敗しました: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+        },
+      }),
     });
   } catch (err) {
     if (err instanceof LockError) {
@@ -245,19 +252,21 @@ export async function runImport(input: {
 async function runImportLocked(input: {
   config: CfnSyncConfig;
   configPath: string;
-  configDir: string;
   deps: ImportDeps;
   fs: ImportFileSystem;
   options: ImportOptions;
   header: ConnectionInfo;
   templatePaths: Map<string, string>;
   lock: LockHandle;
-  stateCtx: { state: CfnSyncState; version: StateVersion | undefined };
+  stateCtx: {
+    state: CfnSyncState;
+    version: StateVersion | undefined;
+    accountStateInitialized: boolean;
+  };
 }): Promise<ImportResult> {
   const {
     config,
     configPath,
-    configDir,
     deps,
     fs,
     options,
@@ -284,7 +293,9 @@ async function runImportLocked(input: {
         connection: header,
         stacks: plan.stacks,
         configWritten: false,
-        stateSaved: false,
+        stateSaved: stateCtx.accountStateInitialized,
+        accountStateInitialized: stateCtx.accountStateInitialized,
+        importEntriesSaved: false,
         aborted: 'template-blocking',
         warnings: plan.warnings,
       },
@@ -318,11 +329,13 @@ async function runImportLocked(input: {
         ownershipLost = true;
         break;
       }
-      const safePath = resolveTemplatePathWithinConfig(
-        configDir,
-        write.templatePath,
-        fs,
-      );
+      const safePath = templatePaths.get(write.templatePath);
+      if (safePath === undefined) {
+        throw new InvariantError(
+          `テンプレートの検証済み実パスがありません: ${write.templatePath}`,
+          { stackKey: write.templatePath },
+        );
+      }
       fs.writeFile(safePath, write.content);
     }
   }
@@ -357,7 +370,9 @@ async function runImportLocked(input: {
       connection: header,
       stacks: plan.stacks,
       configWritten,
-      stateSaved,
+      stateSaved: stateCtx.accountStateInitialized || stateSaved,
+      accountStateInitialized: stateCtx.accountStateInitialized,
+      importEntriesSaved: stateSaved,
       aborted: ownershipLost ? 'ownership-lost' : undefined,
       warnings: plan.warnings,
     },
@@ -427,6 +442,15 @@ async function buildImportPlan(args: {
     string,
     { content: string; parsed: unknown; hash: string }
   >();
+  const representableByTemplate = new Map<
+    string,
+    {
+      parsed: unknown;
+      staticAnalysis: StaticTemplateAnalysis;
+      capabilities: Capability[];
+      regions: string[];
+    }
+  >();
   let blocked = false;
 
   for (const target of targets) {
@@ -449,6 +473,7 @@ async function buildImportPlan(args: {
     if (!summary.stackId) {
       throw new StackStateError(
         `スタック '${target.stackName}' の stackId(ARN) を確認できないため import を拒否します`,
+        { stackKey: target.stackKey, region: target.region },
       );
     }
 
@@ -459,7 +484,50 @@ async function buildImportPlan(args: {
     );
     const deployedParsed = parseCfnTemplate(deployedTemplate);
     const deployedHash = computeTemplateHash(deployedTemplate);
-    const deployedAnalysis = analyzeParsedTemplate(deployedParsed, {
+
+    const representation = representableByTemplate.get(target.templatePath);
+    let staticAnalysis: StaticTemplateAnalysis;
+    if (representation === undefined) {
+      staticAnalysis = analyzeStaticTemplate(deployedParsed);
+      representableByTemplate.set(target.templatePath, {
+        parsed: deployedParsed,
+        staticAnalysis,
+        capabilities: [...summary.capabilities],
+        regions: [target.region],
+      });
+    } else {
+      representation.regions.push(target.region);
+      const sameTemplate = parsedTemplatesEquivalent(
+        representation.parsed,
+        deployedParsed,
+      );
+      const sameCapabilities =
+        JSON.stringify([...representation.capabilities].sort()) ===
+        JSON.stringify([...summary.capabilities].sort());
+      if (!sameTemplate || !sameCapabilities) {
+        blocked = true;
+        const regions = representation.regions.join(', ');
+        const differences = [
+          !sameTemplate ? 'テンプレート' : undefined,
+          !sameCapabilities ? 'Capabilities' : undefined,
+        ].filter((value): value is string => value !== undefined);
+        const message = `同一 templatePath '${target.templatePath}' の ${differences.join(' / ')} がリージョン間で一致せず、設定では表現できません: ${regions}`;
+        warnings.push(message);
+        stacks.push({
+          stackKey: target.stackKey,
+          region: target.region,
+          templatePath: target.templatePath,
+          stackName: summary.stackName,
+          status: 'template-mismatch',
+          recorded: false,
+          noEchoPlaceholders: [],
+          message,
+        });
+        continue;
+      }
+      staticAnalysis = representation.staticAnalysis;
+    }
+    const deployedAnalysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: summary.stackName,
       region: target.region,
     });
@@ -475,16 +543,15 @@ async function buildImportPlan(args: {
 
     const templateAbsPath = templatePaths.get(target.templatePath);
     if (templateAbsPath === undefined) {
-      throw new Error(
+      throw new InvariantError(
         `内部エラー: ${target.templatePath} の安全な実パスがありません`,
+        { stackKey: target.stackKey, region: target.region },
       );
     }
     const localExists = fs.exists(templateAbsPath);
 
     // FR-10-3/4/5: テンプレート比較 → 記録に使う基準内容(baseline)と書き出し内容を決める。
     let comparison: 'match' | 'differs' | 'local-missing';
-    let baseline: string;
-    let baselineParsed: unknown;
     let baselineHash: string;
     let writeContent: string | undefined;
     let reconcileUsed: 'remote' | 'local' | undefined;
@@ -493,8 +560,6 @@ async function buildImportPlan(args: {
       comparison = 'local-missing';
       if (options.writeTemplate) {
         // FR-10-5: デプロイ済みテンプレートをローカルへ書き出す。
-        baseline = deployedTemplate;
-        baselineParsed = deployedParsed;
         baselineHash = deployedHash;
         writeContent = deployedTemplate;
       } else {
@@ -527,15 +592,11 @@ async function buildImportPlan(args: {
       if (parsedTemplatesEquivalent(local.parsed, deployedParsed)) {
         // FR-10-3: 一致 → ローカル(= デプロイ済みと同値)を基準に記録。次回 plan は unchanged。
         comparison = 'match';
-        baseline = local.content;
-        baselineParsed = local.parsed;
         baselineHash = local.hash;
       } else if (options.reconcile === 'remote') {
         // FR-10-4(a): デプロイ済みでローカルを上書き。
         comparison = 'differs';
         reconcileUsed = 'remote';
-        baseline = deployedTemplate;
-        baselineParsed = deployedParsed;
         baselineHash = deployedHash;
         writeContent = deployedTemplate;
       } else if (options.reconcile === 'local') {
@@ -543,8 +604,6 @@ async function buildImportPlan(args: {
         //             → 次回 plan で modified として顕在化する。
         comparison = 'differs';
         reconcileUsed = 'local';
-        baseline = deployedTemplate;
-        baselineParsed = deployedParsed;
         baselineHash = deployedHash;
       } else {
         // FR-10-4: 差分 + オプションなし → fail-closed。
@@ -566,10 +625,7 @@ async function buildImportPlan(args: {
     }
 
     // FR-10-6 / FR-10-11: デプロイ済み内容(baseline)に基づくハッシュ・依存辺を記録する。
-    const baselineAnalysis = analyzeParsedTemplate(baselineParsed, {
-      stackName: summary.stackName,
-      region: target.region,
-    });
+    const baselineAnalysis = deployedAnalysis;
     entries.push({
       key: target.stackKey,
       entry: {
@@ -578,7 +634,7 @@ async function buildImportPlan(args: {
         region: target.region,
         templateHash: baselineHash,
         inputsHash: computeInputsHash({
-          templateContent: baseline,
+          templateHash: baselineHash,
           stackName: summary.stackName,
           parameters: configParameters,
           tags: configTags,
@@ -755,10 +811,9 @@ function emptyReport(
     stacks: [],
     configWritten: false,
     stateSaved: false,
+    accountStateInitialized: false,
+    importEntriesSaved: false,
     aborted,
     warnings: [message],
   };
 }
-
-// ResolvedStackTarget は buildImportPlan の型に用いる(resolveTargets の戻り値)。
-export type { ResolvedStackTarget };

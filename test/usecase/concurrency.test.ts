@@ -6,10 +6,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
-  resolveDependsOnKey,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
+import { resolveDependsOnKey } from '../../src/core/dependency.js';
 import {
   computeInputsHash,
   computeTemplateHash,
@@ -48,18 +48,15 @@ Resources:
 `;
 
 function configOf(): CfnSyncConfig {
-  return validateConfig(
-    {
-      version: 1,
-      defaultRegion: REGION,
-      allowedAccounts: [ACCOUNT],
-      allowedRegions: [REGION],
-      stacks: {
-        'stack.yaml': { stackName: 'ManagedStack', tags: { Version: 'new' } },
-      },
+  return validateConfig({
+    version: 1,
+    defaultRegion: REGION,
+    allowedAccounts: [ACCOUNT],
+    allowedRegions: [REGION],
+    stacks: {
+      'stack.yaml': { stackName: 'ManagedStack', tags: { Version: 'new' } },
     },
-    { templateExists: () => true },
-  );
+  });
 }
 
 function modifiedState(
@@ -100,7 +97,7 @@ function desiredInputsHash(
   const target = resolveTargets(config)[0];
   const source = templates.get(target.templatePath) as string;
   return computeInputsHash({
-    templateContent: source,
+    templateHash: computeTemplateHash(source),
     stackName: target.stackName,
     parameters: target.parameters,
     tags: target.tags,
@@ -271,7 +268,10 @@ describe('T-18 concurrency', () => {
       });
       s.backend.stored = {
         state: authoritative,
-        version: { generation: authoritative.generation },
+        version: {
+          backend: 'local',
+          generation: authoritative.generation,
+        },
       };
       await s.backend.acquireLock({
         runId: 'run2-new-owner',

@@ -19,12 +19,14 @@ import { S3StateBackend } from '../../src/aws/s3state.js';
 import { LocalStateBackend } from '../../src/backend/local.js';
 import { defaultCliDependencies } from '../../src/cli/dependencies.js';
 import type { CfnSyncConfig } from '../../src/core/config.js';
-import { StateConflictError } from '../../src/core/errors.js';
+import {
+  StateConflictError,
+  StateCorruptionError,
+} from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
   parseState,
-  StateCorruptionError,
   serializeState,
 } from '../../src/core/state.js';
 
@@ -59,18 +61,18 @@ describe('LocalStateBackend', () => {
   it('FR-1-4: load/save で保存したステートを読み戻せる(version は generation)', async () => {
     const backend = new LocalStateBackend(statePath);
     const version = await backend.save(stateWith(1), undefined);
-    expect(version).toEqual({ generation: 1 });
+    expect(version).toEqual({ backend: 'local', generation: 1 });
 
     const loaded = await backend.load();
     expect(loaded?.state.generation).toBe(1);
-    expect(loaded?.version).toEqual({ generation: 1 });
+    expect(loaded?.version).toEqual({ backend: 'local', generation: 1 });
   });
 
   it('FR-1-6(local): 保存直前の再読込で世代不一致 → StateConflictError、ファイルは書き換わらない', async () => {
     const backend = new LocalStateBackend(statePath);
     await backend.save(stateWith(1), undefined);
     const loaded = await backend.load();
-    expect(loaded?.version).toEqual({ generation: 1 });
+    expect(loaded?.version).toEqual({ backend: 'local', generation: 1 });
 
     // 別プロセスを模して外部から世代 2 で上書きする。
     const externalText = serializeState(stateWith(2));
@@ -119,7 +121,10 @@ describe('LocalStateBackend', () => {
       second.save(stateWith(3), loaded!.version),
     ).rejects.toBeInstanceOf(StateConflictError);
     releaseRename();
-    await expect(firstSave).resolves.toEqual({ generation: 2 });
+    await expect(firstSave).resolves.toEqual({
+      backend: 'local',
+      generation: 2,
+    });
   });
 
   it('FR-1-12(local): 原子的置換で .bak に直前の内容が残る', async () => {

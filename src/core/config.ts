@@ -9,8 +9,12 @@
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { REQUIRED_PLACEHOLDER } from './constants.js';
+import { resolveDependsOnKey } from './dependency.js';
 import { ConfigError } from './errors.js';
-import { assertSafeTemplatePath } from './templatePath.js';
+import {
+  assertSafeTemplatePath,
+  normalizeTemplatePath,
+} from './templatePath.js';
 import { makeStackKey, type StackKey } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -35,46 +39,54 @@ export const capabilitySchema = z.enum([
 ]);
 export type Capability = z.infer<typeof capabilitySchema>;
 
-const s3StateSchema = z.object({
-  bucket: z.string().min(1),
-  key: z.string().min(1),
-  region: z.string().min(1),
-});
+const s3StateSchema = z
+  .object({
+    bucket: z.string().min(1),
+    key: z.string().min(1),
+    region: z.string().min(1),
+  })
+  .strict();
 
 /** FR-11-2: `state` 省略時は local。`backend: s3` は bucket/key/region が必須。 */
 const stateSchema = z
   .discriminatedUnion('backend', [
-    z.object({ backend: z.literal('local') }),
-    z.object({ backend: z.literal('s3'), s3: s3StateSchema }),
+    z.object({ backend: z.literal('local') }).strict(),
+    z.object({ backend: z.literal('s3'), s3: s3StateSchema }).strict(),
   ])
   .default({ backend: 'local' });
 
-const regionOverrideSchema = z.object({
-  parameters: stringRecordSchema.default({}),
-  tags: stringRecordSchema.default({}),
-});
+const regionOverrideSchema = z
+  .object({
+    parameters: stringRecordSchema.default({}),
+    tags: stringRecordSchema.default({}),
+  })
+  .strict();
 
-const stackEntrySchema = z.object({
-  stackName: z.string().min(1).optional(),
-  regions: z.array(z.string().min(1)).optional(),
-  parameters: stringRecordSchema.default({}),
-  tags: stringRecordSchema.default({}),
-  capabilities: z.array(capabilitySchema).default([]),
-  dependsOn: z.array(z.string().min(1)).default([]),
-  regionOverrides: z.record(z.string(), regionOverrideSchema).default({}),
-});
+const stackEntrySchema = z
+  .object({
+    stackName: z.string().min(1).optional(),
+    regions: z.array(z.string().min(1)).optional(),
+    parameters: stringRecordSchema.default({}),
+    tags: stringRecordSchema.default({}),
+    capabilities: z.array(capabilitySchema).default([]),
+    dependsOn: z.array(z.string().min(1)).default([]),
+    regionOverrides: z.record(z.string(), regionOverrideSchema).default({}),
+  })
+  .strict();
 
-const rawConfigSchema = z.object({
-  version: z.literal(1),
-  // FR-7-5(前半): allowedAccounts / allowedRegions はスキーマに存在し読み取れる。
-  // 必須化(検証の強制)は T-12(usecase/guard)の責務なのでここでは optional。
-  allowedAccounts: z.array(z.string().min(1)).optional(),
-  allowedRegions: z.array(z.string().min(1)).optional(),
-  defaultRegion: z.string().min(1),
-  stackNamePrefix: z.string().optional(),
-  state: stateSchema,
-  stacks: z.record(z.string(), stackEntrySchema),
-});
+const rawConfigSchema = z
+  .object({
+    version: z.literal(1),
+    // FR-7-5(前半): allowedAccounts / allowedRegions はスキーマに存在し読み取れる。
+    // 必須化(検証の強制)は T-12(usecase/guard)の責務なのでここでは optional。
+    allowedAccounts: z.array(z.string().min(1)).optional(),
+    allowedRegions: z.array(z.string().min(1)).optional(),
+    defaultRegion: z.string().min(1),
+    stackNamePrefix: z.string().optional(),
+    state: stateSchema,
+    stacks: z.record(z.string(), stackEntrySchema),
+  })
+  .strict();
 
 /** 正規化済み設定型は zod の出力型から一意に導出する。 */
 export type CfnSyncConfig = z.infer<typeof rawConfigSchema>;
@@ -92,11 +104,6 @@ export interface ResolvedStackTarget {
   tags: Record<string, string>;
   capabilities: Capability[];
   dependsOn: string[];
-}
-
-export interface ValidateConfigOptions {
-  /** configPath のディレクトリを基準とした相対パスでテンプレートの存在を判定する。 */
-  templateExists: (relativeTemplatePath: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,10 +132,7 @@ function toConfigError(error: z.ZodError): ConfigError {
  * 設定内容(YAML パース済みの生オブジェクト)を検証し、型付きの CfnSyncConfig を返す。
  * ファイル I/O を含まない純粋関数(テスト容易性のため loadConfig から分離)。
  */
-export function validateConfig(
-  raw: unknown,
-  opts: ValidateConfigOptions,
-): CfnSyncConfig {
+export function validateConfig(raw: unknown): CfnSyncConfig {
   const result = rawConfigSchema.safeParse(raw);
   if (!result.success) {
     throw toConfigError(result.error);
@@ -136,25 +140,39 @@ export function validateConfig(
 
   const config = result.data;
 
-  // FR-11-5: 存在しないテンプレートへの参照を検出する。
+  const normalizedPaths = new Map<string, string>();
   for (const templatePath of Object.keys(config.stacks)) {
     assertSafeTemplatePath(templatePath);
-    if (!opts.templateExists(templatePath)) {
+    const normalized = normalizeTemplatePath(templatePath);
+    const previous = normalizedPaths.get(normalized);
+    if (previous !== undefined) {
       throw new ConfigError(
-        `参照先のテンプレートファイルが存在しません: ${templatePath}`,
+        `正規化後のテンプレートパスが重複しています: ${previous}, ${templatePath} -> ${normalized}`,
         {
           stackKey: templatePath,
         },
       );
     }
+    normalizedPaths.set(normalized, templatePath);
   }
 
-  // 明示依存は同一リージョンの管理対象へ必ず解決できなければならない。
+  validateEffectiveConfig(config);
+  return config;
+}
+
+/** CLI 上書きを含む実効設定のリージョン別依存を共通検証する。 */
+export function validateEffectiveConfig(config: CfnSyncConfig): void {
   const targets = resolveTargets(config);
   const managed = new Set(targets.map((target) => target.stackKey));
   for (const target of targets) {
     for (const rawDependency of target.dependsOn) {
       const dependency = resolveDependsOnKey(rawDependency, target.region);
+      if (dependency === target.stackKey) {
+        throw new ConfigError(
+          `明示依存 dependsOn '${rawDependency}' は自分自身を参照できません`,
+          { stackKey: target.stackKey, region: target.region },
+        );
+      }
       if (!managed.has(dependency)) {
         throw new ConfigError(
           `明示依存 dependsOn '${rawDependency}' は同一リージョンの管理対象へ解決できません: ${dependency}`,
@@ -163,15 +181,10 @@ export function validateConfig(
       }
     }
   }
-
-  return config;
 }
 
 /** YAML 文字列を解析・検証する core の純粋入口。ファイル読込は adapter が担う。 */
-export function parseConfig(
-  content: string,
-  opts: ValidateConfigOptions,
-): CfnSyncConfig {
+export function parseConfig(content: string): CfnSyncConfig {
   let raw: unknown;
   try {
     raw = parseYaml(content);
@@ -180,7 +193,7 @@ export function parseConfig(
       cause,
     });
   }
-  return validateConfig(raw, opts);
+  return validateConfig(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,12 +244,6 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
 }
 
 /** dependsOn のテンプレートパスを同一リージョンのスタックキーへ解決する。 */
-export function resolveDependsOnKey(raw: string, region: string): StackKey {
-  const at = raw.lastIndexOf('@');
-  const templatePath = at > 0 && at < raw.length - 1 ? raw.slice(0, at) : raw;
-  return makeStackKey(templatePath, region);
-}
-
 /** design.md §8.2: 値が __REQUIRED__ のままのパラメータ名を列挙する。 */
 export function findRequiredPlaceholders(
   target: ResolvedStackTarget,

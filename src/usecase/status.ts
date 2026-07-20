@@ -1,6 +1,6 @@
 import type { CfnSyncConfig } from '../core/config.js';
 import { resolveTargets } from '../core/config.js';
-import { detectChanges } from '../core/detect.js';
+import { computeTemplateHash, detectChanges } from '../core/detect.js';
 import { createInitialState } from '../core/state.js';
 import type { ChangeType } from '../core/types.js';
 import type { StateBackend } from '../ports/index.js';
@@ -23,10 +23,17 @@ export async function getStatus(input: {
   backend: StateBackend;
 }): Promise<StatusResult> {
   const loaded = await input.backend.load();
+  const templateHashes = new Map(
+    [...input.templates].map(([path, source]) => [
+      path,
+      computeTemplateHash(source),
+    ]),
+  );
   const detection = detectChanges({
     targets: resolveTargets(input.config),
     templates: input.templates,
     state: loaded?.state ?? createInitialState(),
+    templateHashes,
   });
   return {
     entries: detection.entries.map((entry) => ({

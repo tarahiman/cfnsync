@@ -1,4 +1,14 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { defaultCliDependencies } from '../../src/cli/dependencies.js';
 import {
   type CliDependencies,
   createCliProgram,
@@ -40,7 +50,7 @@ function backend(): StateBackend {
   return {
     load: vi.fn(async () => ({
       state: createInitialState(),
-      version: { generation: 0 },
+      version: { backend: 'local', generation: 0 },
     })),
     save: vi.fn(),
     acquireLock: vi.fn(),
@@ -62,6 +72,9 @@ function dependencies(
   return {
     loadConfig: vi.fn(() => config),
     readTemplates: vi.fn(() => new Map([['app.yaml', 'Resources: {}\n']])),
+    resolveTemplatePaths: vi.fn(
+      () => new Map([['app.yaml', '/project/app.yaml']]),
+    ),
     createBackend: vi.fn(() => backend()),
     createCfn: vi.fn(() => gateway()),
     createSts: vi.fn(
@@ -79,6 +92,8 @@ function dependencies(
         stacks: [],
         configWritten: false,
         stateSaved: false,
+        accountStateInitialized: false,
+        importEntriesSaved: false,
         warnings: [],
       },
     })),
@@ -199,6 +214,30 @@ describe('T-19 cli', () => {
     expect(deps.loadConfig).toHaveBeenCalledWith('./cfnsync.yaml');
   });
 
+  it('FR-8-2: --region 適用後に消える明示依存を usecase 呼出前に拒否する', async () => {
+    const overridden: CfnSyncConfig = {
+      ...config,
+      stacks: {
+        'network.yaml': {
+          ...config.stacks['app.yaml'],
+          stackName: 'network',
+          regions: ['ap-northeast-1'],
+        },
+        'app.yaml': {
+          ...config.stacks['app.yaml'],
+          dependsOn: ['network.yaml'],
+        },
+      },
+    };
+    const deps = dependencies({ loadConfig: vi.fn(() => overridden) });
+    const out = capture();
+    expect(
+      await runCli(['deploy', '--region', 'us-east-1'], { deps, io: out.io }),
+    ).toBe(1);
+    expect(out.stderr()).toContain('network.yaml@us-east-1');
+    expect(deps.deploy).not.toHaveBeenCalled();
+  });
+
   it('NFR-5: deploy の cfnFactory は同一リージョンのゲートウェイを再利用する', async () => {
     const deps = dependencies();
     (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
@@ -253,7 +292,12 @@ describe('T-19 cli', () => {
     );
     expect(deps.deploy).toHaveBeenCalledWith(
       expect.objectContaining({
-        options: { dryRun: true, allowDelete: true, onFailure: 'continue' },
+        options: {
+          dryRun: true,
+          allowDelete: true,
+          onFailure: 'continue',
+          collectEvents: false,
+        },
       }),
     );
   });
@@ -273,6 +317,76 @@ describe('T-19 cli', () => {
       expect.objectContaining({ runId: 'run-123' }),
     );
     expect(deps.readTemplates).not.toHaveBeenCalled();
+  });
+
+  it('FR-10-5(統合): import --write-template は既定 loader で不存在テンプレートへ到達して作成する', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfnsync-import-'));
+    const configPath = join(dir, 'cfnsync.yaml');
+    const templatePath = join(dir, 'missing.yaml');
+    writeFileSync(
+      configPath,
+      'version: 1\ndefaultRegion: ap-northeast-1\nstacks:\n  missing.yaml:\n    stackName: existing\n',
+    );
+    const cfn = {
+      describeStack: vi.fn(async () => ({
+        stackName: 'existing',
+        stackId:
+          'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/existing/id',
+        status: 'UPDATE_COMPLETE',
+        parameters: {},
+        tags: {},
+        capabilities: [],
+        outputs: {},
+        terminationProtection: false,
+      })),
+      getTemplate: vi.fn(async () => 'Resources: {}\n'),
+    } as unknown as CloudFormationGateway;
+    const deps: CliDependencies = {
+      ...defaultCliDependencies,
+      createCfn: vi.fn(() => cfn),
+      createSts: vi.fn(
+        () =>
+          ({
+            getCallerIdentity: vi.fn(async () => ({
+              accountId: '123456789012',
+              arn: 'arn:aws:iam::123456789012:role/test',
+            })),
+          }) as StsGateway,
+      ),
+    };
+    try {
+      expect(
+        await runCli(['import', '--config', configPath, '--write-template'], {
+          deps,
+          io: capture().io,
+        }),
+      ).toBe(0);
+      expect(readFileSync(templatePath, 'utf8')).toBe('Resources: {}\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('FR-11-5(統合): テンプレートパスがディレクトリなら通常ファイル契約で拒否する', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfnsync-config-'));
+    const configPath = join(dir, 'cfnsync.yaml');
+    mkdirSync(join(dir, 'templates'));
+    writeFileSync(
+      configPath,
+      'version: 1\ndefaultRegion: ap-northeast-1\nstacks:\n  templates:\n    stackName: invalid\n',
+    );
+    const out = capture();
+    try {
+      expect(
+        await runCli(['status', '--config', configPath], {
+          deps: defaultCliDependencies,
+          io: out.io,
+        }),
+      ).toBe(1);
+      expect(out.stderr()).toContain('通常ファイル');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {

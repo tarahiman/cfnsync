@@ -43,11 +43,19 @@ const NO_CHANGE_REASONS = [
  */
 export interface ExecutorContext {
   cfn: CloudFormationGateway;
+  target: { stackKey: string; region: string };
   stateId: string;
   runId: string;
   now?: () => Date;
   /** 対象スタックの NoEcho 実効値を AWS 由来テキストから除去する。 */
   redact?: TextRedactor;
+}
+
+function targetContext(ctx: ExecutorContext): {
+  stackKey: string;
+  region: string;
+} {
+  return ctx.target;
 }
 
 // ===========================================================================
@@ -166,12 +174,14 @@ export async function prepareStack(
     throw new StackStateError(
       `スタック '${stackName}' は ${status} 状態のためデプロイできません(CREATE 失敗後の残骸です)。` +
         `対処: 当該スタックを削除してから再実行してください`,
+      targetContext(ctx),
     );
   }
 
   if (status.endsWith('_IN_PROGRESS')) {
     throw new StackStateError(
       `スタック '${stackName}' は ${status} 状態です。別の操作が進行中の可能性があるため、変更セットを作成せず中断します`,
+      targetContext(ctx),
     );
   }
 
@@ -212,6 +222,7 @@ export async function reclaimStaleChangeSets(
       `スタック '${stackName}' に cfnsync(このステート)が所有しない未実行の変更セットが残存しています: ` +
         `${foreign.join(', ')}。同一スタックが別のステート設定・他ツール・人手から操作されている可能性があります。` +
         `手動で解決(当該変更セットの実行または削除)してから再実行してください`,
+      targetContext(ctx),
     );
   }
 
@@ -357,6 +368,7 @@ export async function executeWithReinspection(
       `実行直前の再検査で、自変更セット '${ownChangeSetName}' (${ownChangeSetId}) の名前と ARN を一意に確認できませんでした: ` +
         `${summaries.map((summary) => `${summary.name} (${summary.id})`).join(', ') || '(対象なし)'}。` +
         `ExecuteChangeSet は同一スタックの他の変更セットを暗黙削除するため、実行を中止します`,
+      targetContext(ctx),
     );
   }
 

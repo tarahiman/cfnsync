@@ -2,6 +2,8 @@
  * 管理単位「スタックキー」(design.md §4.1)と変更分類(§4.4)の共有型。
  */
 
+import { ConfigError } from './errors.js';
+
 /** `<テンプレート相対パス>@<リージョン>` 形式の識別子。 */
 export type StackKey = string;
 
@@ -17,7 +19,9 @@ export function parseStackKey(key: StackKey): {
 } {
   const at = key.lastIndexOf('@');
   if (at <= 0 || at === key.length - 1) {
-    throw new Error(`不正なスタックキーです: ${key}`);
+    throw new ConfigError(`不正なスタックキーです: ${key}`, {
+      stackKey: key,
+    });
   }
   return { templatePath: key.slice(0, at), region: key.slice(at + 1) };
 }

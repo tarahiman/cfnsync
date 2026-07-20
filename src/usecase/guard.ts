@@ -145,7 +145,11 @@ export function assertRegionsAllowed(
 export async function verifyStateAccount(input: {
   backend: StateBackend;
   accountId: string;
-}): Promise<{ state: CfnSyncState; version: StateVersion | undefined }> {
+}): Promise<{
+  state: CfnSyncState;
+  version: StateVersion | undefined;
+  accountStateInitialized: boolean;
+}> {
   const loaded = await input.backend.load();
   const state = loaded?.state ?? createInitialState();
   const version = loaded?.version;
@@ -171,10 +175,14 @@ export async function verifyStateAccount(input: {
         { cause },
       );
     }
-    return { state: toSave, version: savedVersion };
+    return {
+      state: toSave,
+      version: savedVersion,
+      accountStateInitialized: true,
+    };
   }
 
-  return { state, version };
+  return { state, version, accountStateInitialized: false };
 }
 
 // ===========================================================================

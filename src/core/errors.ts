@@ -46,6 +46,12 @@ export class StateConflictError extends CfnSyncError {}
 /** ステートの CAS 保存・永続化に失敗し、後続副作用を止める必要がある。 */
 export class StatePersistenceError extends CfnSyncError {}
 
+/** 不完全 JSON・スキーマ不一致など、読み取った state の破損。 */
+export class StateCorruptionError extends CfnSyncError {}
+
+/** 呼び出し側では構成できないはずの内部不変条件違反。 */
+export class InvariantError extends CfnSyncError {}
+
 /** 依存グラフの循環(FR-8)。循環メンバーを保持する。 */
 export class DependencyCycleError extends CfnSyncError {
   readonly cycle: string[];
