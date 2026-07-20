@@ -35,6 +35,9 @@ export interface DetectedEntry {
   inputsHash?: string;
   /** FR-1-14: リネームによる `added` の場合のみ、旧スタック名を保持する。 */
   renamedFrom?: RenamedFrom;
+  /** FR-1-14: リネームによる `deleted`(旧名側)の場合のみ、新スタック名を保持する。
+   * 同一スタックキーの create と対をなす複合操作であることを示す。 */
+  renamedTo?: { newStackName: string };
 }
 
 export interface DetectionResult {
@@ -168,6 +171,7 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
         stackKey: target.stackKey,
         changeType: 'deleted',
         stateEntry,
+        renamedTo: { newStackName: target.stackName },
       });
       entries.push({
         stackKey: target.stackKey,

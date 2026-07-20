@@ -24,6 +24,24 @@ import type {
 } from '../ports/index.js';
 import { assertFenced } from './fencing.js';
 
+/**
+ * 削除を許可する既知の安全な終端スタックステータス(allowlist)。
+ * これ以外(空文字・進行中・レビュー中・未知の将来ステータス)はすべて
+ * fail-closed で削除を拒否する。
+ */
+const DELETABLE_STACK_STATUSES = new Set<string>([
+  'CREATE_COMPLETE',
+  'UPDATE_COMPLETE',
+  'UPDATE_ROLLBACK_COMPLETE',
+  'ROLLBACK_COMPLETE',
+  'IMPORT_COMPLETE',
+  'IMPORT_ROLLBACK_COMPLETE',
+  'DELETE_FAILED',
+  'ROLLBACK_FAILED',
+  'UPDATE_ROLLBACK_FAILED',
+  'UPDATE_FAILED',
+]);
+
 export interface ManagedDeleteTarget {
   stackKey: StackKey;
   region: string;
@@ -39,6 +57,9 @@ export interface DeleteManagedStackInput {
   version: StateVersion | undefined;
   /** 呼び出し直前に取得済みの同一スタック要約。重複 DescribeStacks を避ける。 */
   knownSummary?: StackSummary;
+  /** リネーム対の削除では true。旧物理スタックは削除するが、同一スタックキーの
+   * create が保存した新エントリを維持するため state からエントリを除去しない。 */
+  preserveStateEntry?: boolean;
 }
 
 export interface DeleteManagedStackResult {
@@ -104,6 +125,9 @@ export async function deleteManagedStack(
   const summary =
     input.knownSummary ?? (await cfn.describeStack(target.entry.stackName));
   if (summary === undefined || summary.status === 'DELETE_COMPLETE') {
+    if (input.preserveStateEntry) {
+      return { outcome: 'deleted', state: input.state, version: input.version };
+    }
     return saveDeletedState(input);
   }
 
@@ -123,14 +147,13 @@ export async function deleteManagedStack(
     );
   }
 
-  if (
-    summary.status.endsWith('_IN_PROGRESS') ||
-    summary.status.endsWith('_PENDING')
-  ) {
+  // fail-closed: 削除を許可する既知の安全な終端ステータスの allowlist。
+  // 空・未知(将来 AWS が追加する状態)・進行中はすべて削除を拒否する。
+  if (!DELETABLE_STACK_STATUSES.has(summary.status)) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' は ${summary.status} 状態です。` +
-        `並行操作の完了後に再実行してください`,
+      `スタック '${target.entry.stackName}' は ${summary.status || '(不明)'} 状態です。` +
+        `削除可能な安全な状態と確認できないため削除を拒否します。状態確認後に再実行してください`,
     );
   }
 
@@ -159,6 +182,10 @@ export async function deleteManagedStack(
     );
   }
 
+  // リネーム対の削除では、同一スタックキーの create が保存済みの新エントリを維持する。
+  if (input.preserveStateEntry) {
+    return { outcome: 'deleted', state: input.state, version: input.version };
+  }
   return saveDeletedState(input);
 }
 

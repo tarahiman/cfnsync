@@ -140,7 +140,61 @@ describe('core/state — §4.3 ステートスキーマ', () => {
     expect(migrated.schemaVersion).toBe(2);
     expect(migrated.stacks['legacy.yaml@ap-northeast-1'].dependsOn).toBeNull();
     expect(migrated.stacks['legacy.yaml@ap-northeast-1'].stackId).toBeNull();
+    // 再レビュー2: v1 で欠落した解析完全性は fail-closed に「不完全」へ倒す。
+    expect(
+      migrated.stacks['legacy.yaml@ap-northeast-1']
+        .dependencyAnalysisIncomplete,
+    ).toBe(true);
     expect(JSON.parse(serializeState(migrated)).schemaVersion).toBe(2);
+  });
+
+  it('security(再レビュー2): スタックキーのリージョンとエントリの region 不一致は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 2,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {
+        'foo.yaml@us-east-1': {
+          stackName: 'foo',
+          stackId: null,
+          region: 'ap-northeast-1',
+          templateHash: 'sha256:t',
+          inputsHash: 'sha256:i',
+          exports: [],
+          imports: [],
+          dependsOn: [],
+          dependencyAnalysisIncomplete: false,
+          lastAction: 'UPDATE',
+          lastSuccessAt: '2026-07-19T00:00:00Z',
+        },
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('security(再レビュー2): stackId ARN のリージョン不一致は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 2,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {
+        'foo.yaml@ap-northeast-1': {
+          stackName: 'foo',
+          stackId:
+            'arn:aws:cloudformation:us-east-1:123456789012:stack/foo/abc',
+          region: 'ap-northeast-1',
+          templateHash: 'sha256:t',
+          inputsHash: 'sha256:i',
+          exports: [],
+          imports: [],
+          dependsOn: [],
+          dependencyAnalysisIncomplete: false,
+          lastAction: 'UPDATE',
+          lastSuccessAt: '2026-07-19T00:00:00Z',
+        },
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
   });
 
   it('§4.3: serializeState → parseState のラウンドトリップで内容が保持される', () => {

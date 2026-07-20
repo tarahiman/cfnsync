@@ -70,3 +70,7 @@ export class AwsError extends CfnSyncError {}
 
 /** ステートロックの取得失敗・所有権喪失(FR-1)。 */
 export class LockError extends CfnSyncError {}
+
+/** テンプレートの解析失敗(構文・サポート外タグ)。元例外のソース断片は
+ * 秘匿値を含みうるため message には surface しない(NFR-4)。 */
+export class TemplateParseError extends CfnSyncError {}

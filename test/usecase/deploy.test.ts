@@ -1050,4 +1050,72 @@ Outputs:
       state.stacks[`old.yaml@${REGION}`].stackId,
     ]);
   });
+
+  it('security(再レビュー2): テンプレートのパス変更で同一物理スタックを削除しない', async () => {
+    // old.yaml(stackName: Shared)を new.yaml(stackName: Shared)へパス変更。
+    // 旧キーは deleted、新キーは added だが同一 (region, stackName)。
+    // 旧キーの DeleteStack は fail-closed で拒否されなければならない。
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Shared' } });
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const state = recordedState(oldConfig, oldTemplates);
+    const newConfig = configOf({ 'new.yaml': { stackName: 'Shared' } });
+    const s = setup(newConfig, templatesOf({ 'new.yaml': TEMPLATE_C }), state);
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'Shared',
+      makeStackSummary({
+        stackName: 'Shared',
+        stackId: state.stacks[`old.yaml@${REGION}`].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
+    );
+
+    // onFailure continue: new.yaml の CREATE 復旧が命名衝突で失敗しても、
+    // 独立した old.yaml の削除処理まで到達させ、衝突ガードを発火させる。
+    const result = await s.run({ allowDelete: true, onFailure: 'continue' });
+
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackKey: `old.yaml@${REGION}`,
+        outcome: 'failed',
+        errorMessage: expect.stringMatching(/管理対象|リネーム|パス変更/),
+      }),
+    );
+  });
+
+  it('security(再レビュー2): スタック名変更の削除は新名エントリを state から消さない', async () => {
+    // 同一キー a.yaml で stackName を Old→New へ変更。detect は
+    // deleted(Old) + added(New) の対を出す。New の create 成功後、
+    // Old の削除で同一キーを除去すると New の記録まで消えるため保存しない。
+    const oldConfig = configOf({ 'a.yaml': { stackName: 'Old' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const state = recordedState(oldConfig, templates);
+    const config = configOf({ 'a.yaml': { stackName: 'New' } });
+    const s = setup(config, templates, state);
+    const fake = gatewayFor(s);
+    // 旧名 Old は現存(削除対象)、新名 New は未作成(CREATE 対象)。
+    fake.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: state.stacks[`a.yaml@${REGION}`].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
+    );
+    fake.waitResults.set('Old', [
+      makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' }),
+    ]);
+
+    const result = await s.run({ allowDelete: true });
+
+    // 旧名 Old は削除される。新名 New の state エントリは残る(消えない)。
+    expect(fake.callsOf('deleteStack').map((call) => call.args[0])).toContain(
+      state.stacks[`a.yaml@${REGION}`].stackId,
+    );
+    expect(s.backend.stored?.state.stacks[`a.yaml@${REGION}`]?.stackName).toBe(
+      'New',
+    );
+    expect(result.exitCode).toBe(0);
+  });
 });

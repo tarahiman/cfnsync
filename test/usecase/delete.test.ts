@@ -480,4 +480,26 @@ describe('delete / deploy integration — T-15', () => {
   it('§8.3: deleteManagedStack の公開契約は依存情報を検証してから副作用へ進む', async () => {
     expect(deleteManagedStack).toBeTypeOf('function');
   });
+
+  it('security(再レビュー2): 未知・空のスタックステータスは fail-closed で削除を拒否する', async () => {
+    for (const status of ['', 'SOME_FUTURE_STATE_COMPLETE']) {
+      const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
+      s.cfn.stacks.set(
+        'A',
+        makeStackSummary({
+          stackName: 'A',
+          stackId: entry('A').stackId ?? '',
+          status,
+        }),
+      );
+
+      const result = await s.run({ allowDelete: true });
+
+      expect(result.exitCode).toBe(1);
+      expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+      expect(result.report.result?.stacks).toContainEqual(
+        expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
+      );
+    }
+  });
 });

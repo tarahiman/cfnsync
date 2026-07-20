@@ -168,6 +168,20 @@ describe('core/config', () => {
       }
     });
 
+    it('security(再レビュー2): YAML 構文エラーは秘匿値を含むソース断片を surface しない(NFR-4)', () => {
+      // 未終端の引用符に NoEcho 相当の秘密値を含める。
+      const source = 'version: 1\nsecret: "supersecret-do-not-leak\n';
+      let message = '';
+      try {
+        parseConfig(source);
+        expect.unreachable('ConfigError が送出されるはず');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        message = (err as Error).message;
+      }
+      expect(message).not.toContain('supersecret-do-not-leak');
+    });
+
     it('FR-11-5: サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'nested/stack.yaml': {} } }),

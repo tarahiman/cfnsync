@@ -14,6 +14,7 @@
 
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { parse as parseYaml } from 'yaml';
+import { TemplateParseError } from './errors.js';
 
 /** `analyzeTemplate` に渡す文脈。Export の `Fn::Sub` 解決に用いる。 */
 export interface TemplateAnalysisContext {
@@ -132,7 +133,20 @@ const CFN_CUSTOM_TAGS: (ScalarTag | CollectionTag)[] = [
  * 一致することを保証する(FR-8-1)。
  */
 export function parseCfnTemplate(source: string): unknown {
-  return parseYaml(source, { customTags: CFN_CUSTOM_TAGS });
+  try {
+    // logLevel: 'silent' でパーサ由来の警告(未知タグ等、NoEcho 実値を含みうる
+    // ソース断片)が診断として直接 stderr へ漏れるのを防ぐ(NFR-4)。
+    return parseYaml(source, {
+      customTags: CFN_CUSTOM_TAGS,
+      logLevel: 'silent',
+    });
+  } catch (cause) {
+    // ソース断片を含む可能性のある元例外メッセージは surface せず固定文に正規化する。
+    throw new TemplateParseError(
+      'テンプレートの解析に失敗しました(構文またはサポート外のタグ)',
+      { cause },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

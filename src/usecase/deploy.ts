@@ -256,6 +256,14 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     ...plannedRegions,
   ]);
 
+  // 同一物理スタック(同一リージョン内では stackName が物理的な一意識別子)を
+  // 現在も管理し続ける対象の集合。パス変更や別テンプレートによる衝突で、
+  // まだ管理対象のスタックが `deleted` 側から削除されるのを防ぐ(fail-closed)。
+  const survivingPhysicalIds = new Set<string>();
+  for (const target of ctx.targets) {
+    survivingPhysicalIds.add(physicalId(target.region, target.stackName));
+  }
+
   const resultStacks = requiredResults(ctx.required, ctx.targets);
   const report: DeployReport = {
     connection: ctx.connection,
@@ -339,7 +347,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       try {
         const operationResult =
           operation.kind === 'delete'
-            ? await processDeleted(ctx, operation, report)
+            ? await processDeleted(ctx, operation, report, survivingPhysicalIds)
             : await processCreateOrUpdate(
                 ctx,
                 operation,
@@ -723,6 +731,7 @@ async function processDeleted(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   report: DeployReport,
+  survivingPhysicalIds: Set<string>,
 ): Promise<OperationResult> {
   const stateEntry = operation.entry.stateEntry;
   if (!stateEntry)
@@ -730,6 +739,36 @@ async function processDeleted(
       `内部エラー: ${operation.stackKey} の stateEntry がありません`,
       { stackKey: operation.stackKey, region: operation.region },
     );
+
+  // 同一物理スタック(region + stackName)を現在も別スタックキーで管理し続ける
+  // 場合(テンプレートのパス変更・別テンプレートによる衝突)、この削除は
+  // 「まだ管理対象の実スタック」を破壊する。fail-closed で拒否しリネーム移行を案内する。
+  const rename = operation.entry.renamedTo;
+  if (
+    rename === undefined &&
+    survivingPhysicalIds.has(physicalId(operation.region, stateEntry.stackName))
+  ) {
+    const diff = buildStackDiff({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      stackName: stateEntry.stackName,
+      operation: 'delete',
+      noEchoParams: [],
+    });
+    diff.warnings.push(
+      `スタック '${stateEntry.stackName}'(${operation.region})は別のテンプレートパスで現在も管理対象です。` +
+        `同一物理スタックの削除を拒否します。テンプレートのパス変更(リネーム)は state 移行で扱ってください`,
+    );
+    report.diffs.push(diff);
+    report.result?.stacks.push({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      stackName: stateEntry.stackName,
+      outcome: 'failed',
+      errorMessage: diff.warnings[diff.warnings.length - 1],
+    });
+    return { hasDiff: true, failed: true };
+  }
   const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
     stackKey: operation.stackKey,
@@ -743,8 +782,12 @@ async function processDeleted(
   const existing = await cfn.describeStack(stateEntry.stackName);
   if (!existing || existing.status === 'DELETE_COMPLETE') {
     // design §7: DELETE 成功後・state 保存前の中断からの再同期。
-    const next = removeStackEntry(ctx.state.state, operation.stackKey);
-    await saveState(ctx, next);
+    // リネーム対の削除では、同一スタックキーの create が既に新エントリを保存済み。
+    // state からエントリを除去すると新スタックの記録まで消えるため保存しない。
+    if (rename === undefined) {
+      const next = removeStackEntry(ctx.state.state, operation.stackKey);
+      await saveState(ctx, next);
+    }
     report.result?.stacks.push({
       stackKey: operation.stackKey,
       region: operation.region,
@@ -781,6 +824,8 @@ async function processDeleted(
     state: ctx.state.state,
     version: ctx.state.version,
     knownSummary: existing,
+    // リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。
+    preserveStateEntry: rename !== undefined,
   });
 
   if (deleted.outcome === 'refused') {
@@ -1054,6 +1099,11 @@ function isSuccessfulTerminal(status: string): boolean {
 
 function now(deps: DeployDeps): Date {
   return (deps.now ?? (() => new Date()))();
+}
+
+/** 同一リージョン内で物理スタックを一意に識別するキー(stackName が物理識別子)。 */
+function physicalId(region: string, stackName: string): string {
+  return `${region}\u0000${stackName}`;
 }
 
 function unique<T>(values: T[]): T[] {

@@ -187,11 +187,15 @@ export function validateEffectiveConfig(config: CfnSyncConfig): void {
 export function parseConfig(content: string): CfnSyncConfig {
   let raw: unknown;
   try {
-    raw = parseYaml(content);
-  } catch (cause) {
-    throw new ConfigError('設定ファイルの YAML 解析に失敗しました', {
-      cause,
-    });
+    // logLevel: 'silent' で yaml パーサによる警告の直接 stderr 出力を抑止する。
+    // 未知タグ(例 `!vault <secret>`)を strict に拒否し、秘匿値を含みうる
+    // ソース断片が診断としてログへ漏れないようにする(NFR-4)。cause は保持せず
+    // 固定文のみを surface する。
+    raw = parseYaml(content, { logLevel: 'silent', strict: true });
+  } catch {
+    throw new ConfigError(
+      '設定ファイルの YAML 解析に失敗しました(構文またはサポート外のタグ)',
+    );
   }
   return validateConfig(raw);
 }

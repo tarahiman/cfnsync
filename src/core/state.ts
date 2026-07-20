@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { type ErrorContext, StateCorruptionError } from './errors.js';
-import type { StackKey } from './types.js';
+import { parseStackKey, type StackKey } from './types.js';
 
 /** 破損したステート(不完全 JSON・スキーマ不一致)を検出した際のエラー(FR-1-12, fail-closed)。 */
 const StackEntryBaseSchema = z.object({
@@ -83,7 +83,11 @@ export function parseState(
   }
 
   const v2Result = CfnSyncStateV2Schema.safeParse(parsedJson);
-  if (v2Result.success) return v2Result.data as CfnSyncState;
+  if (v2Result.success) {
+    const state = v2Result.data as CfnSyncState;
+    assertStateConsistency(state, context);
+    return state;
+  }
 
   const v1Result = CfnSyncStateV1Schema.safeParse(parsedJson);
   if (!v1Result.success) {
@@ -99,15 +103,71 @@ export function parseState(
       ...entry,
       stackId: entry.stackId ?? null,
       dependsOn: entry.dependsOn ?? null,
-      dependencyAnalysisIncomplete: entry.dependencyAnalysisIncomplete ?? false,
+      // v1 で欠落した解析完全性は fail-closed に「不完全」として移行する。
+      // false(完全)へ倒すと、動的依存の警告を含むまま作られた旧エントリの
+      // 削除を誤って許可してしまう。
+      dependencyAnalysisIncomplete: entry.dependencyAnalysisIncomplete ?? true,
     };
   }
-  return {
+  const migrated = {
     schemaVersion: 2,
     accountId: v1Result.data.accountId,
     generation: v1Result.data.generation,
     stacks,
   } as CfnSyncState;
+  assertStateConsistency(migrated, context);
+  return migrated;
+}
+
+const STACK_ARN_PATTERN =
+  /^arn:[^:]+:cloudformation:([^:]+):(\d{12}):stack\/.+/;
+
+/**
+ * ステートの内部整合性を検証する(fail-closed)。
+ * - スタックキー末尾のリージョンとエントリの `region` の一致(削除計画は
+ *   キー側、旧グラフはエントリ側を使うため、不一致は誤リージョンでの
+ *   「スタックなし → state 除去」を引き起こす)。
+ * - `stackId` が CloudFormation ARN 形式の場合、ARN のリージョン・アカウント
+ *   とエントリ・ステートの記録の一致。
+ */
+function assertStateConsistency(
+  state: CfnSyncState,
+  context: ErrorContext,
+): void {
+  for (const [key, entry] of Object.entries(state.stacks)) {
+    let keyRegion: string;
+    try {
+      keyRegion = parseStackKey(key).region;
+    } catch (cause) {
+      throw new StateCorruptionError(
+        `ステートのスタックキー '${key}' が不正な形式です`,
+        { ...context, cause },
+      );
+    }
+    if (keyRegion !== entry.region) {
+      throw new StateCorruptionError(
+        `ステートのスタックキー '${key}' のリージョンとエントリの region '${entry.region}' が一致しません`,
+        { ...context, stackKey: key },
+      );
+    }
+    if (entry.stackId !== null) {
+      const arn = STACK_ARN_PATTERN.exec(entry.stackId);
+      if (arn !== null) {
+        if (arn[1] !== entry.region) {
+          throw new StateCorruptionError(
+            `ステートのスタックキー '${key}' の stackId ARN のリージョン '${arn[1]}' がエントリの region と一致しません`,
+            { ...context, stackKey: key },
+          );
+        }
+        if (state.accountId !== null && arn[2] !== state.accountId) {
+          throw new StateCorruptionError(
+            `ステートのスタックキー '${key}' の stackId ARN のアカウントがステートの accountId と一致しません`,
+            { ...context, stackKey: key },
+          );
+        }
+      }
+    }
+  }
 }
 
 /** ステート未存在(初回実行)時に使う空ステート(FR-1-15)。 */
