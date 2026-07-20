@@ -160,6 +160,11 @@ export function templatesEquivalent(a: string, b: string): boolean {
   return deepEqual(parseCfnTemplate(a), parseCfnTemplate(b));
 }
 
+/** 既にパース済みのテンプレート同士を比較する。呼び出し側のパス単位キャッシュ用。 */
+export function parsedTemplatesEquivalent(a: unknown, b: unknown): boolean {
+  return deepEqual(a, b);
+}
+
 // ---------------------------------------------------------------------------
 // Export / Import / NoEcho の抽出(design.md §6, NFR-4)
 // ---------------------------------------------------------------------------
@@ -243,29 +248,40 @@ function walkForImports(
   node: unknown,
   imports: string[],
   warnings: string[],
-  path: string,
+  path: Array<string | number>,
 ): void {
   if (Array.isArray(node)) {
     node.forEach((item, i) => {
-      walkForImports(item, imports, warnings, `${path}[${i}]`);
+      path.push(i);
+      walkForImports(item, imports, warnings, path);
+      path.pop();
     });
     return;
   }
   if (!isRecord(node)) return;
 
   for (const [key, value] of Object.entries(node)) {
-    const childPath = `${path}.${key}`;
+    path.push(key);
     if (key === 'Fn::ImportValue') {
       if (typeof value === 'string') {
         imports.push(value);
       } else {
         warnings.push(
-          `${childPath} を解決できません(動的な合成のため import として扱いません): ${JSON.stringify(value)}`,
+          `${formatTemplatePath(path)} を解決できません(動的な合成のため import として扱いません): ${JSON.stringify(value)}`,
         );
       }
     }
-    walkForImports(value, imports, warnings, childPath);
+    walkForImports(value, imports, warnings, path);
+    path.pop();
   }
+}
+
+function formatTemplatePath(path: Array<string | number>): string {
+  return `$${path
+    .map((segment) =>
+      typeof segment === 'number' ? `[${segment}]` : `.${segment}`,
+    )
+    .join('')}`;
 }
 
 function extractNoEchoParams(template: Record<string, unknown>): string[] {
@@ -291,14 +307,21 @@ export function analyzeTemplate(
   source: string,
   ctx: TemplateAnalysisContext,
 ): TemplateAnalysis {
-  const parsed = parseCfnTemplate(source);
+  return analyzeParsedTemplate(parseCfnTemplate(source), ctx);
+}
+
+/** パース済み AST から対象依存部分だけを解決する(Export の stack/region 解決は対象ごと)。 */
+export function analyzeParsedTemplate(
+  parsed: unknown,
+  ctx: TemplateAnalysisContext,
+): TemplateAnalysis {
   const template = isRecord(parsed) ? parsed : {};
 
   const warnings: string[] = [];
   const exports = extractExports(template, ctx, warnings);
 
   const imports: string[] = [];
-  walkForImports(template, imports, warnings, '$');
+  walkForImports(template, imports, warnings, []);
 
   return {
     imports: dedupePreserveOrder(imports),

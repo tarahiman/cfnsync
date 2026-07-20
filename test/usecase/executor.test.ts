@@ -34,7 +34,7 @@ import {
 } from './fakes.js';
 
 const STATE_ID = 'abc123def456';
-const RUN_ID = 'run01';
+const RUN_ID = '0123456789abcdef';
 const STACK = 'my-network';
 const FIXED_NOW = () => new Date('2026-07-20T13:45:01.123Z');
 
@@ -68,7 +68,7 @@ function makeTarget(
 }
 
 /** 自ステート ID の変更セット名(過去実行の残骸を模す)。 */
-function ownChangeSetName(runId = 'oldrun'): string {
+function ownChangeSetName(runId = 'fedcba9876543210'): string {
   return changeSetName({ stateId: STATE_ID, runId, now: FIXED_NOW });
 }
 
@@ -83,7 +83,9 @@ describe('changeSetName / parseChangeSetName / newRunId (FR-2-6)', () => {
       runId: RUN_ID,
       now: FIXED_NOW,
     });
-    expect(name).toBe('cfnsync-abc123def456-run01-20260720T134501123');
+    expect(name).toBe(
+      'cfnsync-abc123def456-0123456789abcdef-20260720T134501123',
+    );
   });
 
   it('FR-2-6: 名前は CloudFormation 制約(先頭英字・英数字とハイフン・128 文字以内)を満たす', () => {
@@ -119,13 +121,31 @@ describe('changeSetName / parseChangeSetName / newRunId (FR-2-6)', () => {
     expect(parseChangeSetName('cfnsync-onlyone')).toEqual({ tool: true });
     expect(parseChangeSetName('cfnsync-a-b-c-d')).toEqual({ tool: true });
     expect(parseChangeSetName('cfnsync-')).toEqual({ tool: true });
+    expect(
+      parseChangeSetName('cfnsync-abc123def456-not16hex-20260720T134501123'),
+    ).toEqual({ tool: true });
+    expect(
+      parseChangeSetName(
+        'cfnsync-abc123def456-0123456789abcdef-20260720T13450112Z',
+      ),
+    ).toEqual({ tool: true });
+    expect(
+      parseChangeSetName(
+        'cfnsync-ABC123DEF456-0123456789abcdef-20260720T134501123',
+      ),
+    ).toEqual({ tool: true });
+    expect(
+      parseChangeSetName(
+        'cfnsync-abc123def456-0123456789abcdef-20261320T254501123',
+      ),
+    ).toEqual({ tool: true });
   });
 
   it('FR-2-6: newRunId は英数字のみで、呼び出しごとに異なる', () => {
     const a = newRunId();
     const b = newRunId();
-    expect(a).toMatch(/^[A-Za-z0-9]+$/);
-    expect(b).toMatch(/^[A-Za-z0-9]+$/);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(b).toMatch(/^[0-9a-f]{16}$/);
     expect(a).not.toBe(b);
     // 生成された runId を名前に埋め込んでも再パース可能であること。
     expect(
@@ -215,7 +235,7 @@ describe('prepareStack — REVIEW_IN_PROGRESS (FR-2-10)', () => {
       STACK,
       makeStackSummary({ stackName: STACK, status: 'REVIEW_IN_PROGRESS' }),
     );
-    const stale = ownChangeSetName('oldrun');
+    const stale = ownChangeSetName('1111111111111111');
     fake.changeSets.set(STACK, [
       makeChangeSetSummary(stale, { status: 'CREATE_COMPLETE' }),
     ]);
@@ -275,7 +295,7 @@ describe('prepareStack — REVIEW_IN_PROGRESS (FR-2-10)', () => {
 describe('reclaimStaleChangeSets (FR-2-7)', () => {
   it('FR-2-7: 自ステート ID の残存 → deleteChangeSet で回収して続行', async () => {
     const fake = new FakeCloudFormationGateway();
-    const stale = ownChangeSetName('oldrun');
+    const stale = ownChangeSetName('1111111111111111');
     fake.changeSets.set(STACK, [makeChangeSetSummary(stale)]);
 
     await expect(
@@ -320,9 +340,23 @@ describe('reclaimStaleChangeSets (FR-2-7)', () => {
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
 
+  it('FR-2-7: stateId が一致しても runId・UTC timestamp が厳密形式でなければ削除せず中断', async () => {
+    for (const malformed of [
+      `cfnsync-${STATE_ID}-x-20260720T134501123`,
+      `cfnsync-${STATE_ID}-0123456789abcdef-not-a-timestamp`,
+    ]) {
+      const fake = new FakeCloudFormationGateway();
+      fake.changeSets.set(STACK, [makeChangeSetSummary(malformed)]);
+      await expect(
+        reclaimStaleChangeSets(makeCtx(fake), STACK),
+      ).rejects.toBeInstanceOf(StackStateError);
+      expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+    }
+  });
+
   it('FR-2-7: 他主体が 1 つでもあれば自ステートの変更セットも削除しない(fail-closed の順序)', async () => {
     const fake = new FakeCloudFormationGateway();
-    const stale = ownChangeSetName('oldrun');
+    const stale = ownChangeSetName('1111111111111111');
     fake.changeSets.set(STACK, [
       makeChangeSetSummary(stale),
       makeChangeSetSummary('human-created-changeset'),
@@ -417,7 +451,9 @@ describe('createManagedChangeSet', () => {
       templateBody: 'TEMPLATE',
       kind: 'create',
     });
-    expect(name).toBe('cfnsync-abc123def456-run01-20260720T134501123');
+    expect(name).toBe(
+      'cfnsync-abc123def456-0123456789abcdef-20260720T134501123',
+    );
     const input = fake.callsOf('createChangeSet')[0].args[0] as {
       changeSetName: string;
     };

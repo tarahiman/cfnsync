@@ -129,6 +129,7 @@ usecase(M3)が依存する契約と実装をここで固定する。
 | FR-2(基盤) | 変更セットの作成・記述・削除・実行の SDK 呼び出し | CreateChangeSet / DescribeChangeSet / DeleteChangeSet / ExecuteChangeSet のパラメータマッピング検証 |
 | §7(Codex 承認条件) | **ListChangeSets は全ページを走査する** | NextToken 付き 2 ページ応答をスタブし、全変更セットが列挙されることを検証 |
 | §7 | スタック状態の取得 | DescribeStacks のステータス取得 / スタック不存在(ValidationError)→「スタックなし」判定 |
+| NFR-5(待機) | ポーリング API 数を抑制 | 変更セット待機中は先頭ページのみ・終端時に全ページ取得 / イベント 5 秒・スタック状態 5→10→15 秒 |
 | FR-4-1(基盤) | スタックイベントの取得 | DescribeStackEvents のページング・新着イベントの差分取得 |
 | §7(復旧基盤) | `GetTemplate`(`Original` ステージ)取得 | CREATE 復旧比較用のテンプレート取得を検証 |
 | NFR-3(リトライ) | スロットリングにリトライ(指数バックオフ) | SDK クライアントが adaptive retry mode で構成されている / Throttling 応答後の再試行で成功する |
@@ -201,7 +202,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-2-3 | 空変更セットは「変更なし」としてスキップ | Status `FAILED` + StatusReason が `didn't contain changes` / `No updates are to be performed` → エラーにせず変更セット削除+変更なし扱い。それ以外の FAILED は通常エラー |
 | FR-2-4 | デプロイ不能ステータスは対処方法つきエラー | `ROLLBACK_COMPLETE` → `StackStateError`(スタック削除の必要性を含むメッセージ) |
 | FR-2-5 | Capability を指定できる | 設定の `capabilities` が CreateChangeSet に渡る |
-| FR-2-6 | ツール由来と実行単位を識別できる命名 | 変更セット名が `cfnsync-<ステートID>-<実行ID>-<UTCタイムスタンプ>` 形式。ステート ID はバックエンド識別子の短縮ハッシュ |
+| FR-2-6 | ツール由来と実行単位を識別できる命名 | 変更セット名が `cfnsync-<stateId:12hex>-<runId:16hex>-<UTC:YYYYMMDDTHHmmssSSS>` に完全一致。形式不一致は所有権判定不能として停止 |
 | FR-2-7 | 残存変更セットは所有権を検証して回収。他者のものは触れず中断 | 自ステート ID の残存 → 削除して続行 / 別ステート ID の `cfnsync-` → 削除せず中断 / 非 `cfnsync-`(人手・他ツール)→ 削除せず中断 / 命名から判定不能 → 中断 |
 | FR-2-8 | `*_IN_PROGRESS` は並行操作エラー | `UPDATE_IN_PROGRESS` 等で変更セットを作成せずエラー |
 | FR-2-9 | 管理タグを自動付与 | すべての CreateChangeSet の Tags に `cfnsync:state-id=<ステートID>` がマージされる(ユーザータグと共存) |

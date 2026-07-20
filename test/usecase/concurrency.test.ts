@@ -336,7 +336,9 @@ describe('T-18 concurrency', () => {
       }),
     );
     s.cfn.changeSets.set('ManagedStack', [
-      makeChangeSetSummary(`cfnsync-${STATE_ID}-oldrun-20260720T110000000`),
+      makeChangeSetSummary(
+        `cfnsync-${STATE_ID}-fedcba9876543210-20260720T110000000`,
+      ),
     ]);
     s.cfn.waitResults.set('ManagedStack', [
       makeStackSummary({

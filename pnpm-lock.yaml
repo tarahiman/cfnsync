@@ -9,25 +9,25 @@ importers:
   .:
     dependencies:
       '@aws-sdk/client-cloudformation':
-        specifier: ^3
+        specifier: 3.1090.0
         version: 3.1090.0
       '@aws-sdk/client-s3':
-        specifier: ^3
+        specifier: 3.1090.0
         version: 3.1090.0
       '@aws-sdk/client-sts':
-        specifier: ^3
+        specifier: 3.1090.0
         version: 3.1090.0
       '@aws-sdk/credential-provider-node':
-        specifier: ^3.972.70
+        specifier: 3.972.70
         version: 3.972.70
       commander:
-        specifier: ^12
+        specifier: 12.1.0
         version: 12.1.0
       yaml:
-        specifier: ^2
+        specifier: 2.9.0
         version: 2.9.0
       zod:
-        specifier: ^3
+        specifier: 3.25.76
         version: 3.25.76
     devDependencies:
       '@biomejs/biome':

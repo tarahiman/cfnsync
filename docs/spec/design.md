@@ -229,10 +229,11 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 
 ## 7. 変更セットのライフサイクル(usecase/executor)
 
-- **命名規則**: `cfnsync-<ステートID>-<実行ID>-<UTC タイムスタンプ>`。ステート ID はバックエンド識別子(`local`: ステートファイルの絶対パス、`s3`: バケット + キー)の短縮ハッシュ。プレフィックス `cfnsync-` でツール由来を、ステート ID で所有ステートを識別する(FR-2)。
+- **命名規則**: `cfnsync-<ステートID>-<実行ID>-<UTC タイムスタンプ>`。ステート ID は 12 桁 lowercase hex、実行 ID は 16 桁 lowercase hex、timestamp は `YYYYMMDDTHHmmssSSS` に完全一致するものだけを所有権判定可能とする。形式不一致は判定不能として fail-closed に中断する。ステート ID はバックエンド識別子(`local`: ステートファイルの絶対パス、`s3`: バケット + キー)の短縮ハッシュ。プレフィックス `cfnsync-` でツール由来を、ステート ID で所有ステートを識別する(FR-2)。
 - **残存回収**: 変更セット作成前に `ListChangeSets` で未実行の変更セットを列挙し、名前から所有権を判定して処理する(FR-2)。回収(削除)するのは**自ステート ID に一致する** `cfnsync-` 変更セットのみ。同一ステートを共有する実行はロック(§4.5)で排他されるため、これらは過去の異常終了の残骸と確定できる。IF 別のステート ID を持つ、または命名規則から所有権を判定できない `cfnsync-` 変更セットを検出した場合、同一スタックが複数のステート設定から管理されている構成ミス(並行実行の可能性)の証拠として、削除せず中断する(NFR-3)。`cfnsync-` プレフィックス以外の変更セット(人手・他ツール由来)が存在する場合も削除せず fail-closed に停止する — 後続の `ExecuteChangeSet` が同一スタックの他の変更セットを暗黙に削除してしまうため、解決(当該変更セットの実行または削除)後の再実行を案内する。
 - **実行直前の再検査**: `ExecuteChangeSet` の直前に対象スタックの未実行変更セット一覧を再取得し、自変更セット以外が存在する場合は実行せず fail-closed に停止する(FR-2)。再検査から実行までの競合窓は原理的に排除できない(CloudFormation に条件付き実行が存在しない)ため、§4.5 の多層防御と同様に残余リスクとして仕様に明記し、cfnsync 管理対象スタックに手動・他ツールの変更セットを作成しない運用規約を README に記載する(§11)。
 - **空変更セット**: `DescribeChangeSet` の Status が `FAILED`、StatusReason が AWS の既知の定型文(`The submitted information didn't contain changes. Submit different information to create a change set.` / `No updates are to be performed.`)に先頭一致、かつ全ページ結合済み `changes.length === 0` のすべてを満たす場合だけ、エラーではなく変更なしとして扱い、変更セットを削除する(FR-2)。Macro / Transform 等の失敗理由中に同じ語句が現れるだけのケースや changes 非空のケースは必ず失敗とする。
+- **待機ポーリング**: 変更セット作成中は `DescribeChangeSet` の先頭ページだけで Status を確認し、終端到達時にのみ NextToken を辿って Changes を全ページ結合する。スタック実行中はイベントを 5 秒間隔で取得し、`DescribeStacks` は 5→10→15 秒(上限)でバックオフする(NFR-5)。
 - **スタック状態ガード**(作成前に `DescribeStacks` で確認):
   - `*_IN_PROGRESS` → 並行操作ありとしてエラー(FR-2)
   - `ROLLBACK_COMPLETE` → エラー + 「スタック削除後に再作成が必要」の案内(FR-2)

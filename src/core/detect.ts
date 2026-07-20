@@ -44,6 +44,8 @@ export interface DetectChangesInput {
   targets: ResolvedStackTarget[];
   /** templatePath → テンプレートファイルの内容。targets に登場するすべての templatePath を含むこと。 */
   templates: Map<string, string>;
+  /** 呼び出し側でテンプレートパス単位に計算済みの hash。inputsHash の構成は変更しない。 */
+  templateHashes?: Map<string, string>;
   state: CfnSyncState;
 }
 
@@ -129,7 +131,9 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
 
   for (const target of targets) {
     const content = getTemplateContent(templates, target.templatePath);
-    const templateHash = computeTemplateHash(content);
+    const templateHash =
+      input.templateHashes?.get(target.templatePath) ??
+      computeTemplateHash(content);
     const inputsHash = computeInputsHash({
       templateContent: content,
       stackName: target.stackName,

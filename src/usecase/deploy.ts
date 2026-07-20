@@ -17,6 +17,7 @@ import {
   resolveTargets,
 } from '../core/config.js';
 import {
+  computeTemplateHash,
   type DetectedEntry,
   type DetectionResult,
   detectChanges,
@@ -46,9 +47,10 @@ import {
   upsertStackEntry,
 } from '../core/state.js';
 import {
-  analyzeTemplate,
+  analyzeParsedTemplate,
+  parseCfnTemplate,
+  parsedTemplatesEquivalent,
   type TemplateAnalysis,
-  templatesEquivalent,
 } from '../core/template.js';
 import { parseStackKey, type StackKey } from '../core/types.js';
 import type {
@@ -144,6 +146,7 @@ interface PreparedPlan {
   mergedGraphs: Map<string, RegionGraph>;
   plan: ExecutionPlan;
   redactors: Map<StackKey, TextRedactor>;
+  parsedTemplates: Map<string, unknown>;
 }
 
 interface OperationResult {
@@ -263,6 +266,11 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   let ownershipLost = false;
   const skipped = new Set<StackKey>();
 
+  // 将来並列化メモ: AWS ワーカーは state delta / report fragment を返し、このループの
+  // 単一コミットキューが直列マージしてスタックごとに CAS 保存する形へ分離する。
+  // 現状は fencing・失敗スキップ・即時 CAS の境界が密結合なため、挙動を変えない本バッチでは
+  // 共有 state/report への書き込み分離を大改修せず、直列実行とスタックごとの保存を維持する。
+
   // detect 段階で unchanged のスタックは CloudFormation に一切触れず明示的に報告する。
   for (const entry of prepared.detection.entries) {
     if (
@@ -299,6 +307,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
                 operation,
                 prepared.analyses,
                 prepared.redactors,
+                prepared.parsedTemplates,
                 report,
               );
         hasDiff ||= operationResult.hasDiff;
@@ -349,10 +358,18 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
 function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const analyses = new Map<StackKey, TemplateAnalysis>();
   const redactors = new Map<StackKey, TextRedactor>();
+  const parsedTemplates = new Map<string, unknown>();
+  const templateHashes = new Map<string, string>();
   const currentNodes: StackNode[] = [];
   for (const target of ctx.targets) {
     const source = requiredTemplate(ctx.templates, target.templatePath);
-    const analysis = analyzeTemplate(source, {
+    let parsed = parsedTemplates.get(target.templatePath);
+    if (!parsedTemplates.has(target.templatePath)) {
+      parsed = parseCfnTemplate(source);
+      parsedTemplates.set(target.templatePath, parsed);
+      templateHashes.set(target.templatePath, computeTemplateHash(source));
+    }
+    const analysis = analyzeParsedTemplate(parsed, {
       stackName: target.stackName,
       region: target.region,
     });
@@ -374,6 +391,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     targets: ctx.targets,
     templates: ctx.templates,
     state: ctx.state.state,
+    templateHashes,
   });
   // __REQUIRED__ の対象だけを実行計画から外す。target 自体は current graph に残し、
   // 他スタックを誤って deleted 扱いしたり依存辺を消したりしない。
@@ -403,7 +421,15 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     mergedGraphs,
     regionOrder,
   });
-  return { detection, analyses, graphs, mergedGraphs, plan, redactors };
+  return {
+    detection,
+    analyses,
+    graphs,
+    mergedGraphs,
+    plan,
+    redactors,
+    parsedTemplates,
+  };
 }
 
 // ===========================================================================
@@ -415,6 +441,7 @@ async function processCreateOrUpdate(
   operation: PlannedOperation,
   analyses: Map<StackKey, TemplateAnalysis>,
   redactors: Map<StackKey, TextRedactor>,
+  parsedTemplates: Map<string, unknown>,
   report: DeployReport,
 ): Promise<OperationResult> {
   const target = operation.entry.target;
@@ -430,10 +457,14 @@ async function processCreateOrUpdate(
 
   const rawCfn = ctx.deps.cfnFactory(operation.region);
   const cfn = fencedGateway(rawCfn, ctx.deps.backend, ctx.lock);
+  let knownSummary:
+    | { summary: Awaited<ReturnType<CloudFormationGateway['describeStack']>> }
+    | undefined;
 
   // design §7: added だが完成済みの同名スタックがある場合は CREATE 復旧比較へ分岐。
   if (operation.kind === 'create') {
     const existing = await cfn.describeStack(target.stackName);
+    knownSummary = { summary: existing };
     if (existing && existing.status !== 'REVIEW_IN_PROGRESS') {
       if (existing.status === 'ROLLBACK_COMPLETE') {
         throw new StackStateError(
@@ -451,7 +482,10 @@ async function processCreateOrUpdate(
         ctx,
         target,
         source,
+        parsedTemplates.get(target.templatePath),
         analysis,
+        operation.entry.templateHash,
+        operation.entry.inputsHash,
         existing,
         cfn,
         report,
@@ -467,7 +501,7 @@ async function processCreateOrUpdate(
     now: ctx.deps.now,
     redact,
   };
-  const prepared = await prepareStack(executor, target.stackName);
+  const prepared = await prepareStack(executor, target.stackName, knownSummary);
   // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。通常パスのみ明示回収する。
   if (!prepared.reviewInProgress)
     await reclaimStaleChangeSets(executor, target.stackName);
@@ -667,7 +701,10 @@ async function recoverExistingCreate(
   ctx: LockedRunContext,
   target: ResolvedStackTarget,
   source: string,
+  desiredParsed: unknown,
   analysis: TemplateAnalysis,
+  templateHash: string | undefined,
+  inputsHash: string | undefined,
   existing: NonNullable<
     Awaited<ReturnType<CloudFormationGateway['describeStack']>>
   >,
@@ -688,7 +725,10 @@ async function recoverExistingCreate(
 
   let templateMatches: boolean;
   try {
-    templateMatches = templatesEquivalent(source, deployedTemplate);
+    templateMatches = parsedTemplatesEquivalent(
+      desiredParsed ?? parseCfnTemplate(source),
+      parseCfnTemplate(deployedTemplate),
+    );
   } catch (cause) {
     throw new StackStateError(
       `同名スタック '${target.stackName}' のテンプレート同値性を検証できません(fail-closed)。` +
@@ -732,34 +772,18 @@ async function recoverExistingCreate(
   }
   report.diffs.push(diff);
 
+  if (!templateHash || !inputsHash) {
+    throw new Error(`内部エラー: ${target.stackKey} の hash がありません`);
+  }
   const entry: DetectedEntry = {
     stackKey: target.stackKey,
     changeType: 'added',
     target,
-    templateHash: operationHashSource(ctx, target, 'template'),
-    inputsHash: operationHashSource(ctx, target, 'inputs'),
+    templateHash,
+    inputsHash,
   };
   await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC');
   report.result?.stacks.push(stackResult(target, 'no-change'));
-}
-
-function operationHashSource(
-  ctx: LockedRunContext,
-  target: ResolvedStackTarget,
-  kind: 'template' | 'inputs',
-): string {
-  const detected = detectChanges({
-    targets: [target],
-    templates: ctx.templates,
-    state: ctx.state.state,
-  }).entries.find((entry) => entry.target?.stackKey === target.stackKey);
-  const value =
-    kind === 'template' ? detected?.templateHash : detected?.inputsHash;
-  if (!value)
-    throw new Error(
-      `内部エラー: ${target.stackKey} の ${kind} hash がありません`,
-    );
-  return value;
 }
 
 async function saveSuccessfulEntry(

@@ -199,6 +199,20 @@ describe('T-19 cli', () => {
     expect(deps.loadConfig).toHaveBeenCalledWith('./cfnsync.yaml');
   });
 
+  it('NFR-5: deploy の cfnFactory は同一リージョンのゲートウェイを再利用する', async () => {
+    const deps = dependencies();
+    (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
+      async (input) => {
+        const first = input.deps.cfnFactory('ap-northeast-1');
+        const second = input.deps.cfnFactory('ap-northeast-1');
+        expect(second).toBe(first);
+        return { exitCode: 0, report, hasDiff: false };
+      },
+    );
+    await runCli(['deploy'], { deps });
+    expect(deps.createCfn).toHaveBeenCalledTimes(1);
+  });
+
   it('FR-7-1〜3: AWS_PROFILE/AWS_REGION を明示オプション未指定時に伝播する', async () => {
     vi.stubEnv('AWS_PROFILE', 'environment-profile');
     vi.stubEnv('AWS_REGION', 'eu-west-1');
@@ -258,6 +272,7 @@ describe('T-19 cli', () => {
     expect(deps.forceUnlock).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run-123' }),
     );
+    expect(deps.readTemplates).not.toHaveBeenCalled();
   });
 
   it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {

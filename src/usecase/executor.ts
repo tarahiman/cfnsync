@@ -18,7 +18,11 @@
 import { randomBytes } from 'node:crypto';
 import type { ResolvedStackTarget } from '../core/config.js';
 import { StackStateError } from '../core/errors.js';
-import type { ChangeSetDetail, CloudFormationGateway } from '../ports/index.js';
+import type {
+  ChangeSetDetail,
+  CloudFormationGateway,
+  StackSummary,
+} from '../ports/index.js';
 import { identityRedactor, type TextRedactor } from './redactor.js';
 
 /** 管理タグのキー(§8.4)。値は stateId。CreateChangeSet の Tags に常時マージする(FR-2-9)。 */
@@ -62,7 +66,7 @@ function pad(value: number, width: number): string {
 /**
  * 変更セット名 `cfnsync-<stateID>-<runID>-<UTCタイムスタンプ>` を生成する(FR-2-6)。
  * タイムスタンプは UTC の `YYYYMMDDTHHmmssSSS`(英数字のみ・ハイフンなし)。stateId(12hex)・
- * runId(英数字)にハイフンを含まない前提で、`parseChangeSetName` が一意にパースできる。
+ * runId(16hex)にハイフンを含まない前提で、`parseChangeSetName` が一意にパースできる。
  * 結果は CloudFormation の制約(先頭英字・英数字とハイフン・128 文字以内)を満たす。
  */
 export function changeSetName(ctx: {
@@ -87,21 +91,23 @@ export interface ParsedChangeSetName {
   runId?: string;
 }
 
+const CHANGESET_NAME_PATTERN =
+  /^cfnsync-([0-9a-f]{12})-([0-9a-f]{16})-(\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3])[0-5]\d[0-5]\d\d{3})$/;
+
 /**
  * 変更セット名から所有権を判定する(FR-2-7 / §7)。
  * - 非 `cfnsync-` → `{ tool: false }`(人手・他ツール由来)。
- * - `cfnsync-` かつ 4 パーツで空でない → `{ tool: true, stateId, runId }`。
- * - `cfnsync-` だが形式不正(パーツ数不一致・空パーツ)→ `{ tool: true }`(判定不能)。
+ * - stateId(12hex)・runId(16hex)・UTC timestamp(`YYYYMMDDTHHmmssSSS`)へ完全一致
+ *   → `{ tool: true, stateId, runId }`。
+ * - `cfnsync-` だが形式不正 → `{ tool: true }`(判定不能)。
  */
 export function parseChangeSetName(name: string): ParsedChangeSetName {
   if (!name.startsWith(`${CHANGESET_PREFIX}-`)) {
     return { tool: false };
   }
-  const parts = name.split('-');
-  if (parts.length !== 4 || parts.some((part) => part.length === 0)) {
-    return { tool: true };
-  }
-  return { tool: true, stateId: parts[1], runId: parts[2] };
+  const match = CHANGESET_NAME_PATTERN.exec(name);
+  if (!match) return { tool: true };
+  return { tool: true, stateId: match[1], runId: match[2] };
 }
 
 /** 自ステートが所有する(=回収してよい)変更セットか。名前が命名規則を満たし stateId が一致する場合のみ真。 */
@@ -136,8 +142,11 @@ export interface PrepareResult {
 export async function prepareStack(
   ctx: ExecutorContext,
   stackName: string,
+  known?: { summary: StackSummary | undefined },
 ): Promise<PrepareResult> {
-  const summary = await ctx.cfn.describeStack(stackName);
+  const summary = known
+    ? known.summary
+    : await ctx.cfn.describeStack(stackName);
 
   if (summary === undefined) {
     return { kind: 'create', reviewInProgress: false };

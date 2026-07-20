@@ -259,6 +259,17 @@ function mutationOrder(fake: FakeCloudFormationGateway): string[] {
 }
 
 describe('deploy — T-14 integration', () => {
+  it('NFR-5: added スタックの復旧判定で取得した DescribeStacks 結果を状態ガードへ引き渡す', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+    const fake = gatewayFor(s);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(fake.callsOf('describeStack')).toHaveLength(1);
+  });
+
   it('FR-5-1 / FR-5-2: 変更検知から実行まで依存順に非対話で一括実行する', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A' },
@@ -460,7 +471,7 @@ describe('deploy — T-14 integration', () => {
     expect((await s.run({ onFailure: 'stop' })).exitCode).toBe(1);
 
     fake.calls.length = 0;
-    const stale = 'cfnsync-aabbccddeeff-oldrun-20260720T110000000';
+    const stale = 'cfnsync-aabbccddeeff-fedcba9876543210-20260720T110000000';
     fake.changeSets.set('B', [makeChangeSetSummary(stale)]);
     fake.waitResults.set('B', [
       makeStackSummary({ stackName: 'B', status: 'UPDATE_COMPLETE' }),

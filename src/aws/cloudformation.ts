@@ -312,29 +312,52 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     stackName: string,
     changeSetName: string,
   ): Promise<ChangeSetDetail> {
+    const firstPage = await this.fetchChangeSetPage(
+      stackName,
+      changeSetName,
+      undefined,
+    );
+    return this.collectChangeSetPages(stackName, changeSetName, firstPage);
+  }
+
+  private async fetchChangeSetPage(
+    stackName: string,
+    changeSetName: string,
+    nextToken: string | undefined,
+  ): Promise<DescribeChangeSetCommandOutput> {
+    return this.withRetry('DescribeChangeSet', () =>
+      this.client.send(
+        new DescribeChangeSetCommand({
+          StackName: stackName,
+          ChangeSetName: changeSetName,
+          NextToken: nextToken,
+        }),
+      ),
+    );
+  }
+
+  private async collectChangeSetPages(
+    stackName: string,
+    changeSetName: string,
+    firstPage: DescribeChangeSetCommandOutput,
+  ): Promise<ChangeSetDetail> {
     const changes: ResourceChange[] = [];
-    let nextToken: string | undefined;
-    let firstPage: DescribeChangeSetCommandOutput | undefined;
+    let page = firstPage;
 
     // Changes の NextToken を辿って全ページ結合(FR-2 / FR-3)。
-    do {
-      const output = await this.withRetry('DescribeChangeSet', () =>
-        this.client.send(
-          new DescribeChangeSetCommand({
-            StackName: stackName,
-            ChangeSetName: changeSetName,
-            NextToken: nextToken,
-          }),
-        ),
-      );
-      if (firstPage === undefined) firstPage = output;
-      for (const change of output.Changes ?? []) {
+    for (;;) {
+      for (const change of page.Changes ?? []) {
         changes.push(normalizeResourceChange(change));
       }
-      nextToken = output.NextToken;
-    } while (nextToken);
+      if (!page.NextToken) break;
+      page = await this.fetchChangeSetPage(
+        stackName,
+        changeSetName,
+        page.NextToken,
+      );
+    }
 
-    const first = firstPage!;
+    const first = firstPage;
     return {
       name: first.ChangeSetName,
       id: first.ChangeSetId,
@@ -363,8 +386,16 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   ): Promise<ChangeSetDetail> {
     const deadline = Date.now() + this.pollTimeoutMs;
     for (;;) {
-      const detail = await this.describeChangeSet(stackName, changeSetName);
-      if (isChangeSetTerminal(detail.status)) return detail;
+      // 待機中は Status がある先頭ページだけを確認し、Changes の残りページは
+      // 終端到達時に一度だけ取得する。大規模変更セットの q×c 再取得を避ける。
+      const firstPage = await this.fetchChangeSetPage(
+        stackName,
+        changeSetName,
+        undefined,
+      );
+      if (isChangeSetTerminal(firstPage.Status ?? '')) {
+        return this.collectChangeSetPages(stackName, changeSetName, firstPage);
+      }
       if (Date.now() >= deadline) {
         throw new AwsError(
           `変更セットの完了待機がタイムアウトしました: ${changeSetName}`,
@@ -503,9 +534,17 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       ? (opts.eventCursor ?? (await this.getStackEventCursor(stackName)))
       : undefined;
     let last: StackSummary | undefined;
+    let statusDelay = interval;
+    let untilStatusPoll = 0;
 
     for (;;) {
-      const summary = await this.describeStack(stackName);
+      let summary = last;
+      if (untilStatusPoll <= 0) {
+        summary = await this.describeStack(stackName);
+        last = summary;
+        untilStatusPoll = statusDelay;
+        statusDelay = Math.min(15_000, statusDelay + interval);
+      }
 
       // FR-4-1: 待機中の新着イベントを古い順で逐次通知する。
       if (opts.onEvent) {
@@ -536,7 +575,6 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
             };
       }
 
-      last = summary;
       if (isStackTerminal(summary.status)) return summary;
       if (Date.now() >= deadline) {
         throw new AwsError(
@@ -545,6 +583,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
         );
       }
       await this.sleep(interval);
+      untilStatusPoll = Math.max(0, untilStatusPoll - interval);
     }
   }
 }

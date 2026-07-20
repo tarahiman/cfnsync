@@ -54,14 +54,13 @@ function effectiveRegion(
   );
 }
 
-function loadInputs(
+function loadBaseInputs(
   ctx: CommandContext,
   options: CommonOptions,
 ): {
   config: CfnSyncConfig;
   configPath: string;
   configDir: string;
-  templates: Map<string, string>;
   profile?: string;
   region: string;
 } {
@@ -77,9 +76,30 @@ function loadInputs(
     config,
     configPath,
     configDir,
-    templates: ctx.deps.readTemplates(config, configDir),
     profile: effectiveProfile(options, ctx.env),
     region,
+  };
+}
+
+function loadInputs(ctx: CommandContext, options: CommonOptions) {
+  const input = loadBaseInputs(ctx, options);
+  return {
+    ...input,
+    templates: ctx.deps.readTemplates(input.config, input.configDir),
+  };
+}
+
+function cachedCfnFactory(
+  create: (region: string) => ReturnType<CliDependencies['createCfn']>,
+) {
+  const byRegion = new Map<string, ReturnType<CliDependencies['createCfn']>>();
+  return (region: string) => {
+    let gateway = byRegion.get(region);
+    if (gateway === undefined) {
+      gateway = create(region);
+      byRegion.set(region, gateway);
+    }
+    return gateway;
   };
 }
 
@@ -145,9 +165,11 @@ function deploymentDeps(
   ctx: CommandContext,
   input: ReturnType<typeof loadInputs>,
 ) {
+  const cfnFactory = cachedCfnFactory((region) =>
+    ctx.deps.createCfn({ region, profile: input.profile }),
+  );
   return {
-    cfnFactory: (region: string) =>
-      ctx.deps.createCfn({ region, profile: input.profile }),
+    cfnFactory,
     sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
     backend: ctx.deps.createBackend({
       config: input.config,
@@ -203,13 +225,15 @@ export async function runImporter(
     writeTemplate?: boolean;
   },
 ): Promise<0 | 1> {
-  const input = loadInputs(ctx, options);
+  const input = loadBaseInputs(ctx, options);
+  const cfnFactory = cachedCfnFactory((region) =>
+    ctx.deps.createCfn({ region, profile: input.profile }),
+  );
   const result = await ctx.deps.runImport({
     config: input.config,
     configPath: input.configPath,
     deps: {
-      cfnFactory: (region) =>
-        ctx.deps.createCfn({ region, profile: input.profile }),
+      cfnFactory,
       sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
       backend: ctx.deps.createBackend({
         config: input.config,
@@ -240,7 +264,7 @@ export async function runForceUnlock(
   options: CommonOptions,
   runId: string,
 ): Promise<0 | 1> {
-  const input = loadInputs(ctx, options);
+  const input = loadBaseInputs(ctx, options);
   const result = await ctx.deps.forceUnlock({
     backend: ctx.deps.createBackend({
       config: input.config,

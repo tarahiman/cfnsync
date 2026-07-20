@@ -48,9 +48,12 @@ import {
   type CfnSyncState,
   prepareSave,
   type StackEntry,
-  upsertStackEntry,
 } from '../core/state.js';
-import { analyzeTemplate, templatesEquivalent } from '../core/template.js';
+import {
+  analyzeParsedTemplate,
+  parseCfnTemplate,
+  parsedTemplatesEquivalent,
+} from '../core/template.js';
 import { resolveTemplatePathWithinConfig } from '../core/templatePath.js';
 import type { StackKey } from '../core/types.js';
 import type {
@@ -326,10 +329,13 @@ async function runImportLocked(input: {
   // 6. ステート保存(CAS。FR-10-6)。
   if (!ownershipLost && plan.entries.length > 0) {
     if (await deps.backend.verifyLock(lock)) {
-      let nextState = stateCtx.state;
-      for (const { key, entry } of plan.entries) {
-        nextState = upsertStackEntry(nextState, key, entry);
-      }
+      const importedEntries = Object.fromEntries(
+        plan.entries.map(({ key, entry }) => [key, entry]),
+      );
+      const nextState: CfnSyncState = {
+        ...stateCtx.state,
+        stacks: { ...stateCtx.state.stacks, ...importedEntries },
+      };
       try {
         await deps.backend.save(prepareSave(nextState), stateCtx.version);
       } catch (cause) {
@@ -416,6 +422,10 @@ async function buildImportPlan(args: {
   const entries: { key: StackKey; entry: StackEntry }[] = [];
   const reflect = new Map<string, ReflectData>();
   const templateWritesByPath = new Map<string, TemplateWrite>();
+  const localTemplates = new Map<
+    string,
+    { content: string; parsed: unknown; hash: string }
+  >();
   let blocked = false;
 
   for (const target of targets) {
@@ -441,7 +451,9 @@ async function buildImportPlan(args: {
       target.stackName,
       'Original',
     );
-    const deployedAnalysis = analyzeTemplate(deployedTemplate, {
+    const deployedParsed = parseCfnTemplate(deployedTemplate);
+    const deployedHash = computeTemplateHash(deployedTemplate);
+    const deployedAnalysis = analyzeParsedTemplate(deployedParsed, {
       stackName: summary.stackName,
       region: target.region,
     });
@@ -466,6 +478,8 @@ async function buildImportPlan(args: {
     // FR-10-3/4/5: テンプレート比較 → 記録に使う基準内容(baseline)と書き出し内容を決める。
     let comparison: 'match' | 'differs' | 'local-missing';
     let baseline: string;
+    let baselineParsed: unknown;
+    let baselineHash: string;
     let writeContent: string | undefined;
     let reconcileUsed: 'remote' | 'local' | undefined;
 
@@ -474,6 +488,8 @@ async function buildImportPlan(args: {
       if (options.writeTemplate) {
         // FR-10-5: デプロイ済みテンプレートをローカルへ書き出す。
         baseline = deployedTemplate;
+        baselineParsed = deployedParsed;
+        baselineHash = deployedHash;
         writeContent = deployedTemplate;
       } else {
         blocked = true;
@@ -492,16 +508,29 @@ async function buildImportPlan(args: {
         continue;
       }
     } else {
-      const localContent = fs.readFile(templateAbsPath);
-      if (templatesEquivalent(localContent, deployedTemplate)) {
+      let local = localTemplates.get(target.templatePath);
+      if (local === undefined) {
+        const content = fs.readFile(templateAbsPath);
+        local = {
+          content,
+          parsed: parseCfnTemplate(content),
+          hash: computeTemplateHash(content),
+        };
+        localTemplates.set(target.templatePath, local);
+      }
+      if (parsedTemplatesEquivalent(local.parsed, deployedParsed)) {
         // FR-10-3: 一致 → ローカル(= デプロイ済みと同値)を基準に記録。次回 plan は unchanged。
         comparison = 'match';
-        baseline = localContent;
+        baseline = local.content;
+        baselineParsed = local.parsed;
+        baselineHash = local.hash;
       } else if (options.reconcile === 'remote') {
         // FR-10-4(a): デプロイ済みでローカルを上書き。
         comparison = 'differs';
         reconcileUsed = 'remote';
         baseline = deployedTemplate;
+        baselineParsed = deployedParsed;
+        baselineHash = deployedHash;
         writeContent = deployedTemplate;
       } else if (options.reconcile === 'local') {
         // FR-10-4(b): ローカルを維持し、ステートにはデプロイ済み側のハッシュを記録
@@ -509,6 +538,8 @@ async function buildImportPlan(args: {
         comparison = 'differs';
         reconcileUsed = 'local';
         baseline = deployedTemplate;
+        baselineParsed = deployedParsed;
+        baselineHash = deployedHash;
       } else {
         // FR-10-4: 差分 + オプションなし → fail-closed。
         blocked = true;
@@ -529,7 +560,7 @@ async function buildImportPlan(args: {
     }
 
     // FR-10-6 / FR-10-11: デプロイ済み内容(baseline)に基づくハッシュ・依存辺を記録する。
-    const baselineAnalysis = analyzeTemplate(baseline, {
+    const baselineAnalysis = analyzeParsedTemplate(baselineParsed, {
       stackName: summary.stackName,
       region: target.region,
     });
@@ -538,7 +569,7 @@ async function buildImportPlan(args: {
       entry: {
         stackName: summary.stackName,
         region: target.region,
-        templateHash: computeTemplateHash(baseline),
+        templateHash: baselineHash,
         inputsHash: computeInputsHash({
           templateContent: baseline,
           stackName: summary.stackName,

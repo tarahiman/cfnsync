@@ -563,6 +563,61 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     expect(detail.statusReason).toMatch(/didn't contain changes/);
   });
 
+  it('NFR-5: waitForChangeSet は待機中に先頭ページだけ確認し、終端到達時だけ残りページを取得する', async () => {
+    cfnMock
+      .on(DescribeChangeSetCommand)
+      .resolvesOnce({
+        Status: 'CREATE_IN_PROGRESS',
+        Changes: [makeChange('pending')],
+        NextToken: 'pending-page-2',
+      })
+      .resolvesOnce({
+        Status: 'CREATE_COMPLETE',
+        Changes: [makeChange('A')],
+        NextToken: 'terminal-page-2',
+      })
+      .resolvesOnce({ Changes: [makeChange('B')] });
+
+    const detail = await makeGateway().waitForChangeSet('stk', 'cs');
+    expect(detail.changes.map((change) => change.logicalResourceId)).toEqual([
+      'A',
+      'B',
+    ]);
+    const calls = cfnMock.commandCalls(DescribeChangeSetCommand);
+    expect(calls.map((call) => call.args[0].input.NextToken)).toEqual([
+      undefined,
+      undefined,
+      'terminal-page-2',
+    ]);
+  });
+
+  it('NFR-5: waitForStack はイベントを5秒ごと、スタック状態を5→10→15秒の上限付きバックオフで確認する', async () => {
+    cfnMock
+      .on(DescribeStacksCommand)
+      .resolvesOnce({
+        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+      })
+      .resolvesOnce({
+        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+      })
+      .resolvesOnce({
+        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+      })
+      .resolvesOnce({
+        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_COMPLETE' }],
+      });
+    cfnMock.on(DescribeStackEventsCommand).resolves({ StackEvents: [] });
+    const sleep = vi.fn(async () => {});
+
+    await makeGateway({ pollIntervalMs: 5_000, sleep }).waitForStack('stk', {
+      onEvent: () => {},
+    });
+
+    expect(cfnMock.commandCalls(DescribeStacksCommand)).toHaveLength(4);
+    expect(cfnMock.commandCalls(DescribeStackEventsCommand)).toHaveLength(8);
+    expect(sleep.mock.calls).toEqual(Array.from({ length: 6 }, () => [5_000]));
+  });
+
   it('FR-4-1: waitForStack は終端まで待機し、新着イベントを古い順で onEvent 通知する(重複なし)', async () => {
     cfnMock
       .on(DescribeStacksCommand)
