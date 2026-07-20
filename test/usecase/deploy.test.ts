@@ -525,19 +525,20 @@ describe('deploy — T-14 integration', () => {
     expect(s.backend.saveCalls).toHaveLength(1);
   });
 
-  it('削除プレビュー: deleted は常に差分へ含め、allowDelete でも T-15 までは実削除しない', async () => {
+  it('FR-6-1 / FR-6-2: deleted は常に差分へ含め、allowDelete 指定時は削除が実行される', async () => {
     const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
     const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
     const config = configOf({});
     const s = setup(config, new Map(), recordedState(oldConfig, oldTemplates));
     const fake = gatewayFor(s);
     fake.stacks.set('Old', makeStackSummary({ stackName: 'Old', status: 'CREATE_COMPLETE' }));
+    fake.waitResults.set('Old', [makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' })]);
 
     const result = await s.run({ allowDelete: true });
 
     expect(result.report.diffs).toContainEqual(
-      expect.objectContaining({ stackName: 'Old', operation: 'delete', warnings: [expect.stringContaining('T-15')] }),
+      expect.objectContaining({ stackName: 'Old', operation: 'delete' }),
     );
-    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+    expect(fake.callsOf('deleteStack').map((call) => call.args[0])).toEqual(['Old']);
   });
 });

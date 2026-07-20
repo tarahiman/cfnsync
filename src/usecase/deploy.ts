@@ -59,6 +59,7 @@ import {
   reclaimStaleChangeSets,
   type ExecutorContext,
 } from './executor.js';
+import { DeleteStateSaveError, deleteManagedStack } from './delete.js';
 
 // ===========================================================================
 // 公開 API(T-15 / T-19 が利用する固定契約)
@@ -112,6 +113,12 @@ interface PreparedPlan {
   graphs: Map<string, RegionGraph>;
   mergedGraphs: Map<string, RegionGraph>;
   plan: ExecutionPlan;
+}
+
+interface OperationResult {
+  hasDiff: boolean;
+  /** 対象だけを fail-closed に拒否し、独立した他対象は継続できる検証エラー。 */
+  failed?: boolean;
 }
 
 /** AWS 成功後の state 永続化失敗は後続スタックへ進めない全体停止条件。 */
@@ -249,12 +256,13 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
             ? await processDeleted(ctx, operation, report)
             : await processCreateOrUpdate(ctx, operation, prepared.analyses, report);
         hasDiff ||= operationResult.hasDiff;
+        hasError ||= operationResult.failed === true;
       } catch (error) {
         hasError = true;
         results.push(failedOperationResult(operation, error));
 
         // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
-        if (error instanceof LockError || error instanceof StateSaveError) {
+        if (error instanceof LockError || error instanceof StateSaveError || error instanceof DeleteStateSaveError) {
           ownershipLost = true;
           break;
         }
@@ -307,8 +315,9 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const oldNodes: StackNode[] = Object.entries(ctx.state.state.stacks).map(([stackKey, entry]) => ({
     stackKey,
     region: entry.region,
-    exports: entry.exports,
-    imports: entry.imports,
+    // FR-6-5: 欠落は delete usecase が対象だけ拒否する。ここでは安全な空辺として計画に残す。
+    exports: Array.isArray(entry.exports) ? entry.exports : [],
+    imports: Array.isArray(entry.imports) ? entry.imports : [],
     explicitDependsOn: [],
   }));
   const oldGraphs = buildGraphs(oldNodes);
@@ -327,7 +336,7 @@ async function processCreateOrUpdate(
   operation: PlannedOperation,
   analyses: Map<StackKey, TemplateAnalysis>,
   report: DeployReport,
-): Promise<{ hasDiff: boolean }> {
+): Promise<OperationResult> {
   const target = operation.entry.target;
   if (!target) throw new Error(`内部エラー: ${operation.stackKey} の target がありません`);
   const source = requiredTemplate(ctx.templates, target.templatePath);
@@ -445,10 +454,10 @@ async function processDeleted(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   report: DeployReport,
-): Promise<{ hasDiff: boolean }> {
+): Promise<OperationResult> {
   const stateEntry = operation.entry.stateEntry;
   if (!stateEntry) throw new Error(`内部エラー: ${operation.stackKey} の stateEntry がありません`);
-  const cfn = fencedGateway(ctx.deps.cfnFactory(operation.region), ctx.deps.backend, ctx.lock);
+  const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
     stackKey: operation.stackKey,
     region: operation.region,
@@ -472,17 +481,54 @@ async function processDeleted(
     return { hasDiff: true };
   }
 
-  if (ctx.options.allowDelete) {
-    // TODO(T-15): src/usecase/delete.ts の削除フローをここで呼ぶ
-    diff.warnings.push('T-15 未結合のため --allow-delete 指定でも実削除は行いません');
-  } else {
-    diff.warnings.push('削除対象です。実削除には --allow-delete が必要です(T-15 で実装)');
+  if (!ctx.options.allowDelete || ctx.options.dryRun) {
+    diff.warnings.push(
+      ctx.options.dryRun
+        ? 'dry-run のため削除を実行しません'
+        : '削除対象です。実削除には --allow-delete が必要です',
+    );
+    report.result?.stacks.push({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      stackName: stateEntry.stackName,
+      outcome: 'skipped',
+    });
+    return { hasDiff: true };
   }
+
+  const deleted = await deleteManagedStack({
+    target: {
+      stackKey: operation.stackKey,
+      region: operation.region,
+      entry: stateEntry,
+    },
+    summary: existing,
+    cfn,
+    backend: ctx.deps.backend,
+    lock: ctx.lock,
+    state: ctx.state.state,
+    version: ctx.state.version,
+  });
+
+  if (deleted.outcome === 'refused') {
+    diff.warnings.push(deleted.errorMessage ?? '安全装置により削除を拒否しました');
+    report.result?.stacks.push({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      stackName: stateEntry.stackName,
+      outcome: 'failed',
+      errorMessage: deleted.errorMessage,
+    });
+    return { hasDiff: true, failed: true };
+  }
+
+  ctx.state.state = deleted.state;
+  ctx.state.version = deleted.version;
   report.result?.stacks.push({
     stackKey: operation.stackKey,
     region: operation.region,
     stackName: stateEntry.stackName,
-    outcome: 'skipped',
+    outcome: 'succeeded',
   });
   return { hasDiff: true };
 }
