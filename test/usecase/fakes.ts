@@ -18,7 +18,13 @@ import type {
   StackSummary,
   TemplateStage,
   WaitForStackOptions,
+  LockHandle,
+  LockInfo,
+  StateBackend,
+  StateVersion,
 } from '../../src/ports/index.js';
+import { LockError, StateConflictError } from '../../src/core/errors.js';
+import type { CfnSyncState } from '../../src/core/state.js';
 
 /** フェイクが記録する 1 回分のゲートウェイ呼び出し。 */
 export interface CallRecord {
@@ -90,6 +96,12 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   /** stackName → describeStackEvents が返すイベント列(古い順)。 */
   readonly events = new Map<string, StackEvent[]>();
 
+  /** 明示設定時だけ waitForStack の onEvent へ流すイベント列(T-14 用)。 */
+  readonly waitEvents = new Map<string, StackEvent[]>();
+
+  /** 明示設定時だけ waitForStack が先頭から返す終端要約列(T-14 の失敗・再実行用)。 */
+  readonly waitResults = new Map<string, StackSummary[]>();
+
   /**
    * listChangeSets の呼び出し直前(結果を組み立てる前)に発火するフック。
    * (stackName, その stack に対する呼び出し回数)を受け取る。並行追加シナリオ
@@ -99,8 +111,14 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 
   private readonly listCallCounts = new Map<string, number>();
 
+  constructor(
+    private readonly timeline?: string[],
+    private readonly timelineLabel = 'cfn',
+  ) {}
+
   private record(method: string, ...args: unknown[]): void {
     this.calls.push({ method, args });
+    this.timeline?.push(`${this.timelineLabel}.${method}`);
   }
 
   /** 記録された特定メソッドの呼び出しのみを抽出する補助。 */
@@ -180,6 +198,109 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 
   async waitForStack(stackName: string, opts?: WaitForStackOptions): Promise<StackSummary> {
     this.record('waitForStack', stackName, opts);
+    for (const event of this.waitEvents.get(stackName) ?? []) {
+      opts?.onEvent?.(event);
+    }
+    const queued = this.waitResults.get(stackName);
+    if (queued && queued.length > 0) {
+      return queued.shift() as StackSummary;
+    }
     return this.stacks.get(stackName) ?? makeStackSummary({ stackName, status: 'CREATE_COMPLETE' });
+  }
+}
+
+/**
+ * T-14 以降で再利用する StateBackend フェイク。
+ * 全呼び出しを共有 timeline に記録し、verifyLock 応答・CAS 競合・ロック取得失敗を
+ * 決定的に注入できる。既存フェイクのメソッド挙動には影響しない追記実装。
+ */
+export class FakeStateBackend implements StateBackend {
+  stored: { state: CfnSyncState; version: StateVersion } | undefined;
+  readonly calls: CallRecord[] = [];
+  readonly saveCalls: Array<{ state: CfnSyncState; expected: StateVersion | undefined }> = [];
+  verifyLockPlan: boolean[] = [];
+  failAcquire = false;
+  saveError: Error | undefined;
+  releaseCalls = 0;
+  private lock: LockHandle | undefined;
+
+  constructor(
+    private readonly timeline: string[] = [],
+    initial?: CfnSyncState,
+    private readonly backendStateId = 'aabbccddeeff',
+  ) {
+    if (initial) {
+      this.stored = { state: initial, version: { generation: initial.generation } };
+    }
+  }
+
+  private record(method: string, ...args: unknown[]): void {
+    this.calls.push({ method, args });
+    this.timeline.push(`backend.${method}`);
+  }
+
+  callsOf(method: string): CallRecord[] {
+    return this.calls.filter((call) => call.method === method);
+  }
+
+  async load(): Promise<{ state: CfnSyncState; version: StateVersion } | undefined> {
+    this.record('load');
+    return this.stored ? { state: this.stored.state, version: this.stored.version } : undefined;
+  }
+
+  async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
+    this.record('save', state, expected);
+    this.saveCalls.push({ state, expected });
+    if (this.saveError) throw this.saveError;
+    const currentGeneration = this.stored?.version.generation;
+    if (
+      (expected === undefined && this.stored !== undefined) ||
+      (expected !== undefined && expected.generation !== currentGeneration)
+    ) {
+      throw new StateConflictError('世代不一致(fake CAS)');
+    }
+    const version: StateVersion = { generation: state.generation };
+    this.stored = { state, version };
+    return version;
+  }
+
+  async acquireLock(info: LockInfo): Promise<LockHandle> {
+    this.record('acquireLock', info);
+    if (this.failAcquire) throw new LockError('別の実行がロックを保持しています(fake)');
+    this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
+    return this.lock;
+  }
+
+  async verifyLock(handle: LockHandle): Promise<boolean> {
+    this.record('verifyLock', handle);
+    if (this.verifyLockPlan.length > 0) return this.verifyLockPlan.shift() as boolean;
+    return this.lock?.runId === handle.runId;
+  }
+
+  async releaseLock(handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
+    this.record('releaseLock', handle);
+    this.releaseCalls += 1;
+    if (this.lock?.runId !== handle.runId) return { released: false, reason: 'owner changed(fake)' };
+    this.lock = undefined;
+    return { released: true };
+  }
+
+  async readLock(): Promise<LockInfo | undefined> {
+    this.record('readLock');
+    return this.lock
+      ? { runId: this.lock.runId, startedAt: '2026-07-20T00:00:00.000Z', owner: 'fake' }
+      : undefined;
+  }
+
+  async forceUnlock(runId: string): Promise<{ released: boolean; reason?: string }> {
+    this.record('forceUnlock', runId);
+    if (this.lock?.runId !== runId) return { released: false, reason: 'runId mismatch(fake)' };
+    this.lock = undefined;
+    return { released: true };
+  }
+
+  stateId(): string {
+    this.record('stateId');
+    return this.backendStateId;
   }
 }
