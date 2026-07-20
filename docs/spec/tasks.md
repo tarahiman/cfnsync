@@ -367,7 +367,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 - [x] T-12 usecase/guard
 - [x] T-13 usecase/executor
 - [x] T-14 usecase/deploy
-- [ ] T-15 usecase/delete
+- [x] T-15 usecase/delete
 - [x] T-16 usecase/importer
 - [x] T-17 usecase/force-unlock
 - [ ] T-18 障害注入・並行シナリオ
