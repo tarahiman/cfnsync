@@ -1,0 +1,19 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: import fixture - network stack (deployed == local for the match case)
+Parameters:
+  VpcCidr:
+    Type: String
+  DbPassword:
+    Type: String
+    NoEcho: true
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+Outputs:
+  VpcId:
+    Description: VPC id exported for cross-stack references
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'

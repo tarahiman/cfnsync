@@ -1,0 +1,9 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: import fixture - app stack that imports a network export
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !ImportValue prod-network-VpcId
