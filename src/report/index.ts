@@ -86,6 +86,57 @@ export interface DeployReport {
   result?: { stacks: StackResult[] };
 }
 
+/** usecase が対象スタックごとに構成した NoEcho redactor の report 側契約。 */
+export type ReportTextRedactor = (stackKey: string, text: string) => string;
+
+/**
+ * AWS 由来の自由記述文字列を出力直前にも再度マスクする多層防御(NFR-4)。
+ * redactor 自体は usecase が実効パラメータから構成し、秘匿値を report に保持しない。
+ */
+export function redactReportMessages(
+  report: DeployReport,
+  redact: ReportTextRedactor,
+): DeployReport {
+  return {
+    connection: {
+      accountId: report.connection.accountId,
+      regions: [...report.connection.regions],
+    },
+    diffs: report.diffs.map((diff) => ({
+      ...diff,
+      resources: diff.resources.map((resource) => ({
+        ...resource,
+        changedProperties: [...resource.changedProperties],
+      })),
+      warnings: diff.warnings.map((warning) => redact(diff.stackKey, warning)),
+    })),
+    ...(report.events
+      ? {
+          events: report.events.map((event) => ({
+            ...event,
+            resourceStatusReason:
+              event.resourceStatusReason === undefined
+                ? undefined
+                : redact(event.stackKey, event.resourceStatusReason),
+          })),
+        }
+      : {}),
+    ...(report.result
+      ? {
+          result: {
+            stacks: report.result.stacks.map((stack) => ({
+              ...stack,
+              errorMessage:
+                stack.errorMessage === undefined
+                  ? undefined
+                  : redact(stack.stackKey, stack.errorMessage),
+            })),
+          },
+        }
+      : {}),
+  };
+}
+
 // ===========================================================================
 // buildStackDiff(FR-3-1 / FR-3-2 / FR-13-7 / NFR-4)
 // ===========================================================================

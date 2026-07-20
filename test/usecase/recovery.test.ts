@@ -448,7 +448,8 @@ describe('T-18 recovery', () => {
     s.backend.saveError = undefined;
     s.cfn.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'FAILED',
-      statusReason: "The submitted information didn't contain changes",
+      statusReason:
+        "The submitted information didn't contain changes. Submit different information to create a change set.",
     });
 
     const recovered = await s.run();
@@ -496,7 +497,7 @@ describe('T-18 recovery', () => {
     s.backend.saveError = undefined;
     s.cfn.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'FAILED',
-      statusReason: 'No updates are to be performed',
+      statusReason: 'No updates are to be performed.',
     });
 
     const recovered = await s.run();

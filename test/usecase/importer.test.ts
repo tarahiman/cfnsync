@@ -307,6 +307,7 @@ class FakeBackend implements StateBackend {
 class FakeFs implements ImportFileSystem {
   readonly files = new Map<string, string>();
   readonly writes: { path: string; content: string }[] = [];
+  readonly realpaths = new Map<string, string>();
 
   constructor(private readonly timeline: string[]) {}
 
@@ -324,6 +325,10 @@ class FakeFs implements ImportFileSystem {
 
   exists(path: string): boolean {
     return this.files.has(path);
+  }
+
+  realpath(path: string): string {
+    return this.realpaths.get(path) ?? path;
   }
 }
 
@@ -557,6 +562,29 @@ describe('FR-10-4: テンプレート差分の扱い', () => {
     expect(result.report.stacks[0].reconcile).toBe('remote');
     expect(s.fs.files.get(NETWORK_ABS)).toBe(DEPLOYED_DIFFERENT);
     expect(result.report.stateSaved).toBe(true);
+  });
+
+  it('テンプレート書き込み先が symlink 経由で設定ディレクトリ外になる場合は書き込みゼロで拒否する', async () => {
+    const configText = `version: 1
+defaultRegion: ap-northeast-1
+stacks:
+  nested/network.yaml:
+    stackName: prod-network
+`;
+    const nestedPath = '/project/nested/network.yaml';
+    const s = setup({
+      configText,
+      files: { [nestedPath]: NETWORK_TEMPLATE },
+    });
+    s.fs.realpaths.set('/project', '/project');
+    s.fs.realpaths.set(nestedPath, '/outside/network.yaml');
+    deployNetwork(s, DEPLOYED_DIFFERENT);
+
+    await expect(run(s, { reconcile: 'remote' })).rejects.toThrow(
+      /nested\/network\.yaml|設定ディレクトリ外/,
+    );
+    expect(s.fs.writes).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
   });
 
   it('FR-10-4: --reconcile local → ローカル維持 + ステートにはデプロイ済み側ハッシュ → 次回 plan で modified', async () => {

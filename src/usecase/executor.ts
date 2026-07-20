@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import type { ResolvedStackTarget } from '../core/config.js';
 import { StackStateError } from '../core/errors.js';
 import type { ChangeSetDetail, CloudFormationGateway } from '../ports/index.js';
+import { identityRedactor, type TextRedactor } from './redactor.js';
 
 /** 管理タグのキー(§8.4)。値は stateId。CreateChangeSet の Tags に常時マージする(FR-2-9)。 */
 export const MANAGEMENT_TAG_KEY = 'cfnsync:state-id';
@@ -26,11 +27,11 @@ export const MANAGEMENT_TAG_KEY = 'cfnsync:state-id';
 /** ツール由来を示すプレフィックス(§7 命名規則)。 */
 const CHANGESET_PREFIX = 'cfnsync';
 
-/** 「変更なし」を表す StatusReason のパターン(小文字化して部分一致で判定。FR-2-3 / api-notes)。 */
+/** AWS が空変更セットに返す既知の定型文。先頭一致のみ許可する(FR-2-3)。 */
 const NO_CHANGE_REASONS = [
-  "didn't contain changes",
-  'no updates are to be performed',
-];
+  "The submitted information didn't contain changes. Submit different information to create a change set.",
+  'No updates are to be performed.',
+] as const;
 
 /**
  * executor 系関数が共有する実行文脈。`stateId` はバックエンド識別子の短縮ハッシュ、
@@ -41,6 +42,8 @@ export interface ExecutorContext {
   stateId: string;
   runId: string;
   now?: () => Date;
+  /** 対象スタックの NoEcho 実効値を AWS 由来テキストから除去する。 */
+  redact?: TextRedactor;
 }
 
 // ===========================================================================
@@ -214,8 +217,7 @@ export async function reclaimStaleChangeSets(
 
 function isNoChangeReason(reason: string | undefined): boolean {
   if (!reason) return false;
-  const lower = reason.toLowerCase();
-  return NO_CHANGE_REASONS.some((pattern) => lower.includes(pattern));
+  return NO_CHANGE_REASONS.some((pattern) => reason.startsWith(pattern));
 }
 
 /** `createManagedChangeSet` の入力。`ResolvedStackTarget` からスタック名・入力を取り出す。 */
@@ -239,7 +241,8 @@ export interface CreateManagedChangeSetResult {
 /**
  * 管理タグ付きで変更セットを作成し、完了まで待機して空変更セット判定を行う(FR-2)。
  * - 管理タグ `cfnsync:state-id=<stateId>` を Tags にマージ(ユーザータグと共存。FR-2-9)。
- * - `waitForChangeSet` の結果が `FAILED` かつ「変更なし」パターン → 変更セットを削除し
+ * - `waitForChangeSet` の結果が `FAILED`、既知の「変更なし」定型文へ先頭一致、
+ *   `changes.length === 0` の全条件を満たす場合だけ変更セットを削除し
  *   `noChanges: true` を返す(FR-2-3)。それ以外の `FAILED` は `StackStateError`。
  */
 export async function createManagedChangeSet(
@@ -265,10 +268,21 @@ export async function createManagedChangeSet(
     description: `cfnsync ${input.kind} (${ctx.runId})`,
   });
 
-  const detail = await ctx.cfn.waitForChangeSet(target.stackName, name);
+  const rawDetail = await ctx.cfn.waitForChangeSet(target.stackName, name);
+  const redact = ctx.redact ?? identityRedactor;
+  const detail: ChangeSetDetail = {
+    ...rawDetail,
+    statusReason:
+      rawDetail.statusReason === undefined
+        ? undefined
+        : redact(rawDetail.statusReason),
+  };
 
   if (detail.status === 'FAILED') {
-    if (isNoChangeReason(detail.statusReason)) {
+    if (
+      detail.changes.length === 0 &&
+      isNoChangeReason(rawDetail.statusReason)
+    ) {
       // 空変更セットはエラーではなく「変更なし」。作成された空の変更セットを削除する。
       await ctx.cfn.deleteChangeSet(target.stackName, name);
       return { name, detail, noChanges: true };

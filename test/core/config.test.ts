@@ -158,6 +158,32 @@ describe('core/config', () => {
   });
 
   describe('FR-11-5: 設定不備の実行前検証', () => {
+    it.each([
+      '../outside.yaml',
+      'nested/../../outside.yaml',
+      '/etc/x.yaml',
+      'nested/stack.yaml\0outside',
+    ])('テンプレートパス %s は設定ディレクトリ外を指すため ConfigError になる(対象キーを含む)', (templatePath) => {
+      try {
+        validateConfig(
+          minimalRaw({ stacks: { [templatePath]: {} } }),
+          alwaysExists,
+        );
+        expect.unreachable('ConfigError が送出されるはず');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        expect((err as Error).message).toContain(templatePath);
+      }
+    });
+
+    it('サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
+      const config = validateConfig(
+        minimalRaw({ stacks: { 'nested/stack.yaml': {} } }),
+        alwaysExists,
+      );
+      expect(config.stacks['nested/stack.yaml']).toBeDefined();
+    });
+
     it('存在しないテンプレートへの参照は ConfigError になる(対象パスを含む)', () => {
       expect(() =>
         loadConfig(resolve(fixturesDir, 'missing-template.cfnsync.yaml')),

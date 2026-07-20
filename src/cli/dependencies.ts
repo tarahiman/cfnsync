@@ -1,10 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 
 import { CloudFormationGatewayImpl } from '../aws/cloudformation.js';
 import { StsGatewayImpl } from '../aws/sts.js';
 import { createStateBackend } from '../backend/factory.js';
-import { type CfnSyncConfig, loadConfig } from '../core/config.js';
+import {
+  type CfnSyncConfig,
+  loadConfig,
+  resolveTemplatePathWithinConfig,
+} from '../core/config.js';
 import type {
   CloudFormationGateway,
   StateBackend,
@@ -59,7 +62,10 @@ export const defaultCliDependencies: CliDependencies = {
     return new Map(
       Object.keys(config.stacks).map((templatePath) => [
         templatePath,
-        readFileSync(resolve(configDir, templatePath), 'utf8'),
+        readFileSync(
+          resolveTemplatePathWithinConfig(configDir, templatePath),
+          'utf8',
+        ),
       ]),
     );
   },

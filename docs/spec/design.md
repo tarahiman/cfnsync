@@ -105,6 +105,7 @@ stacks:
 
 - パラメータ・タグの実効値 = 共通値に `regionOverrides.<region>` を浅くマージしたもの。
 - インポート(FR-10)はこのファイルの `stacks` 配下を機械的に更新する。コメント・キー順を保持するため YAML の AST 編集(`yaml` パッケージの Document API)で書き戻す。
+- `stacks` のテンプレートパスは相対パスのみとし、絶対パス・NUL・正規化後に `..` から始まるパスを config 検証で拒否する。読み取りおよび import の書き込みでは、対象(未作成なら既存の最長親)の realpath が設定ディレクトリ配下であることを再検証し、シンボリックリンク経由の脱出も fail-closed に拒否する。
 
 ### 4.3 ステートファイル `cfnsync.state.json`
 
@@ -231,7 +232,7 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。A
 - **命名規則**: `cfnsync-<ステートID>-<実行ID>-<UTC タイムスタンプ>`。ステート ID はバックエンド識別子(`local`: ステートファイルの絶対パス、`s3`: バケット + キー)の短縮ハッシュ。プレフィックス `cfnsync-` でツール由来を、ステート ID で所有ステートを識別する(FR-2)。
 - **残存回収**: 変更セット作成前に `ListChangeSets` で未実行の変更セットを列挙し、名前から所有権を判定して処理する(FR-2)。回収(削除)するのは**自ステート ID に一致する** `cfnsync-` 変更セットのみ。同一ステートを共有する実行はロック(§4.5)で排他されるため、これらは過去の異常終了の残骸と確定できる。IF 別のステート ID を持つ、または命名規則から所有権を判定できない `cfnsync-` 変更セットを検出した場合、同一スタックが複数のステート設定から管理されている構成ミス(並行実行の可能性)の証拠として、削除せず中断する(NFR-3)。`cfnsync-` プレフィックス以外の変更セット(人手・他ツール由来)が存在する場合も削除せず fail-closed に停止する — 後続の `ExecuteChangeSet` が同一スタックの他の変更セットを暗黙に削除してしまうため、解決(当該変更セットの実行または削除)後の再実行を案内する。
 - **実行直前の再検査**: `ExecuteChangeSet` の直前に対象スタックの未実行変更セット一覧を再取得し、自変更セット以外が存在する場合は実行せず fail-closed に停止する(FR-2)。再検査から実行までの競合窓は原理的に排除できない(CloudFormation に条件付き実行が存在しない)ため、§4.5 の多層防御と同様に残余リスクとして仕様に明記し、cfnsync 管理対象スタックに手動・他ツールの変更セットを作成しない運用規約を README に記載する(§11)。
-- **空変更セット**: `DescribeChangeSet` の Status が `FAILED` かつ StatusReason が「変更なし」パターン(`didn't contain changes` / `No updates are to be performed`)に一致する場合、エラーではなく変更なしとして扱い、変更セットを削除する(FR-2)。
+- **空変更セット**: `DescribeChangeSet` の Status が `FAILED`、StatusReason が AWS の既知の定型文(`The submitted information didn't contain changes. Submit different information to create a change set.` / `No updates are to be performed.`)に先頭一致、かつ全ページ結合済み `changes.length === 0` のすべてを満たす場合だけ、エラーではなく変更なしとして扱い、変更セットを削除する(FR-2)。Macro / Transform 等の失敗理由中に同じ語句が現れるだけのケースや changes 非空のケースは必ず失敗とする。
 - **スタック状態ガード**(作成前に `DescribeStacks` で確認):
   - `*_IN_PROGRESS` → 並行操作ありとしてエラー(FR-2)
   - `ROLLBACK_COMPLETE` → エラー + 「スタック削除後に再作成が必要」の案内(FR-2)
@@ -254,7 +255,7 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。A
 
 ### 8.2 NoEcho マスク(NFR-4)
 
-テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックの deploy は検証エラーで拒否する。
+テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。usecase は対象スタックの設定上の実効パラメータ値から共通 redactor を構成し、イベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、AWS 例外メッセージ、最終 `errorMessage` を逐次通知・report 格納の前に通す。report は格納済みのイベント・エラー文字列にも同じ redactor を適用して多層防御とする。空文字および 4 文字未満の値は誤マスクを避けるため置換しない。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックの deploy は検証エラーで拒否する。
 
 ### 8.3 削除(FR-6)
 

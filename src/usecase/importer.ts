@@ -28,12 +28,16 @@
  * `guard.ts` の契約(`verifyStateAccount` はロック取得後に呼ぶ)・`ports` は変更しない。
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 
 import type { CfnSyncConfig, ResolvedStackTarget } from '../core/config.js';
-import { resolveDependsOnKey, resolveTargets } from '../core/config.js';
+import {
+  resolveDependsOnKey,
+  resolveTargets,
+  resolveTemplatePathWithinConfig,
+} from '../core/config.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import { GuardError, LockError } from '../core/errors.js';
 import {
@@ -69,6 +73,7 @@ export interface ImportFileSystem {
   readFile(path: string): string;
   writeFile(path: string, content: string): void;
   exists(path: string): boolean;
+  realpath(path: string): string;
 }
 
 export interface ImportDeps {
@@ -141,6 +146,7 @@ export const defaultFileSystem: ImportFileSystem = {
   readFile: (path) => readFileSync(path, 'utf8'),
   writeFile: (path, content) => writeFileSync(path, content),
   exists: (path) => existsSync(path),
+  realpath: (path) => realpathSync(path),
 };
 
 // ===========================================================================
@@ -155,6 +161,13 @@ export async function runImport(input: {
 }): Promise<ImportResult> {
   const { config, configPath, deps, options } = input;
   const fs = deps.fs ?? defaultFileSystem;
+  const configDir = dirname(resolve(configPath));
+  const templatePaths = new Map(
+    Object.keys(config.stacks).map((templatePath) => [
+      templatePath,
+      resolveTemplatePathWithinConfig(configDir, templatePath, fs),
+    ]),
+  );
 
   // FR-7-7 / FR-10-8: import は許可設定なしで実行できるが、STS 解決とアカウント照合は必須。
   const connection = await resolveConnection(deps.sts);
@@ -217,6 +230,7 @@ export async function runImport(input: {
       options,
       fs,
       deps,
+      templatePaths,
     });
 
     // FR-10-4 / FR-10-5: 解決不能な差分・欠如がある場合は fail-closed(書き込みゼロ)。
@@ -261,7 +275,12 @@ export async function runImport(input: {
           ownershipLost = true;
           break;
         }
-        fs.writeFile(write.absPath, write.content);
+        const safePath = resolveTemplatePathWithinConfig(
+          configDir,
+          write.templatePath,
+          fs,
+        );
+        fs.writeFile(safePath, write.content);
       }
     }
 
@@ -314,7 +333,7 @@ interface ReflectData {
 }
 
 interface TemplateWrite {
-  absPath: string;
+  templatePath: string;
   content: string;
 }
 
@@ -337,9 +356,9 @@ async function buildImportPlan(args: {
   options: ImportOptions;
   fs: ImportFileSystem;
   deps: ImportDeps;
+  templatePaths: Map<string, string>;
 }): Promise<ImportPlan> {
-  const { config, configPath, options, fs, deps } = args;
-  const baseDir = dirname(configPath);
+  const { config, options, fs, deps, templatePaths } = args;
   const targets = resolveTargets(config);
 
   const regionCountByTemplate = new Map<string, number>();
@@ -394,7 +413,12 @@ async function buildImportPlan(args: {
       (key) => configParameters[key] === REQUIRED_PLACEHOLDER,
     );
 
-    const templateAbsPath = resolve(baseDir, target.templatePath);
+    const templateAbsPath = templatePaths.get(target.templatePath);
+    if (templateAbsPath === undefined) {
+      throw new Error(
+        `内部エラー: ${target.templatePath} の安全な実パスがありません`,
+      );
+    }
     const localExists = fs.exists(templateAbsPath);
 
     // FR-10-3/4/5: テンプレート比較 → 記録に使う基準内容(baseline)と書き出し内容を決める。
@@ -516,7 +540,7 @@ async function buildImportPlan(args: {
       !templateWritesByPath.has(target.templatePath)
     ) {
       templateWritesByPath.set(target.templatePath, {
-        absPath: templateAbsPath,
+        templatePath: target.templatePath,
         content: writeContent,
       });
     }

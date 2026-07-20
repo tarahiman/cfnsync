@@ -6,8 +6,16 @@
  * 純粋ロジック(CLAUDE.md の `src/core/` 制約)。
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  dirname,
+  isAbsolute,
+  posix,
+  relative,
+  resolve,
+  sep,
+  win32,
+} from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { ConfigError } from './errors.js';
@@ -130,6 +138,16 @@ export interface ValidateConfigOptions {
   templateExists: (relativeTemplatePath: string) => boolean;
 }
 
+export interface TemplatePathFileSystem {
+  exists(path: string): boolean;
+  realpath(path: string): string;
+}
+
+const nodePathFileSystem: TemplatePathFileSystem = {
+  exists: existsSync,
+  realpath: realpathSync,
+};
+
 // ---------------------------------------------------------------------------
 // 検証本体
 // ---------------------------------------------------------------------------
@@ -209,6 +227,7 @@ export function validateConfig(
 
   // FR-11-5: 存在しないテンプレートへの参照を検出する。
   for (const templatePath of Object.keys(config.stacks)) {
+    assertSafeTemplatePath(templatePath);
     if (!opts.templateExists(templatePath)) {
       throw new ConfigError(
         `参照先のテンプレートファイルが存在しません: ${templatePath}`,
@@ -220,6 +239,79 @@ export function validateConfig(
   }
 
   return config;
+}
+
+/**
+ * stacks キーを lexical に検証する。Windows/Posix のどちらの絶対パス・区切りも
+ * fail-closed に扱い、実行環境の OS によって判定が変わる抜け道を作らない。
+ */
+export function assertSafeTemplatePath(templatePath: string): void {
+  const portable = templatePath.replaceAll('\\', '/');
+  const normalized = posix.normalize(portable);
+  const unsafe =
+    templatePath.includes('\0') ||
+    isAbsolute(templatePath) ||
+    posix.isAbsolute(portable) ||
+    win32.isAbsolute(templatePath) ||
+    normalized === '..' ||
+    normalized.startsWith('../');
+
+  if (unsafe) {
+    throw new ConfigError(
+      `テンプレートパスは設定ディレクトリ配下の相対パスでなければなりません: ${templatePath}`,
+      { stackKey: templatePath },
+    );
+  }
+}
+
+function isWithinDirectory(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return (
+    rel === '' ||
+    (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+  );
+}
+
+/**
+ * 読み書き対象を realpath ベースで設定ディレクトリ配下へ閉じ込める。
+ * 対象が未作成なら、既存の最長親を realpath して残りの相対部分を解決する。
+ */
+export function resolveTemplatePathWithinConfig(
+  configDir: string,
+  templatePath: string,
+  fs: TemplatePathFileSystem = nodePathFileSystem,
+): string {
+  assertSafeTemplatePath(templatePath);
+  const baseAbs = resolve(configDir);
+  const candidate = resolve(baseAbs, templatePath);
+
+  let baseReal: string;
+  let ancestor = candidate;
+  try {
+    baseReal = fs.realpath(baseAbs);
+    while (ancestor !== baseAbs && !fs.exists(ancestor)) {
+      ancestor = dirname(ancestor);
+    }
+    const ancestorReal = fs.realpath(ancestor);
+    const resolvedTarget =
+      ancestor === candidate
+        ? ancestorReal
+        : resolve(ancestorReal, relative(ancestor, candidate));
+
+    if (!isWithinDirectory(baseReal, resolvedTarget)) {
+      throw new ConfigError(
+        `テンプレートパスが設定ディレクトリ外へ解決されます: ${templatePath}`,
+        { stackKey: templatePath },
+      );
+    }
+    return resolvedTarget;
+  } catch (cause) {
+    if (cause instanceof ConfigError) throw cause;
+    throw new ConfigError(
+      `テンプレートパスの実パスを検証できません: ${templatePath}`,
+      { stackKey: templatePath, cause },
+    );
+  }
 }
 
 /**

@@ -58,6 +58,7 @@ import {
   buildStackDiff,
   type ConnectionInfo,
   type DeployReport,
+  redactReportMessages,
   type StackEventLine,
   type StackResult,
 } from '../report/index.js';
@@ -80,6 +81,11 @@ import {
   resolveConnection,
   verifyStateAccount,
 } from './guard.js';
+import {
+  createNoEchoRedactor,
+  identityRedactor,
+  type TextRedactor,
+} from './redactor.js';
 
 // ===========================================================================
 // 公開 API(T-15 / T-19 が利用する固定契約)
@@ -133,6 +139,7 @@ interface PreparedPlan {
   graphs: Map<string, RegionGraph>;
   mergedGraphs: Map<string, RegionGraph>;
   plan: ExecutionPlan;
+  redactors: Map<StackKey, TextRedactor>;
 }
 
 interface OperationResult {
@@ -296,13 +303,20 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
                 ctx,
                 operation,
                 prepared.analyses,
+                prepared.redactors,
                 report,
               );
         hasDiff ||= operationResult.hasDiff;
         hasError ||= operationResult.failed === true;
       } catch (error) {
         hasError = true;
-        results.push(failedOperationResult(operation, error));
+        results.push(
+          failedOperationResult(
+            operation,
+            error,
+            prepared.redactors.get(operation.stackKey),
+          ),
+        );
 
         // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
         if (
@@ -332,11 +346,15 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     : ctx.options.dryRun && hasDiff
       ? 2
       : 0;
-  return { exitCode, report, hasDiff };
+  const redactedReport = redactReportMessages(report, (stackKey, text) =>
+    (prepared.redactors.get(stackKey) ?? identityRedactor)(text),
+  );
+  return { exitCode, report: redactedReport, hasDiff };
 }
 
 function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const analyses = new Map<StackKey, TemplateAnalysis>();
+  const redactors = new Map<StackKey, TextRedactor>();
   const currentNodes: StackNode[] = [];
   for (const target of ctx.targets) {
     const source = requiredTemplate(ctx.templates, target.templatePath);
@@ -345,6 +363,10 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
       region: target.region,
     });
     analyses.set(target.stackKey, analysis);
+    redactors.set(
+      target.stackKey,
+      createNoEchoRedactor(target.parameters, analysis.noEchoParams),
+    );
     currentNodes.push({
       stackKey: target.stackKey,
       region: target.region,
@@ -387,7 +409,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     mergedGraphs,
     regionOrder,
   });
-  return { detection, analyses, graphs, mergedGraphs, plan };
+  return { detection, analyses, graphs, mergedGraphs, plan, redactors };
 }
 
 // ===========================================================================
@@ -398,6 +420,7 @@ async function processCreateOrUpdate(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   analyses: Map<StackKey, TemplateAnalysis>,
+  redactors: Map<StackKey, TextRedactor>,
   report: DeployReport,
 ): Promise<OperationResult> {
   const target = operation.entry.target;
@@ -409,6 +432,7 @@ async function processCreateOrUpdate(
     throw new Error(
       `内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`,
     );
+  const redact = redactors.get(operation.stackKey) ?? identityRedactor;
 
   const rawCfn = ctx.deps.cfnFactory(operation.region);
   const cfn = fencedGateway(rawCfn, ctx.deps.backend, ctx.lock);
@@ -447,6 +471,7 @@ async function processCreateOrUpdate(
     stateId: ctx.deps.backend.stateId(),
     runId: ctx.runId,
     now: ctx.deps.now,
+    redact,
   };
   const prepared = await prepareStack(executor, target.stackName);
   // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。通常パスのみ明示回収する。
@@ -507,7 +532,10 @@ async function processCreateOrUpdate(
         logicalResourceId: event.logicalResourceId,
         resourceType: event.resourceType,
         resourceStatus: event.resourceStatus,
-        resourceStatusReason: event.resourceStatusReason,
+        resourceStatusReason:
+          event.resourceStatusReason === undefined
+            ? undefined
+            : redact(event.resourceStatusReason),
       };
       report.events?.push(line);
       ctx.deps.onEvent?.(line);
@@ -522,7 +550,10 @@ async function processCreateOrUpdate(
       event.resourceStatus.endsWith('_FAILED'),
     );
     const reason =
-      cause?.resourceStatusReason ?? final.statusReason ?? final.status;
+      cause?.resourceStatusReason ??
+      (final.statusReason === undefined
+        ? final.status
+        : redact(final.statusReason));
     const resource = cause ? `${cause.logicalResourceId}: ` : '';
     throw new StackStateError(
       `${resource}${reason} (final status: ${final.status})`,
@@ -926,9 +957,10 @@ function resultForOperation(
 function failedOperationResult(
   operation: PlannedOperation,
   error: unknown,
+  redact: TextRedactor = identityRedactor,
 ): StackResult {
   const result = resultForOperation(operation, 'failed');
-  result.errorMessage = errorMessage(error);
+  result.errorMessage = redact(errorMessage(error));
   result.rolledBack = /ROLLBACK/i.test(result.errorMessage);
   return result;
 }

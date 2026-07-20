@@ -27,6 +27,7 @@ import type {
   CloudFormationGateway,
   StackEvent,
 } from '../../src/ports/index.js';
+import { renderJson, renderText } from '../../src/report/index.js';
 import { deploy } from '../../src/usecase/deploy.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import {
@@ -368,6 +369,53 @@ describe('deploy — T-14 integration', () => {
     ).toBe(oldBHash);
   });
 
+  it('NFR-4: ResourceStatusReason と最終 errorMessage の NoEcho 実値を text/JSON 格納前にマスクする', async () => {
+    const secret = 'S3cr3t-Value-From-Config';
+    const config = configOf({
+      'secret.yaml': {
+        stackName: 'SecretStack',
+        parameters: { Secret: secret },
+      },
+    });
+    const templates = templatesOf({ 'secret.yaml': TEMPLATE_SECRET });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'secret-failure',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason: `custom resource rejected password ${secret}`,
+      },
+    ]);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+        statusReason: `rollback after ${secret}`,
+      }),
+    ]);
+
+    const result = await s.run();
+    const text = renderText(result.report);
+    const json = renderJson(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(text).not.toContain(secret);
+    expect(json).not.toContain(secret);
+    expect(text).toContain('****');
+    expect(json).toContain('****');
+    expect(s.emitted[0].resourceStatusReason).toContain('****');
+    expect(s.emitted[0].resourceStatusReason).not.toContain(secret);
+  });
+
   it('NFR-3(継続): A 成功・B 失敗後の再実行は A を完全スキップし、B の自変更セットを回収して収束する', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A' },
@@ -616,7 +664,8 @@ describe('deploy — T-14 integration', () => {
     setExistingStacks(config, fake);
     fake.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'FAILED',
-      statusReason: "The submitted information didn't contain changes",
+      statusReason:
+        "The submitted information didn't contain changes. Submit different information to create a change set.",
     });
     expect((await s.run()).exitCode).toBe(0);
 
@@ -630,6 +679,33 @@ describe('deploy — T-14 integration', () => {
     );
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it("FR-2-3: Macro エラー中の didn't contain changes + changes 非空では失敗し、state を保存しない", async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const initial = recordedState(config, templates, { modified: true });
+    const oldHash = initial.stacks[`a.yaml@${REGION}`].inputsHash;
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason:
+        "Transform ExampleMacro failed because input didn't contain changes while expanding resources",
+      changes: changedDetail().changes,
+    });
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
+    );
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.backend.stored?.state.stacks[`a.yaml@${REGION}`].inputsHash).toBe(
+      oldHash,
+    );
   });
 
   it('§8.2: __REQUIRED__ 残存スタックだけを検証エラーで除外し、他スタックは実行する', async () => {

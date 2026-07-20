@@ -79,7 +79,8 @@ export interface ResourceChangeDetail {
 /**
  * `DescribeChangeSet` を全ページ結合して正規化した詳細。
  * `changes` は NextToken を辿って全ページ結合済み。空変更セット判定(FR-2-3)は
- * `status === 'FAILED'` かつ `statusReason` の内容で行う(usecase/executor(T-13))。
+ * `status === 'FAILED'`、既知の `statusReason` 定型文、`changes.length === 0` の
+ * すべてを満たす場合だけ行う(usecase/executor(T-13))。
  */
 export interface ChangeSetDetail {
   name?: string;

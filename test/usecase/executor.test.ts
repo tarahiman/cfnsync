@@ -486,6 +486,60 @@ describe('createManagedChangeSet', () => {
     ).rejects.toBeInstanceOf(StackStateError);
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
   });
+
+  it("FR-2-3: Macro エラー中の didn't contain changes + changes 非空は空変更扱いしない", async () => {
+    const fake = new FakeCloudFormationGateway();
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason:
+        "Transform ExampleMacro failed: The submitted information didn't contain changes. Submit different information to create a change set.",
+      changes: [
+        {
+          action: 'Modify',
+          logicalResourceId: 'Bucket',
+          resourceType: 'AWS::S3::Bucket',
+          scope: ['Properties'],
+          details: [],
+        },
+      ],
+    });
+
+    await expect(
+      createManagedChangeSet(makeCtx(fake), {
+        target: makeTarget(),
+        templateBody: 'TEMPLATE',
+        kind: 'update',
+      }),
+    ).rejects.toBeInstanceOf(StackStateError);
+    expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+  });
+
+  it('NFR-4: 変更セット StatusReason は StackStateError へコピーする前に redactor を通す', async () => {
+    const secret = 'executor-secret-value';
+    const fake = new FakeCloudFormationGateway();
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason: `AWS rejected ${secret}`,
+    });
+
+    try {
+      await createManagedChangeSet(
+        makeCtx(fake, {
+          redact: (text) => text.replaceAll(secret, '****'),
+        }),
+        {
+          target: makeTarget(),
+          templateBody: 'TEMPLATE',
+          kind: 'update',
+        },
+      );
+      expect.unreachable('StackStateError が送出されるはず');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StackStateError);
+      expect((error as Error).message).toContain('****');
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
 });
 
 // ===========================================================================
