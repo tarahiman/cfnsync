@@ -20,7 +20,7 @@ The specs are the source of truth. Any behavior change must be reflected in requ
 
 ## Commands
 
-No package.json exists yet. Once scaffolded (per design.md §2/§10): npm + vitest (`vitest run` for the suite, `vitest run <file>` for a single test). Tests must not require real AWS access.
+Use pnpm 11.2.2. Run `pnpm install` to install dependencies, `pnpm run build` to build, `pnpm vitest run` for the full suite, and `pnpm vitest run <file>` for a single test. Tests must not require real AWS access.
 
 ## Architecture (from design.md — read it before implementing)
 

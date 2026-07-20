@@ -1,6 +1,7 @@
 {
   "name": "cfnsync",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.2.2",
   "description": "Sync a directory of raw CloudFormation templates to stacks (detect changes, create/diff/execute change sets, manage stacks in dependency order).",
   "type": "module",
   "bin": {
@@ -15,8 +16,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "test": "vitest run"
+    "prepublishOnly": "tsc",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "^3",
@@ -28,6 +31,7 @@
     "zod": "^3"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.13",
     "@types/node": "^20",
     "aws-sdk-client-mock": "^4",
     "typescript": "^5",
