@@ -26,6 +26,7 @@ const StackEntrySchema = z.object({
   inputsHash: z.string().min(1),
   exports: z.array(z.string()),
   imports: z.array(z.string()),
+  dependsOn: z.array(z.string()).default([]),
   lastAction: z.enum(['CREATE', 'UPDATE', 'IMPORT', 'SYNC']),
   lastSuccessAt: z.string().min(1),
 });
@@ -103,6 +104,7 @@ export function serializeState(state: CfnSyncState): string {
       inputsHash: entry.inputsHash,
       exports: entry.exports,
       imports: entry.imports,
+      dependsOn: entry.dependsOn,
       lastAction: entry.lastAction,
       lastSuccessAt: entry.lastSuccessAt,
     };

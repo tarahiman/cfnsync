@@ -13,6 +13,7 @@ import {
   type CfnSyncConfig,
   findRequiredPlaceholders,
   type ResolvedStackTarget,
+  resolveDependsOnKey,
   resolveTargets,
 } from '../core/config.js';
 import {
@@ -70,6 +71,7 @@ import {
   prepareStack,
   reclaimStaleChangeSets,
 } from './executor.js';
+import { assertFenced, fencedBackend } from './fencing.js';
 import {
   assertAccountAllowed,
   assertMutationAllowed,
@@ -373,7 +375,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
       // FR-6-5: 欠落は delete usecase が対象だけ拒否する。ここでは安全な空辺として計画に残す。
       exports: Array.isArray(entry.exports) ? entry.exports : [],
       imports: Array.isArray(entry.imports) ? entry.imports : [],
-      explicitDependsOn: [],
+      explicitDependsOn: Array.isArray(entry.dependsOn) ? entry.dependsOn : [],
     }),
   );
   const oldGraphs = buildGraphs(oldNodes);
@@ -563,7 +565,7 @@ async function processDeleted(
   report.diffs.push(diff);
 
   const existing = await cfn.describeStack(stateEntry.stackName);
-  if (!existing) {
+  if (!existing || existing.status === 'DELETE_COMPLETE') {
     // design §7: DELETE 成功後・state 保存前の中断からの再同期。
     const next = removeStackEntry(ctx.state.state, operation.stackKey);
     await saveState(ctx, next);
@@ -597,7 +599,6 @@ async function processDeleted(
       region: operation.region,
       entry: stateEntry,
     },
-    summary: existing,
     cfn,
     backend: ctx.deps.backend,
     lock: ctx.lock,
@@ -752,6 +753,9 @@ async function saveSuccessfulEntry(
     inputsHash: detected.inputsHash,
     exports: analysis.exports,
     imports: analysis.imports,
+    dependsOn: target.dependsOn.map((raw) =>
+      resolveDependsOnKey(raw, target.region),
+    ),
     lastAction,
     lastSuccessAt: now(ctx.deps).toISOString(),
   };
@@ -784,17 +788,6 @@ async function saveState(
 // fencing proxy
 // ===========================================================================
 
-async function assertFenced(
-  backend: StateBackend,
-  lock: LockHandle,
-): Promise<void> {
-  if (!(await backend.verifyLock(lock))) {
-    throw new LockError(
-      'ステートロックの所有権を失いました。以降の副作用を中断します(fencing)',
-    );
-  }
-}
-
 function fencedGateway(
   gateway: CloudFormationGateway,
   backend: StateBackend,
@@ -826,22 +819,6 @@ function fencedGateway(
     async deleteStack(stackName) {
       await assertFenced(backend, lock);
       return gateway.deleteStack(stackName);
-    },
-  };
-}
-
-function fencedBackend(backend: StateBackend, lock: LockHandle): StateBackend {
-  return {
-    load: () => backend.load(),
-    acquireLock: (info) => backend.acquireLock(info),
-    verifyLock: (handle) => backend.verifyLock(handle),
-    releaseLock: (handle) => backend.releaseLock(handle),
-    readLock: () => backend.readLock(),
-    forceUnlock: (runId) => backend.forceUnlock(runId),
-    stateId: () => backend.stateId(),
-    async save(state, expected) {
-      await assertFenced(backend, lock);
-      return backend.save(state, expected);
     },
   };
 }

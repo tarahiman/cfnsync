@@ -43,6 +43,7 @@ function makeEntry(overrides: Partial<StackEntry> = {}): StackEntry {
     inputsHash: 'sha256:def',
     exports: ['prod-network-VpcId'],
     imports: ['other-Export'],
+    dependsOn: [],
     lastAction: 'UPDATE',
     lastSuccessAt: '2026-07-19T00:00:00Z',
     ...overrides,
@@ -62,6 +63,7 @@ describe('core/state — §4.3 ステートスキーマ', () => {
       inputsHash: 'sha256:def',
       exports: ['prod-network-VpcId'],
       imports: [],
+      dependsOn: [],
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00Z',
     });

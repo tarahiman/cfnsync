@@ -15,7 +15,11 @@ import {
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { S3StateBackend } from '../../src/aws/s3state.js';
-import { LockError, StateConflictError } from '../../src/core/errors.js';
+import {
+  AwsError,
+  LockError,
+  StateConflictError,
+} from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -166,6 +170,15 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
 
+  it('FR-1-8: acquireLock のレスポンスに ETag がなければ fail-closed で失敗する', async () => {
+    s3Mock.on(PutObjectCommand, { Key: LOCK_KEY }).resolves({});
+
+    await expect(makeBackend().acquireLock(LOCK_INFO)).rejects.toBeInstanceOf(
+      AwsError,
+    );
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
   it('FR-1-8: releaseLock は DeleteObject If-Match: <取得時 ETag> で解放する', async () => {
     s3Mock.on(DeleteObjectCommand, { Key: LOCK_KEY }).resolves({});
     const result = await makeBackend().releaseLock({
@@ -177,6 +190,14 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
     const call = s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input;
     expect(call.Key).toBe(LOCK_KEY);
     expect(call.IfMatch).toBe('"lock-1"');
+  });
+
+  it('FR-1-8: ETag のない handle は解放を拒否し DeleteObject を呼ばない', async () => {
+    const result = await makeBackend().releaseLock({ runId: 'run-1' });
+
+    expect(result.released).toBe(false);
+    expect(result.reason).toMatch(/ETag/);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
 
   it('FR-1-8: 条件不成立(所有者交代・412)→ 削除せず released:false を報告する', async () => {
@@ -279,6 +300,17 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
 
     const result = await makeBackend().forceUnlock('other-run');
     expect(result.released).toBe(false);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
+  it('読み取りレスポンスに ETag がなければ fail-closed で失敗し DeleteObject を呼ばない', async () => {
+    s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
+      Body: bodyOf(JSON.stringify(LOCK_INFO)),
+    } as never);
+
+    await expect(makeBackend().forceUnlock('run-1')).rejects.toBeInstanceOf(
+      AwsError,
+    );
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
 

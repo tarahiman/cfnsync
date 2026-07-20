@@ -302,6 +302,13 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
   return targets;
 }
 
+/** dependsOn のテンプレートパスを同一リージョンのスタックキーへ解決する。 */
+export function resolveDependsOnKey(raw: string, region: string): StackKey {
+  const at = raw.lastIndexOf('@');
+  const templatePath = at > 0 && at < raw.length - 1 ? raw.slice(0, at) : raw;
+  return makeStackKey(templatePath, region);
+}
+
 /** design.md §8.2: 値が __REQUIRED__ のままのパラメータ名を列挙する。 */
 export function findRequiredPlaceholders(
   target: ResolvedStackTarget,

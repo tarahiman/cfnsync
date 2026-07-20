@@ -733,6 +733,29 @@ describe('FR-10-8: ロック取得後のステート再読込に対するアカ�
     expect(s.backend.stored!.state.accountId).toBe(ACCOUNT);
     expect(s.backend.stored!.state.stacks[NET_KEY]).toBeDefined();
   });
+
+  it('FR-1-9(import初回): accountId の初回 CAS 保存直前に verifyLock を行う', async () => {
+    const s = setup({ initialState: 'none' });
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(0);
+    const firstSave = s.timeline.indexOf('backend.save');
+    expect(firstSave).toBeGreaterThan(-1);
+    expect(s.timeline[firstSave - 1]).toBe('backend.verifyLock');
+  });
+
+  it('FR-1-9(import初回): accountId 保存直前に所有権を失った場合は保存しない', async () => {
+    const s = setup({ initialState: 'none' });
+    s.backend.verifyLockPlan = [false];
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.aborted).toBe('ownership-lost');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.backend.releaseCalls).toBe(1);
+  });
 });
 
 // ===========================================================================
@@ -887,6 +910,37 @@ describe('FR-10-11: exports / imports のステート記録', () => {
       'prod-network-VpcId',
     ]);
     expect(saved.stacks[`app.yaml@${REGION}`].exports).toEqual([]);
+  });
+
+  it('design §4.3: import 成功時の dependsOn は同一リージョンのスタックキーに解決して記録する', async () => {
+    const configText = TWO_STACK_CONFIG.replace(
+      '    stackName: prod-app',
+      '    stackName: prod-app\n    dependsOn: [network.yaml]',
+    );
+    const s = setup({
+      configText,
+      files: { [NETWORK_ABS]: NETWORK_TEMPLATE, [APP_ABS]: APP_TEMPLATE },
+    });
+    const cfn = s.cfns.get(REGION)!;
+    cfn.stacks.set('prod-network', makeSummary());
+    cfn.templates.set('prod-network', NETWORK_TEMPLATE);
+    cfn.stacks.set(
+      'prod-app',
+      makeSummary({
+        stackName: 'prod-app',
+        parameters: {},
+        tags: {},
+        capabilities: [],
+      }),
+    );
+    cfn.templates.set('prod-app', APP_TEMPLATE);
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      s.backend.stored!.state.stacks[`app.yaml@${REGION}`].dependsOn,
+    ).toEqual([NET_KEY]);
   });
 });
 

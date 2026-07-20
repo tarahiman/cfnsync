@@ -43,6 +43,7 @@ function makeStateEntry(overrides: Partial<StackEntry> = {}): StackEntry {
     inputsHash: 'sha256:placeholder-inputs',
     exports: [],
     imports: [],
+    dependsOn: [],
     lastAction: 'UPDATE',
     lastSuccessAt: '2026-07-19T00:00:00Z',
     ...overrides,

@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
+  resolveDependsOnKey,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
@@ -112,6 +113,9 @@ function recordedState(
           }),
       exports: analysis.exports,
       imports: analysis.imports,
+      dependsOn: target.dependsOn.map((raw) =>
+        resolveDependsOnKey(raw, target.region),
+      ),
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     });

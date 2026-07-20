@@ -207,10 +207,14 @@ export interface StsGateway {
 /**
  * CAS のための世代情報。`local` は保存直前の再読込で `generation` を比較し、
  * `s3` は `etag`(`If-Match`)で条件付き書き込みを行う(§4.5)。
+ * `etag` は local では省略可。S3 実装は入出力時に必須検証する。
  */
 export type StateVersion = { generation: number; etag?: string };
 
-/** ロック取得結果。fencing の所有権検証と条件付き解放に用いる(§4.5)。 */
+/**
+ * ロック取得結果。fencing の所有権検証と条件付き解放に用いる(§4.5)。
+ * `etag` は local では省略可。S3 実装は条件付き解放の前提として必須検証する。
+ */
 export type LockHandle = { runId: string; etag?: string };
 
 /** ロックオブジェクトの内容(FR-1-10。force-unlock で表示する)。 */

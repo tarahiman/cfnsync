@@ -18,7 +18,6 @@ import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
   LockHandle,
-  StackSummary,
   StateBackend,
   StateVersion,
 } from '../ports/index.js';
@@ -31,8 +30,6 @@ export interface ManagedDeleteTarget {
 
 export interface DeleteManagedStackInput {
   target: ManagedDeleteTarget;
-  /** deploy が直前の describeStack で取得した存在中スタック。不存在復旧は deploy 側で処理済み。 */
-  summary: StackSummary;
   cfn: CloudFormationGateway;
   backend: StateBackend;
   lock: LockHandle;
@@ -60,7 +57,7 @@ export class DeleteStateSaveError extends Error {}
 export async function deleteManagedStack(
   input: DeleteManagedStackInput,
 ): Promise<DeleteManagedStackResult> {
-  const { target, summary, cfn, backend, lock } = input;
+  const { target, cfn, backend, lock } = input;
 
   // FR-6-5: exports/imports が欠落した state からは削除順を安全に復元できない。
   if (
@@ -75,6 +72,32 @@ export async function deleteManagedStack(
         `スタック '${target.entry.stackName}' の依存情報(exports/imports)が state にありません。` +
         `安全な削除順を復元できないため削除を拒否します。手動対応してください`,
     };
+  }
+
+  // FR-2 / FR-2-10: DeleteStack の直前に実状態を再取得し、並行操作と
+  // REVIEW_IN_PROGRESS を fail-closed に拒否する。競合で既に消えた場合は復旧成功扱い。
+  const summary = await cfn.describeStack(target.entry.stackName);
+  if (summary === undefined || summary.status === 'DELETE_COMPLETE') {
+    return saveDeletedState(input);
+  }
+
+  if (summary.status === 'REVIEW_IN_PROGRESS') {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' は REVIEW_IN_PROGRESS 状態です。` +
+        `変更セット未実行の空スタックに DeleteStack は実行できないため削除を拒否します`,
+    );
+  }
+
+  if (
+    summary.status.endsWith('_IN_PROGRESS') ||
+    summary.status.endsWith('_PENDING')
+  ) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' は ${summary.status} 状態です。` +
+        `並行操作の完了後に再実行してください`,
+    );
   }
 
   // FR-6-3: 削除保護は自動解除しない。解除 API 自体を ports 契約に持たない。
@@ -102,7 +125,26 @@ export async function deleteManagedStack(
     );
   }
 
-  // §8.3 / FR-1-9: 完了後、state CAS 保存の直前にも fencing を再検証する。
+  return saveDeletedState(input);
+}
+
+function refused(
+  input: DeleteManagedStackInput,
+  errorMessage: string,
+): DeleteManagedStackResult {
+  return {
+    outcome: 'refused',
+    state: input.state,
+    version: input.version,
+    errorMessage,
+  };
+}
+
+async function saveDeletedState(
+  input: DeleteManagedStackInput,
+): Promise<DeleteManagedStackResult> {
+  const { target, backend, lock } = input;
+  // §8.3 / FR-1-9: 削除完了(不存在復旧を含む)後、state CAS 保存の直前に fencing。
   await assertDeleteFenced(backend, lock);
   const nextState = prepareSave(removeStackEntry(input.state, target.stackKey));
   let nextVersion: StateVersion;

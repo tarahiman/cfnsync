@@ -16,7 +16,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
-import { LockError, StateConflictError } from '../core/errors.js';
+import { AwsError, LockError, StateConflictError } from '../core/errors.js';
 import {
   type CfnSyncState,
   parseState,
@@ -80,6 +80,15 @@ function isNotFound(err: unknown): boolean {
   return name === 'NoSuchKey' || name === 'NotFound' || httpStatus(err) === 404;
 }
 
+function requireEtag(etag: string | undefined, operation: string): string {
+  if (etag === undefined || etag.length === 0) {
+    throw new AwsError(
+      `S3 ${operation} レスポンスに ETag がありません。条件付き操作の安全性を確認できないため中断します(fail-closed)`,
+    );
+  }
+  return etag;
+}
+
 export class S3StateBackend implements StateBackend {
   /** テスト・診断のために公開(retryMode / region の確認に使える)。 */
   readonly client: S3Client;
@@ -116,13 +125,14 @@ export class S3StateBackend implements StateBackend {
       if (isNotFound(err)) return undefined; // 初回(NoSuchKey)。
       throw err;
     }
+    const etag = requireEtag(output.ETag, 'GetObject(state)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
     // 破損(不完全 JSON・スキーマ不一致)は StateCorruptionError が伝播 = fail-closed。
     const state = parseState(text);
     return {
       state,
-      version: { generation: state.generation, etag: output.ETag },
+      version: { generation: state.generation, etag },
     };
   }
 
@@ -131,10 +141,9 @@ export class S3StateBackend implements StateBackend {
     expected: StateVersion | undefined,
   ): Promise<StateVersion> {
     // FR-1-6(s3): 既存版は If-Match、初回(ETag なし)は If-None-Match: * で作成する。
-    const condition =
-      expected?.etag !== undefined
-        ? { IfMatch: expected.etag }
-        : { IfNoneMatch: '*' };
+    const condition = expected
+      ? { IfMatch: requireEtag(expected.etag, 'state version') }
+      : { IfNoneMatch: '*' };
 
     let output: PutObjectCommandOutput;
     try {
@@ -156,7 +165,10 @@ export class S3StateBackend implements StateBackend {
       }
       throw err;
     }
-    return { generation: state.generation, etag: output.ETag };
+    return {
+      generation: state.generation,
+      etag: requireEtag(output.ETag, 'PutObject(state)'),
+    };
   }
 
   async acquireLock(info: LockInfo): Promise<LockHandle> {
@@ -187,7 +199,10 @@ export class S3StateBackend implements StateBackend {
       }
       throw err;
     }
-    return { runId: info.runId, etag: output.ETag };
+    return {
+      runId: info.runId,
+      etag: requireEtag(output.ETag, 'PutObject(lock)'),
+    };
   }
 
   async verifyLock(handle: LockHandle): Promise<boolean> {
@@ -201,6 +216,7 @@ export class S3StateBackend implements StateBackend {
       if (isNotFound(err)) return false;
       throw err;
     }
+    const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return false;
     let parsed: { runId?: string };
@@ -209,13 +225,20 @@ export class S3StateBackend implements StateBackend {
     } catch {
       return false;
     }
-    return parsed.runId === handle.runId && output.ETag === handle.etag;
+    return parsed.runId === handle.runId && etag === handle.etag;
   }
 
   async releaseLock(
     handle: LockHandle,
   ): Promise<{ released: boolean; reason?: string }> {
     // FR-1-8: DeleteObject If-Match: <取得時 ETag> による条件付き解放。
+    if (handle.etag === undefined || handle.etag.length === 0) {
+      return {
+        released: false,
+        reason:
+          'ロック handle に ETag がないため条件付き解放を実行しません(fail-closed)',
+      };
+    }
     try {
       await this.client.send(
         new DeleteObjectCommand({
@@ -250,6 +273,7 @@ export class S3StateBackend implements StateBackend {
       if (isNotFound(err)) return undefined;
       throw err;
     }
+    requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
     const parsed = JSON.parse(text) as LockInfo;
@@ -275,6 +299,7 @@ export class S3StateBackend implements StateBackend {
         return { released: false, reason: 'ロックは存在しません' };
       throw err;
     }
+    const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined)
       return { released: false, reason: 'ロックは存在しません' };
@@ -297,7 +322,7 @@ export class S3StateBackend implements StateBackend {
         new DeleteObjectCommand({
           Bucket: this.bucket,
           Key: this.lockKey,
-          IfMatch: output.ETag,
+          IfMatch: etag,
         }),
       );
       return { released: true };

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
+  resolveDependsOnKey,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
@@ -133,6 +134,9 @@ function recordedState(
           }),
       exports: analysis.exports,
       imports: analysis.imports,
+      dependsOn: target.dependsOn.map((raw) =>
+        resolveDependsOnKey(raw, target.region),
+      ),
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     });
@@ -697,6 +701,9 @@ describe('deploy — T-14 integration', () => {
     expect(
       s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].lastAction,
     ).toBe('SYNC');
+    expect(
+      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].dependsOn,
+    ).toEqual(['external.yaml@ap-northeast-1']);
     expect(result.report.diffs[0].warnings.join('\n')).toMatch(
       /Secret|dependsOn/,
     );

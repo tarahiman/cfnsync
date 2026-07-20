@@ -33,7 +33,7 @@ import { dirname, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 
 import type { CfnSyncConfig, ResolvedStackTarget } from '../core/config.js';
-import { resolveTargets } from '../core/config.js';
+import { resolveDependsOnKey, resolveTargets } from '../core/config.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import { GuardError, LockError } from '../core/errors.js';
 import {
@@ -53,6 +53,7 @@ import type {
 } from '../ports/index.js';
 import type { ConnectionInfo } from '../report/index.js';
 import { MANAGEMENT_TAG_KEY, newRunId } from './executor.js';
+import { fencedBackend } from './fencing.js';
 import {
   connectionHeader,
   resolveConnection,
@@ -190,7 +191,7 @@ export async function runImport(input: {
     let stateCtx: { state: CfnSyncState; version: StateVersion | undefined };
     try {
       stateCtx = await verifyStateAccount({
-        backend: deps.backend,
+        backend: fencedBackend(deps.backend, lock),
         accountId: connection.accountId,
       });
     } catch (err) {
@@ -198,6 +199,12 @@ export async function runImport(input: {
         return {
           exitCode: 1,
           report: emptyReport(header, 'account-mismatch', err.message),
+        };
+      }
+      if (err instanceof LockError) {
+        return {
+          exitCode: 1,
+          report: emptyReport(header, 'ownership-lost', err.message),
         };
       }
       throw err;
@@ -477,6 +484,9 @@ async function buildImportPlan(args: {
         }),
         exports: baselineAnalysis.exports,
         imports: baselineAnalysis.imports,
+        dependsOn: target.dependsOn.map((raw) =>
+          resolveDependsOnKey(raw, target.region),
+        ),
         lastAction: 'IMPORT',
         lastSuccessAt: new Date().toISOString(),
       },

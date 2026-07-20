@@ -53,6 +53,7 @@ function entry(
     inputsHash: `sha256:inputs-${stackName}`,
     exports: [],
     imports: [],
+    dependsOn: [],
     lastAction: 'UPDATE',
     lastSuccessAt: '2026-07-19T00:00:00.000Z',
     ...overrides,
@@ -70,6 +71,16 @@ function dependencyState(): CfnSyncState {
   return stateWith([
     ['a.yaml@ap-northeast-1', entry('A', { exports: ['Shared'], imports: [] })],
     ['b.yaml@ap-northeast-1', entry('B', { exports: [], imports: ['Shared'] })],
+  ]);
+}
+
+function explicitDependencyState(): CfnSyncState {
+  return stateWith([
+    [
+      'a.yaml@ap-northeast-1',
+      entry('A', { dependsOn: ['b.yaml@ap-northeast-1'] }),
+    ],
+    ['b.yaml@ap-northeast-1', entry('B')],
   ]);
 }
 
@@ -152,6 +163,22 @@ describe('delete / deploy integration — T-15', () => {
     ).toBeUndefined();
   });
 
+  it('§7 DELETE 復旧: DELETE_COMPLETE は DeleteStack を呼ばず削除成功として state から除去する', async () => {
+    const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
+    s.cfn.stacks.set(
+      'A',
+      makeStackSummary({ stackName: 'A', status: 'DELETE_COMPLETE' }),
+    );
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(
+      s.backend.stored?.state.stacks['a.yaml@ap-northeast-1'],
+    ).toBeUndefined();
+  });
+
   it('FR-6-3: terminationProtection 有効時は解除を試みず DeleteStack も呼ばずエラー報告する', async () => {
     const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     s.cfn.stacks.set(
@@ -177,6 +204,46 @@ describe('delete / deploy integration — T-15', () => {
     );
   });
 
+  it('FR-2-10(削除): REVIEW_IN_PROGRESS は当該スタックだけ失敗扱いとし DeleteStack を一切呼ばない', async () => {
+    const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
+    s.cfn.stacks.set(
+      'A',
+      makeStackSummary({ stackName: 'A', status: 'REVIEW_IN_PROGRESS' }),
+    );
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        errorMessage: expect.stringContaining('REVIEW_IN_PROGRESS'),
+      }),
+    );
+  });
+
+  it('FR-2(削除): UPDATE_IN_PROGRESS は並行操作として拒否し DeleteStack を呼ばない', async () => {
+    const s = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
+    s.cfn.stacks.set(
+      'A',
+      makeStackSummary({ stackName: 'A', status: 'UPDATE_IN_PROGRESS' }),
+    );
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        errorMessage: expect.stringMatching(/UPDATE_IN_PROGRESS|並行操作/),
+      }),
+    );
+  });
+
   it('FR-6-4: 削除済みテンプレートの旧 exports/imports を復元し、統合グラフの逆順 B → A で削除する', async () => {
     const s = setup(dependencyState());
     makeExisting(s, ['A', 'B']);
@@ -187,6 +254,19 @@ describe('delete / deploy integration — T-15', () => {
     expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
       'B',
       'A',
+    ]);
+  });
+
+  it('FR-6-4 / design §4.3: 旧 state の明示依存のみでも逆トポロジカル順 A → B で削除する', async () => {
+    const s = setup(explicitDependencyState());
+    makeExisting(s, ['A', 'B']);
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(0);
+    expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
+      'A',
+      'B',
     ]);
   });
 
