@@ -78,6 +78,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   /** 時系列の全呼び出し記録(順序検証に使う)。 */
   readonly calls: CallRecord[] = [];
 
+  /** DeleteStack 呼び出し時点で REVIEW_IN_PROGRESS だったスタック(T-18 横断不変条件)。 */
+  readonly reviewInProgressDeleteCalls: string[] = [];
+
   /** stackName → 要約。未登録の stackName は「スタックなし」(describeStack が undefined を返す)。 */
   readonly stacks = new Map<string, StackSummary>();
 
@@ -101,6 +104,12 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 
   /** 明示設定時だけ waitForStack が先頭から返す終端要約列(T-14 の失敗・再実行用)。 */
   readonly waitResults = new Map<string, StackSummary[]>();
+
+  /**
+   * waitForStack が呼ばれた直後、終端結果を返す前に発火する任意フック。
+   * T-18 で長時間待機を停止したり、待機中の force-unlock を注入したりする。
+   */
+  onWaitForStack?: (stackName: string) => void | Promise<void>;
 
   /**
    * listChangeSets の呼び出し直前(結果を組み立てる前)に発火するフック。
@@ -179,6 +188,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   }
 
   async deleteStack(stackName: string): Promise<void> {
+    if (this.stacks.get(stackName)?.status === 'REVIEW_IN_PROGRESS') {
+      this.reviewInProgressDeleteCalls.push(stackName);
+    }
     this.record('deleteStack', stackName);
   }
 
@@ -198,6 +210,7 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 
   async waitForStack(stackName: string, opts?: WaitForStackOptions): Promise<StackSummary> {
     this.record('waitForStack', stackName, opts);
+    await this.onWaitForStack?.(stackName);
     for (const event of this.waitEvents.get(stackName) ?? []) {
       opts?.onEvent?.(event);
     }
@@ -218,11 +231,21 @@ export class FakeStateBackend implements StateBackend {
   stored: { state: CfnSyncState; version: StateVersion } | undefined;
   readonly calls: CallRecord[] = [];
   readonly saveCalls: Array<{ state: CfnSyncState; expected: StateVersion | undefined }> = [];
+  /** save が投げたエラーの記録(T-18 で CAS 競合の型まで検証する)。 */
+  readonly saveErrors: Error[] = [];
   verifyLockPlan: boolean[] = [];
   failAcquire = false;
+  /** true のとき、保持中ロックへの追加 acquire を LockError にする(T-18 並行開始用)。 */
+  rejectConcurrentAcquire = false;
   saveError: Error | undefined;
   releaseCalls = 0;
+  /**
+   * verifyLock の判定を確定した直後、呼び出し元へ返す前に発火する任意フック。
+   * 判定と副作用の競合窓に所有権交代を注入できる。
+   */
+  onVerifyLock?: (handle: LockHandle, callCount: number, verified: boolean) => void | Promise<void>;
   private lock: LockHandle | undefined;
+  private verifyLockCalls = 0;
 
   constructor(
     private readonly timeline: string[] = [],
@@ -251,13 +274,18 @@ export class FakeStateBackend implements StateBackend {
   async save(state: CfnSyncState, expected: StateVersion | undefined): Promise<StateVersion> {
     this.record('save', state, expected);
     this.saveCalls.push({ state, expected });
-    if (this.saveError) throw this.saveError;
+    if (this.saveError) {
+      this.saveErrors.push(this.saveError);
+      throw this.saveError;
+    }
     const currentGeneration = this.stored?.version.generation;
     if (
       (expected === undefined && this.stored !== undefined) ||
       (expected !== undefined && expected.generation !== currentGeneration)
     ) {
-      throw new StateConflictError('世代不一致(fake CAS)');
+      const error = new StateConflictError('世代不一致(fake CAS)');
+      this.saveErrors.push(error);
+      throw error;
     }
     const version: StateVersion = { generation: state.generation };
     this.stored = { state, version };
@@ -266,15 +294,22 @@ export class FakeStateBackend implements StateBackend {
 
   async acquireLock(info: LockInfo): Promise<LockHandle> {
     this.record('acquireLock', info);
-    if (this.failAcquire) throw new LockError('別の実行がロックを保持しています(fake)');
+    if (this.failAcquire || (this.rejectConcurrentAcquire && this.lock !== undefined)) {
+      throw new LockError('別の実行がロックを保持しています(fake)');
+    }
     this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
     return this.lock;
   }
 
   async verifyLock(handle: LockHandle): Promise<boolean> {
     this.record('verifyLock', handle);
-    if (this.verifyLockPlan.length > 0) return this.verifyLockPlan.shift() as boolean;
-    return this.lock?.runId === handle.runId;
+    this.verifyLockCalls += 1;
+    const verified =
+      this.verifyLockPlan.length > 0
+        ? (this.verifyLockPlan.shift() as boolean)
+        : this.lock?.runId === handle.runId;
+    await this.onVerifyLock?.(handle, this.verifyLockCalls, verified);
+    return verified;
   }
 
   async releaseLock(handle: LockHandle): Promise<{ released: boolean; reason?: string }> {
