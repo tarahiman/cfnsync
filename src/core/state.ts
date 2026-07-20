@@ -212,3 +212,10 @@ export function removeStackEntry(
 export function sha256Hex(data: string): string {
   return `sha256:${createHash('sha256').update(data, 'utf8').digest('hex')}`;
 }
+
+/** バックエンド識別子から変更セット命名用の短縮ハッシュを導出する。 */
+export function shortStateId(identifier: string): string {
+  return sha256Hex(identifier)
+    .replace(/^sha256:/, '')
+    .slice(0, 12);
+}

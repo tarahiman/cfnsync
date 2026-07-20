@@ -1,10 +1,11 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   type CfnSyncConfig,
   findRequiredPlaceholders,
-  loadConfig,
+  parseConfig,
   resolveTargets,
   validateConfig,
 } from '../../src/core/config.js';
@@ -27,12 +28,17 @@ function minimalRaw(
 
 const alwaysExists = { templateExists: () => true };
 
+function parseFixture(name: string): CfnSyncConfig {
+  return parseConfig(readFileSync(resolve(fixturesDir, name), 'utf8'), {
+    templateExists: (templatePath) =>
+      existsSync(resolve(fixturesDir, templatePath)),
+  });
+}
+
 describe('core/config', () => {
   describe('loadConfig / validateConfig — FR-11-1: 全項目を含む cfnsync.yaml', () => {
-    it('zod 検証を通過し、型付きの設定オブジェクトになる', () => {
-      const config = loadConfig(
-        resolve(fixturesDir, 'valid-full.cfnsync.yaml'),
-      );
+    it('FR-11-1: zod 検証を通過し、型付きの設定オブジェクトになる', () => {
+      const config = parseFixture('valid-full.cfnsync.yaml');
 
       expect(config.version).toBe(1);
       expect(config.allowedAccounts).toEqual(['123456789012']);
@@ -62,10 +68,8 @@ describe('core/config', () => {
       expect(database.regionOverrides).toEqual({});
     });
 
-    it('(実装仕様) パラメータ値の数値・真偽値を文字列へ正規化する', () => {
-      const config = loadConfig(
-        resolve(fixturesDir, 'valid-full.cfnsync.yaml'),
-      );
+    it('internal: パラメータ値の数値・真偽値を文字列へ正規化する', () => {
+      const config = parseFixture('valid-full.cfnsync.yaml');
       const network = config.stacks['templates/network.yaml'];
       expect(network.parameters.InstanceCount).toBe('3');
       expect(network.parameters.EnableNat).toBe('true');
@@ -74,12 +78,12 @@ describe('core/config', () => {
   });
 
   describe('FR-11-2: ステートバックエンド', () => {
-    it('state 省略時は backend: local になる', () => {
+    it('FR-11-2: state 省略時は backend: local になる', () => {
       const config = validateConfig(minimalRaw(), alwaysExists);
       expect(config.state).toEqual({ backend: 'local' });
     });
 
-    it('backend: s3 で bucket/key/region が揃っていれば通過する', () => {
+    it('FR-11-2: backend: s3 で bucket/key/region が揃っていれば通過する', () => {
       const config = validateConfig(
         minimalRaw({
           state: {
@@ -103,7 +107,7 @@ describe('core/config', () => {
       });
     });
 
-    it('backend: s3 で bucket が欠落しているとエラーになる', () => {
+    it('FR-11-2: backend: s3 で bucket が欠落しているとエラーになる', () => {
       expect(() =>
         validateConfig(
           minimalRaw({
@@ -135,7 +139,7 @@ describe('core/config', () => {
   });
 
   describe('FR-11-3: スタック名未設定時の導出規約', () => {
-    it('stackName 省略時に stackNamePrefix + ファイル名(拡張子除去)が導出される', () => {
+    it('FR-11-3: stackName 省略時に stackNamePrefix + ファイル名(拡張子除去)が導出される', () => {
       const config = validateConfig(
         minimalRaw({
           stackNamePrefix: 'legacy-app-',
@@ -147,7 +151,7 @@ describe('core/config', () => {
       expect(target.stackName).toBe('legacy-app-network');
     });
 
-    it('stackNamePrefix 未設定ならファイル名のみが使われる', () => {
+    it('FR-11-3: stackNamePrefix 未設定ならファイル名のみが使われる', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'network.yaml': {} } }),
         alwaysExists,
@@ -163,7 +167,7 @@ describe('core/config', () => {
       'nested/../../outside.yaml',
       '/etc/x.yaml',
       'nested/stack.yaml\0outside',
-    ])('テンプレートパス %s は設定ディレクトリ外を指すため ConfigError になる(対象キーを含む)', (templatePath) => {
+    ])('FR-11-5: テンプレートパス %s は設定ディレクトリ外を指すため ConfigError になる(対象キーを含む)', (templatePath) => {
       try {
         validateConfig(
           minimalRaw({ stacks: { [templatePath]: {} } }),
@@ -176,7 +180,7 @@ describe('core/config', () => {
       }
     });
 
-    it('サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
+    it('FR-11-5: サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'nested/stack.yaml': {} } }),
         alwaysExists,
@@ -184,13 +188,13 @@ describe('core/config', () => {
       expect(config.stacks['nested/stack.yaml']).toBeDefined();
     });
 
-    it('存在しないテンプレートへの参照は ConfigError になる(対象パスを含む)', () => {
-      expect(() =>
-        loadConfig(resolve(fixturesDir, 'missing-template.cfnsync.yaml')),
-      ).toThrow(ConfigError);
+    it('FR-11-5: 存在しないテンプレートへの参照は ConfigError になる(対象パスを含む)', () => {
+      expect(() => parseFixture('missing-template.cfnsync.yaml')).toThrow(
+        ConfigError,
+      );
 
       try {
-        loadConfig(resolve(fixturesDir, 'missing-template.cfnsync.yaml'));
+        parseFixture('missing-template.cfnsync.yaml');
         expect.unreachable('ConfigError が送出されるはず');
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
@@ -200,7 +204,7 @@ describe('core/config', () => {
       }
     });
 
-    it('必須項目(defaultRegion)の欠落は ConfigError になる(対象キーを含む)', () => {
+    it('FR-11-5: 必須項目(defaultRegion)の欠落は ConfigError になる(対象キーを含む)', () => {
       const raw = { version: 1, stacks: {} };
       expect(() => validateConfig(raw, alwaysExists)).toThrow(ConfigError);
       try {
@@ -212,7 +216,7 @@ describe('core/config', () => {
       }
     });
 
-    it('不正な型(regions が配列でない)は ConfigError になる(対象キーを含む)', () => {
+    it('FR-11-5: 不正な型(regions が配列でない)は ConfigError になる(対象キーを含む)', () => {
       const raw = minimalRaw({
         stacks: { 'network.yaml': { regions: 'ap-northeast-1' } },
       });
@@ -227,10 +231,53 @@ describe('core/config', () => {
         expect(message).toContain('regions');
       }
     });
+
+    it('FR-8-2: 存在しない dependsOn は対象スタックキー付き ConfigError で拒否する', () => {
+      expect(() =>
+        validateConfig(
+          minimalRaw({
+            stacks: {
+              'app.yaml': { dependsOn: ['missing.yaml'] },
+            },
+          }),
+          alwaysExists,
+        ),
+      ).toThrowError(/app\.yaml@ap-northeast-1.*region: ap-northeast-1/);
+    });
+
+    it('FR-8-2: 別リージョンにしか存在しない dependsOn も fail-closed で拒否する', () => {
+      expect(() =>
+        validateConfig(
+          minimalRaw({
+            stacks: {
+              'network.yaml': { regions: ['us-east-1'] },
+              'app.yaml': {
+                regions: ['ap-northeast-1'],
+                dependsOn: ['network.yaml'],
+              },
+            },
+          }),
+          alwaysExists,
+        ),
+      ).toThrowError(/network\.yaml@ap-northeast-1/);
+    });
+
+    it('FR-2-5: 未知の capability は設定検証で拒否する', () => {
+      expect(() =>
+        validateConfig(
+          minimalRaw({
+            stacks: {
+              'app.yaml': { capabilities: ['CAPABILITY_UNKNOWN'] },
+            },
+          }),
+          alwaysExists,
+        ),
+      ).toThrow(ConfigError);
+    });
   });
 
   describe('FR-13-1: マルチリージョン指定', () => {
-    it('regions 指定はその内容(順序含む)が保持される', () => {
+    it('FR-13-1: regions 指定はその内容(順序含む)が保持される', () => {
       const config = validateConfig(
         minimalRaw({
           stacks: {
@@ -246,7 +293,7 @@ describe('core/config', () => {
       ]);
     });
 
-    it('regions 省略時は [defaultRegion] になる', () => {
+    it('FR-13-1: regions 省略時は [defaultRegion] になる', () => {
       const config = validateConfig(
         minimalRaw({
           defaultRegion: 'ap-northeast-1',
@@ -285,14 +332,14 @@ describe('core/config', () => {
       );
     });
 
-    it('regionOverrides のあるリージョンは浅いマージで実効値が決まる', () => {
+    it('FR-13-3: regionOverrides のあるリージョンは浅いマージで実効値が決まる', () => {
       const targets = resolveTargets(config);
       const usEast1 = targets.find((t) => t.region === 'us-east-1')!;
       expect(usEast1.parameters).toEqual({ VpcCidr: '10.1.0.0/16' });
       expect(usEast1.tags).toEqual({ Project: 'legacy-app', Region: 'us' });
     });
 
-    it('regionOverrides のないリージョンは共通値のみになる', () => {
+    it('FR-13-3: regionOverrides のないリージョンは共通値のみになる', () => {
       const targets = resolveTargets(config);
       const apNortheast1 = targets.find((t) => t.region === 'ap-northeast-1')!;
       expect(apNortheast1.parameters).toEqual({ VpcCidr: '10.0.0.0/16' });
@@ -301,7 +348,7 @@ describe('core/config', () => {
   });
 
   describe('FR-7-5(前半): 許可アカウント・許可リージョン', () => {
-    it('allowedAccounts / allowedRegions が設定ファイルから読み取れる', () => {
+    it('FR-7-5: allowedAccounts / allowedRegions が設定ファイルから読み取れる', () => {
       const config = validateConfig(
         minimalRaw({
           allowedAccounts: ['123456789012'],
@@ -313,7 +360,7 @@ describe('core/config', () => {
       expect(config.allowedRegions).toEqual(['ap-northeast-1']);
     });
 
-    it('allowedAccounts / allowedRegions は省略可能(検証の強制は T-12)', () => {
+    it('FR-7-5: allowedAccounts / allowedRegions は省略可能(検証の強制は usecase)', () => {
       const config = validateConfig(minimalRaw(), alwaysExists);
       expect(config.allowedAccounts).toBeUndefined();
       expect(config.allowedRegions).toBeUndefined();
@@ -321,7 +368,7 @@ describe('core/config', () => {
   });
 
   describe('§8.2: __REQUIRED__ プレースホルダの検出', () => {
-    it('値が __REQUIRED__ のパラメータ名を列挙する', () => {
+    it('§8.2: 値が __REQUIRED__ のパラメータ名を列挙する', () => {
       const config = validateConfig(
         minimalRaw({
           stacks: {
@@ -339,7 +386,7 @@ describe('core/config', () => {
       expect(findRequiredPlaceholders(target)).toEqual(['DbPassword']);
     });
 
-    it('プレースホルダが残っていなければ空配列になる', () => {
+    it('§8.2: プレースホルダが残っていなければ空配列になる', () => {
       const config = validateConfig(
         minimalRaw({
           stacks: {
@@ -354,10 +401,8 @@ describe('core/config', () => {
   });
 
   describe('resolveTargets の記載順保持契約', () => {
-    it('stacks の記載順・regions の記載順を保持して展開する', () => {
-      const config = loadConfig(
-        resolve(fixturesDir, 'valid-full.cfnsync.yaml'),
-      );
+    it('internal: stacks の記載順・regions の記載順を保持して展開する', () => {
+      const config = parseFixture('valid-full.cfnsync.yaml');
       const targets = resolveTargets(config);
       expect(targets.map((t) => t.stackKey)).toEqual([
         'templates/network.yaml@us-east-1',

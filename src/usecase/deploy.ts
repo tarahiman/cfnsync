@@ -21,7 +21,11 @@ import {
   type DetectionResult,
   detectChanges,
 } from '../core/detect.js';
-import { LockError, StackStateError } from '../core/errors.js';
+import {
+  LockError,
+  StackStateError,
+  StatePersistenceError,
+} from '../core/errors.js';
 import {
   buildGraphs,
   mergeGraphs,
@@ -62,7 +66,7 @@ import {
   type StackEventLine,
   type StackResult,
 } from '../report/index.js';
-import { DeleteStateSaveError, deleteManagedStack } from './delete.js';
+import { deleteManagedStack } from './delete.js';
 import {
   createManagedChangeSet,
   type ExecutorContext,
@@ -72,7 +76,7 @@ import {
   prepareStack,
   reclaimStaleChangeSets,
 } from './executor.js';
-import { assertFenced, fencedBackend } from './fencing.js';
+import { assertFenced, fencedGateway, withFencedLock } from './fencing.js';
 import {
   assertAccountAllowed,
   assertMutationAllowed,
@@ -148,9 +152,6 @@ interface OperationResult {
   failed?: boolean;
 }
 
-/** AWS 成功後の state 永続化失敗は後続スタックへ進めない全体停止条件。 */
-class StateSaveError extends Error {}
-
 // ===========================================================================
 // deploy 公開入口
 // ===========================================================================
@@ -193,51 +194,45 @@ export async function deploy(input: {
   }
 
   const runId = (deps.runId ?? newRunId)();
-  let lock: LockHandle;
   try {
-    lock = await deps.backend.acquireLock({
-      runId,
-      startedAt: now(deps).toISOString(),
-      owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
+    return await withFencedLock({
+      backend: deps.backend,
+      info: {
+        runId,
+        startedAt: now(deps).toISOString(),
+        owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
+      },
+      run: async ({ lock, backend }) => {
+        try {
+          const state = await verifyStateAccount({
+            backend,
+            accountId: connection.accountId,
+          });
+          return await runLocked({
+            config,
+            templates,
+            deps,
+            options,
+            targets,
+            connection,
+            lock,
+            runId,
+            state,
+            required,
+          });
+        } catch (error) {
+          return failureResult(
+            connection,
+            requiredResults(required, targets),
+            error,
+          );
+        }
+      },
+      onReleaseError: (result, error) => appendDeployFailure(result, error),
     });
   } catch (error) {
     return failedBeforeLock(connection, required, targets, error);
   }
-
-  let result: DeployResult;
-  try {
-    // verifyStateAccount の初回 accountId 保存も fencing 対象にするため proxy を渡す。
-    const state = await verifyStateAccount({
-      backend: fencedBackend(deps.backend, lock),
-      accountId: connection.accountId,
-    });
-    result = await runLocked({
-      config,
-      templates,
-      deps,
-      options,
-      targets,
-      connection,
-      lock,
-      runId,
-      state,
-      required,
-    });
-  } catch (error) {
-    result = failureResult(
-      connection,
-      requiredResults(required, targets),
-      error,
-    );
-  }
-
-  try {
-    // FR-1-7: 正常・異常・所有権喪失を問わず条件付き解放を試みる。
-    await deps.backend.releaseLock(lock);
-  } catch (error) {
-    result = appendDeployFailure(result, error);
-  }
-  return result;
 }
 
 // ===========================================================================
@@ -321,8 +316,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
         if (
           error instanceof LockError ||
-          error instanceof StateSaveError ||
-          error instanceof DeleteStateSaveError
+          error instanceof StatePersistenceError
         ) {
           ownershipLost = true;
           break;
@@ -809,53 +803,13 @@ async function saveState(
   try {
     version = await ctx.deps.backend.save(payload, ctx.state.version);
   } catch (cause) {
-    throw new StateSaveError(
+    throw new StatePersistenceError(
       'ステートの CAS 保存に失敗したため、以降の処理を中断します',
       { cause },
     );
   }
   ctx.state.state = payload;
   ctx.state.version = version;
-}
-
-// ===========================================================================
-// fencing proxy
-// ===========================================================================
-
-function fencedGateway(
-  gateway: CloudFormationGateway,
-  backend: StateBackend,
-  lock: LockHandle,
-): CloudFormationGateway {
-  return {
-    describeStack: (stackName) => gateway.describeStack(stackName),
-    listChangeSets: (stackName) => gateway.listChangeSets(stackName),
-    describeChangeSet: (stackName, changeSetName) =>
-      gateway.describeChangeSet(stackName, changeSetName),
-    waitForChangeSet: (stackName, changeSetName) =>
-      gateway.waitForChangeSet(stackName, changeSetName),
-    describeStackEvents: (stackName, seen, after) =>
-      gateway.describeStackEvents(stackName, seen, after),
-    getStackEventCursor: (stackName) => gateway.getStackEventCursor(stackName),
-    getTemplate: (stackName, stage) => gateway.getTemplate(stackName, stage),
-    waitForStack: (stackName, opts) => gateway.waitForStack(stackName, opts),
-    async createChangeSet(changeSetInput) {
-      await assertFenced(backend, lock);
-      return gateway.createChangeSet(changeSetInput);
-    },
-    async deleteChangeSet(stackName, changeSetName) {
-      await assertFenced(backend, lock);
-      return gateway.deleteChangeSet(stackName, changeSetName);
-    },
-    async executeChangeSet(stackName, changeSetName) {
-      await assertFenced(backend, lock);
-      return gateway.executeChangeSet(stackName, changeSetName);
-    },
-    async deleteStack(stackName) {
-      await assertFenced(backend, lock);
-      return gateway.deleteStack(stackName);
-    },
-  };
 }
 
 // ===========================================================================

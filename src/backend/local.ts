@@ -17,7 +17,7 @@ import {
   type CfnSyncState,
   parseState,
   serializeState,
-  sha256Hex,
+  shortStateId,
 } from '../core/state.js';
 import type {
   LockHandle,
@@ -26,6 +26,9 @@ import type {
   StateVersion,
 } from '../ports/index.js';
 
+/** local backend のステートファイル名。composition root が配置先を決める。 */
+export const LOCAL_STATE_FILENAME = 'cfnsync.state.json';
+
 /** テスト用の注入点。実運用では未指定(既定 no-op)。 */
 export interface LocalStateBackendOptions {
   /**
@@ -33,13 +36,6 @@ export interface LocalStateBackendOptions {
    * 模すために例外を注入する(FR-1-12。design §10 の障害注入)。
    */
   onBeforeRename?: () => void | Promise<void>;
-}
-
-/** バックエンド識別子から変更セット命名用の短縮ハッシュを導出する(§7)。 */
-function shortStateId(identifier: string): string {
-  return sha256Hex(identifier)
-    .replace(/^sha256:/, '')
-    .slice(0, 12);
 }
 
 export class LocalStateBackend implements StateBackend {

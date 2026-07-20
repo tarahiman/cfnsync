@@ -421,16 +421,17 @@ describe('§7: スタック状態取得', () => {
     expect(await gateway.describeStack('stk')).toBeUndefined();
   });
 
-  it('§7: describeStack は不存在以外のエラー(AccessDenied)は伝播する', async () => {
+  it('§7: describeStack は不存在以外の SDK エラーを AwsError に変換する', async () => {
     cfnMock
       .on(DescribeStacksCommand)
       .rejects(
         Object.assign(new Error('not authorized'), { name: 'AccessDenied' }),
       );
     const gateway = makeGateway();
-    await expect(gateway.describeStack('stk')).rejects.toThrow(
-      /not authorized/,
-    );
+    await expect(gateway.describeStack('stk')).rejects.toMatchObject({
+      name: 'AwsError',
+      message: expect.stringMatching(/not authorized/),
+    });
   });
 });
 
@@ -534,7 +535,7 @@ describe('§7: GetTemplate(復旧比較・import 基盤)', () => {
 // ---------------------------------------------------------------------------
 
 describe('待機(ポーリング間隔は注入で 0ms)', () => {
-  it('waitForChangeSet は CREATE_COMPLETE までポーリングして詳細を返す', async () => {
+  it('internal: waitForChangeSet は CREATE_COMPLETE までポーリングして詳細を返す', async () => {
     cfnMock
       .on(DescribeChangeSetCommand)
       .resolvesOnce({ Status: 'CREATE_IN_PROGRESS', Changes: [] })
@@ -550,7 +551,7 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
-  it('waitForChangeSet は FAILED(空変更セット)でも終端として返す', async () => {
+  it('internal: waitForChangeSet は FAILED(空変更セット)でも終端として返す', async () => {
     cfnMock.on(DescribeChangeSetCommand).resolves({
       Status: 'FAILED',
       StatusReason: "The submitted information didn't contain changes.",
@@ -562,7 +563,7 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     expect(detail.statusReason).toMatch(/didn't contain changes/);
   });
 
-  it('waitForStack は終端(*_IN_PROGRESS でない)まで待機し、新着イベントを古い順で onEvent 通知する(重複なし)', async () => {
+  it('FR-4-1: waitForStack は終端まで待機し、新着イベントを古い順で onEvent 通知する(重複なし)', async () => {
     cfnMock
       .on(DescribeStacksCommand)
       .resolvesOnce({

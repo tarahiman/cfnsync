@@ -303,16 +303,16 @@ describe('core/state — FR-8-5(記録): 依存辺(exports/imports)の記録', (
 });
 
 describe('core/state — sha256Hex ユーティリティ(§4.3 の templateHash/inputsHash 表記)', () => {
-  it('sha256Hex は "sha256:<64桁hex>" 形式を返す', () => {
+  it('internal: sha256Hex は "sha256:<64桁hex>" 形式を返す', () => {
     const hash = sha256Hex('hello world');
     expect(hash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  it('sha256Hex は同一入力に対して決定的である', () => {
+  it('internal: sha256Hex は同一入力に対して決定的である', () => {
     expect(sha256Hex('same input')).toBe(sha256Hex('same input'));
   });
 
-  it('sha256Hex は異なる入力に対して異なるハッシュを返す', () => {
+  it('internal: sha256Hex は異なる入力に対して異なるハッシュを返す', () => {
     expect(sha256Hex('input-a')).not.toBe(sha256Hex('input-b'));
   });
 });

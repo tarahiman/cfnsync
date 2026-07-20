@@ -11,7 +11,6 @@
  */
 
 import {
-  type Capability,
   CloudFormationClient,
   CreateChangeSetCommand,
   DeleteChangeSetCommand,
@@ -39,6 +38,7 @@ import type {
   TemplateStage,
   WaitForStackOptions,
 } from '../ports/index.js';
+import { errorMessage, errorName, toAwsError } from './errors.js';
 
 /** `CloudFormationGatewayImpl` のコンストラクタオプション。 */
 export interface CloudFormationGatewayOptions {
@@ -73,16 +73,6 @@ const THROTTLING_ERROR_NAMES = new Set([
   'RequestLimitExceeded',
   'ProvisionedThroughputExceededException',
 ]);
-
-function errorName(err: unknown): string | undefined {
-  return typeof err === 'object' && err !== null && 'name' in err
-    ? ((err as { name?: unknown }).name as string | undefined)
-    : undefined;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function isThrottlingError(err: unknown): boolean {
   const name = errorName(err);
@@ -193,7 +183,11 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
    * SDK 呼び出しをスロットリングリトライで包む(NFR-3)。スロットリング名のエラーのみ
    * 指数バックオフ(注入 sleep)で再試行し、上限超過・非スロットリングは即伝播する。
    */
-  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  private async withRetry<T>(
+    operation: string,
+    fn: () => Promise<T>,
+    passthrough?: (error: unknown) => boolean,
+  ): Promise<T> {
     let attempt = 0;
     const startedAt = this.retryNow();
     for (;;) {
@@ -203,21 +197,22 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
         if (isThrottlingError(err) && attempt < this.maxRetries) {
           const elapsed = Math.max(0, this.retryNow() - startedAt);
           const remaining = this.maxRetryElapsedMs - elapsed;
-          if (remaining <= 0) throw err;
-
-          // Full jitter: [0, exponential cap)。上限までの残り時間を超えて待たない。
-          const exponentialCap = this.baseDelayMs * 2 ** attempt;
-          const delay = Math.min(
-            Math.floor(this.random() * exponentialCap),
-            remaining,
-          );
-          await this.sleep(delay);
-          // 上限ちょうどまで sleep した場合は、次の SDK attempts を開始しない。
-          if (this.retryNow() - startedAt >= this.maxRetryElapsedMs) throw err;
-          attempt += 1;
-          continue;
+          if (remaining > 0) {
+            // Full jitter: [0, exponential cap)。上限までの残り時間を超えて待たない。
+            const exponentialCap = this.baseDelayMs * 2 ** attempt;
+            const delay = Math.min(
+              Math.floor(this.random() * exponentialCap),
+              remaining,
+            );
+            await this.sleep(delay);
+            if (this.retryNow() - startedAt < this.maxRetryElapsedMs) {
+              attempt += 1;
+              continue;
+            }
+          }
         }
-        throw err;
+        if (passthrough?.(err)) throw err;
+        throw toAwsError(`CloudFormation ${operation}`, err);
       }
     }
   }
@@ -225,8 +220,11 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   async describeStack(stackName: string): Promise<StackSummary | undefined> {
     let output: DescribeStacksCommandOutput;
     try {
-      output = await this.withRetry(() =>
-        this.client.send(new DescribeStacksCommand({ StackName: stackName })),
+      output = await this.withRetry(
+        'DescribeStacks',
+        () =>
+          this.client.send(new DescribeStacksCommand({ StackName: stackName })),
+        isStackNotExistError,
       );
     } catch (err) {
       // §7: スタック不存在(ValidationError)は「スタックなし」= undefined に吸収。
@@ -268,7 +266,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
     // §7(Codex 承認条件): NextToken を辿って全ページを走査する。
     do {
-      const output = await this.withRetry(() =>
+      const output = await this.withRetry('ListChangeSets', () =>
         this.client.send(
           new ListChangeSetsCommand({
             StackName: stackName,
@@ -293,7 +291,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   }
 
   async createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }> {
-    const output = await this.withRetry(() =>
+    const output = await this.withRetry('CreateChangeSet', () =>
       this.client.send(
         new CreateChangeSetCommand({
           StackName: input.stackName,
@@ -301,8 +299,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
           ChangeSetType: input.changeSetType,
           TemplateBody: input.templateBody,
           Parameters: recordToParameters(input.parameters),
-          // config は Capabilities を string[] で保持する。SDK の Capability 列挙へ境界でキャスト。
-          Capabilities: input.capabilities as Capability[],
+          Capabilities: input.capabilities,
           Tags: recordToTags(input.tags),
           Description: input.description,
         }),
@@ -321,7 +318,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
     // Changes の NextToken を辿って全ページ結合(FR-2 / FR-3)。
     do {
-      const output = await this.withRetry(() =>
+      const output = await this.withRetry('DescribeChangeSet', () =>
         this.client.send(
           new DescribeChangeSetCommand({
             StackName: stackName,
@@ -384,7 +381,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     stackName: string,
     changeSetName: string,
   ): Promise<void> {
-    await this.withRetry(() =>
+    await this.withRetry('DeleteChangeSet', () =>
       this.client.send(
         new DeleteChangeSetCommand({
           StackName: stackName,
@@ -398,7 +395,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     stackName: string,
     changeSetName: string,
   ): Promise<void> {
-    await this.withRetry(() =>
+    await this.withRetry('ExecuteChangeSet', () =>
       this.client.send(
         new ExecuteChangeSetCommand({
           StackName: stackName,
@@ -409,14 +406,14 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   }
 
   async deleteStack(stackName: string): Promise<void> {
-    await this.withRetry(() =>
+    await this.withRetry('DeleteStack', () =>
       this.client.send(new DeleteStackCommand({ StackName: stackName })),
     );
   }
 
   async getStackEventCursor(stackName: string): Promise<StackEventCursor> {
     const capturedAt = new Date().toISOString();
-    const output = await this.withRetry(() =>
+    const output = await this.withRetry('DescribeStackEvents', () =>
       this.client.send(
         new DescribeStackEventsCommand({ StackName: stackName }),
       ),
@@ -439,7 +436,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     let nextToken: string | undefined;
 
     do {
-      const output = await this.withRetry(() =>
+      const output = await this.withRetry('DescribeStackEvents', () =>
         this.client.send(
           new DescribeStackEventsCommand({
             StackName: stackName,
@@ -486,7 +483,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   }
 
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
-    const output = await this.withRetry(() =>
+    const output = await this.withRetry('GetTemplate', () =>
       this.client.send(
         new GetTemplateCommand({ StackName: stackName, TemplateStage: stage }),
       ),

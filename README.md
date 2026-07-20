@@ -130,10 +130,10 @@ npx cfnsync import --reconcile local
 
 ### `force-unlock <runId>`
 
-S3 に残存したステートロックを、指定した実行 ID と所有者が一致する場合だけ条件付きで解除します。
+S3 に残存したステートロックを読み取り、指定した 16 桁 hex の実行 ID（`runId`）が一致する場合だけ、読み取り時の ETag を `If-Match` に指定して条件付きで解除します。読み取り後にロックが交代していれば解除しません。
 
 ```sh
-npx cfnsync force-unlock 550e8400-e29b-41d4-a716-446655440000
+npx cfnsync force-unlock a1b2c3d4e5f60718
 ```
 
 このコマンドは、ロックを保持していた旧実行が終了していることを確認した後にだけ使用してください。

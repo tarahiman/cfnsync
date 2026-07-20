@@ -172,7 +172,7 @@ stacks:
 
 ### 5.1 `cfnsync status`
 
-config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。AWS 呼び出しなし(NFR-5)。終了コード 0。
+config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。CloudFormation / STS は呼び出さない(NFR-5)。S3 state backend を選択した場合のステート読み取りは除く。終了コード 0。
 
 ### 5.2 `cfnsync plan`(dry-run)
 

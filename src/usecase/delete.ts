@@ -7,7 +7,7 @@
  * 一貫性は StateBackend.save の CAS が担う。
  */
 
-import { LockError, StackStateError } from '../core/errors.js';
+import { StackStateError, StatePersistenceError } from '../core/errors.js';
 import {
   type CfnSyncState,
   prepareSave,
@@ -21,6 +21,7 @@ import type {
   StateBackend,
   StateVersion,
 } from '../ports/index.js';
+import { assertFenced } from './fencing.js';
 
 export interface ManagedDeleteTarget {
   stackKey: StackKey;
@@ -44,14 +45,11 @@ export interface DeleteManagedStackResult {
   errorMessage?: string;
 }
 
-/** DeleteStack 成功後の CAS 永続化失敗。後続削除へ進んではならない全体停止条件。 */
-export class DeleteStateSaveError extends Error {}
-
 /**
  * 1 スタックを削除し、成功直後に state から除去して CAS 保存する。
  *
  * `refused` はその対象だけの安全な拒否(依存情報欠落・削除保護)。LockError、
- * DeleteStateSaveError、DeleteStack/waitForStack の失敗は例外として伝播し、呼び出し側が
+ * StatePersistenceError、DeleteStack/waitForStack の失敗は例外として伝播し、呼び出し側が
  * 後続副作用を停止または失敗方針に従って処理する。
  */
 export async function deleteManagedStack(
@@ -113,7 +111,7 @@ export async function deleteManagedStack(
   }
 
   // FR-1-9(削除): DeleteStack の実 API 呼び出し直前に fencing。
-  await assertDeleteFenced(backend, lock);
+  await assertFenced(backend, lock);
   await cfn.deleteStack(target.entry.stackName);
 
   // §8.3: CloudFormation がスタック不存在を DELETE_COMPLETE に正規化するまで待つ。
@@ -145,29 +143,18 @@ async function saveDeletedState(
 ): Promise<DeleteManagedStackResult> {
   const { target, backend, lock } = input;
   // §8.3 / FR-1-9: 削除完了(不存在復旧を含む)後、state CAS 保存の直前に fencing。
-  await assertDeleteFenced(backend, lock);
+  await assertFenced(backend, lock);
   const nextState = prepareSave(removeStackEntry(input.state, target.stackKey));
   let nextVersion: StateVersion;
   try {
     nextVersion = await backend.save(nextState, input.version);
   } catch (cause) {
-    throw new DeleteStateSaveError(
+    throw new StatePersistenceError(
       `スタック '${target.entry.stackName}' は削除済みですが state の CAS 保存に失敗しました。` +
         `後続削除を中断し、再実行で復旧してください`,
-      { cause },
+      { stackKey: target.stackKey, region: target.region, cause },
     );
   }
 
   return { outcome: 'deleted', state: nextState, version: nextVersion };
-}
-
-async function assertDeleteFenced(
-  backend: StateBackend,
-  lock: LockHandle,
-): Promise<void> {
-  if (!(await backend.verifyLock(lock))) {
-    throw new LockError(
-      'ステートロックの所有権を失いました。以降の削除・保存を中断します(fencing)',
-    );
-  }
 }

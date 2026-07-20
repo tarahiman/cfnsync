@@ -16,8 +16,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { S3StateBackend } from '../../src/aws/s3state.js';
-import { createStateBackend } from '../../src/backend/factory.js';
 import { LocalStateBackend } from '../../src/backend/local.js';
+import { defaultCliDependencies } from '../../src/cli/dependencies.js';
+import type { CfnSyncConfig } from '../../src/core/config.js';
 import { StateConflictError } from '../../src/core/errors.js';
 import {
   type CfnSyncState,
@@ -50,12 +51,12 @@ function stateWith(
 }
 
 describe('LocalStateBackend', () => {
-  it('load: ファイル未存在なら undefined を返す', async () => {
+  it('FR-1-4: load はファイル未存在なら undefined を返す', async () => {
     const backend = new LocalStateBackend(statePath);
     expect(await backend.load()).toBeUndefined();
   });
 
-  it('load/save: 保存したステートを読み戻せる(version は generation)', async () => {
+  it('FR-1-4: load/save で保存したステートを読み戻せる(version は generation)', async () => {
     const backend = new LocalStateBackend(statePath);
     const version = await backend.save(stateWith(1), undefined);
     expect(version).toEqual({ generation: 1 });
@@ -136,7 +137,7 @@ describe('LocalStateBackend', () => {
     await expect(backend.load()).rejects.toBeInstanceOf(StateCorruptionError);
   });
 
-  it('local はロックを持たない(design §4.5): 取得は常に成功・検証は常に true', async () => {
+  it('FR-1-7: local はロックを持たず取得は常に成功・検証は常に true', async () => {
     const backend = new LocalStateBackend(statePath);
     const handle = await backend.acquireLock({
       runId: 'r1',
@@ -153,7 +154,7 @@ describe('LocalStateBackend', () => {
     });
   });
 
-  it('stateId: ステートファイル絶対パスから安定な短縮ハッシュを導出する', async () => {
+  it('internal: stateId はステートファイル絶対パスから安定な短縮ハッシュを導出する', async () => {
     const a = new LocalStateBackend(statePath).stateId();
     const b = new LocalStateBackend(statePath).stateId();
     const other = new LocalStateBackend(
@@ -167,16 +168,24 @@ describe('LocalStateBackend', () => {
 
 describe('createStateBackend (FR-1-4)', () => {
   it('FR-1-4: backend: local → LocalStateBackend が選択される', () => {
-    const backend = createStateBackend({
-      stateConfig: { backend: 'local' },
+    const config: CfnSyncConfig = {
+      version: 1,
+      defaultRegion: 'ap-northeast-1',
+      state: { backend: 'local' },
+      stacks: {},
+    };
+    const backend = defaultCliDependencies.createBackend({
+      config,
       configDir: dir,
     });
     expect(backend).toBeInstanceOf(LocalStateBackend);
   });
 
   it('FR-1-4: backend: s3 → S3StateBackend が選択される', () => {
-    const backend = createStateBackend({
-      stateConfig: {
+    const config: CfnSyncConfig = {
+      version: 1,
+      defaultRegion: 'ap-northeast-1',
+      state: {
         backend: 's3',
         s3: {
           bucket: 'my-state',
@@ -184,6 +193,10 @@ describe('createStateBackend (FR-1-4)', () => {
           region: 'ap-northeast-1',
         },
       },
+      stacks: {},
+    };
+    const backend = defaultCliDependencies.createBackend({
+      config,
       configDir: dir,
     });
     expect(backend).toBeInstanceOf(S3StateBackend);

@@ -1,15 +1,7 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-import { type CfnSyncConfig, resolveTargets } from '../core/config.js';
-import { detectChanges } from '../core/detect.js';
-import {
-  buildGraphs,
-  type StackNode,
-  topologicalOrder,
-} from '../core/graph.js';
-import { createInitialState } from '../core/state.js';
-import { analyzeTemplate } from '../core/template.js';
+import type { CfnSyncConfig } from '../core/config.js';
 import {
   renderGraphJson,
   renderGraphText,
@@ -95,15 +87,13 @@ function renderStatusText(
   entries: Array<{
     stackKey: string;
     changeType: string;
-    target?: { region: string; stackName: string };
-    stateEntry?: { region: string; stackName: string };
+    region: string;
   }>,
 ): string {
   const lines = ['CHANGE    REGION                STACK KEY'];
   for (const entry of entries) {
-    const region = entry.target?.region ?? entry.stateEntry?.region ?? '-';
     lines.push(
-      `${entry.changeType.padEnd(10)}${region.padEnd(22)}${entry.stackKey}`,
+      `${entry.changeType.padEnd(10)}${entry.region.padEnd(22)}${entry.stackKey}`,
     );
   }
   return lines.join('\n');
@@ -114,32 +104,18 @@ export async function runStatus(
   options: CommonOptions,
 ): Promise<0> {
   const input = loadInputs(ctx, options);
-  const loadedState = await ctx.deps
-    .createBackend({
+  const result = await ctx.deps.getStatus({
+    config: input.config,
+    templates: input.templates,
+    backend: ctx.deps.createBackend({
       config: input.config,
       configDir: input.configDir,
       profile: input.profile,
-    })
-    .load();
-  const result = detectChanges({
-    targets: resolveTargets(input.config),
-    templates: input.templates,
-    state: loadedState?.state ?? createInitialState(),
+    }),
   });
   const output =
     options.output === 'json'
-      ? JSON.stringify(
-          {
-            entries: result.entries.map((entry) => ({
-              stackKey: entry.stackKey,
-              region: entry.target?.region ?? entry.stateEntry?.region,
-              stackName: entry.target?.stackName ?? entry.stateEntry?.stackName,
-              changeType: entry.changeType,
-            })),
-          },
-          null,
-          2,
-        )
+      ? JSON.stringify(result, null, 2)
       : renderStatusText(result.entries);
   writeLine(ctx.io.stdout, output);
   return 0;
@@ -150,34 +126,17 @@ export async function runGraph(
   options: CommonOptions,
 ): Promise<0> {
   const input = loadInputs(ctx, options);
-  const nodes: StackNode[] = [];
-  for (const target of resolveTargets(input.config)) {
-    const source = input.templates.get(target.templatePath);
-    if (source === undefined)
-      throw new Error(
-        `テンプレート内容が見つかりません: ${target.templatePath}`,
-      );
-    const analysis = analyzeTemplate(source, {
-      stackName: target.stackName,
-      region: target.region,
-    });
-    for (const warning of analysis.warnings)
-      writeLine(ctx.io.stderr, `warning: ${warning}`);
-    nodes.push({
-      stackKey: target.stackKey,
-      region: target.region,
-      exports: analysis.exports,
-      imports: analysis.imports,
-      explicitDependsOn: target.dependsOn,
-    });
-  }
-  const graphs = buildGraphs(nodes);
-  for (const graph of graphs.values()) topologicalOrder(graph);
+  const result = ctx.deps.getGraph({
+    config: input.config,
+    templates: input.templates,
+  });
+  for (const warning of result.warnings)
+    writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
     options.output === 'json'
-      ? renderGraphJson(graphs)
-      : renderGraphText(graphs),
+      ? renderGraphJson(result.graphs)
+      : renderGraphText(result.graphs),
   );
   return 0;
 }

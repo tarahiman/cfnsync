@@ -28,18 +28,22 @@
  * `guard.ts` の契約(`verifyStateAccount` はロック取得後に呼ぶ)・`ports` は変更しない。
  */
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 
-import type { CfnSyncConfig, ResolvedStackTarget } from '../core/config.js';
-import {
-  resolveDependsOnKey,
-  resolveTargets,
-  resolveTemplatePathWithinConfig,
+import type {
+  Capability,
+  CfnSyncConfig,
+  ResolvedStackTarget,
 } from '../core/config.js';
+import { resolveDependsOnKey, resolveTargets } from '../core/config.js';
+import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
-import { GuardError, LockError } from '../core/errors.js';
+import {
+  GuardError,
+  LockError,
+  StatePersistenceError,
+} from '../core/errors.js';
 import {
   type CfnSyncState,
   prepareSave,
@@ -47,6 +51,7 @@ import {
   upsertStackEntry,
 } from '../core/state.js';
 import { analyzeTemplate, templatesEquivalent } from '../core/template.js';
+import { resolveTemplatePathWithinConfig } from '../core/templatePath.js';
 import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
@@ -57,7 +62,7 @@ import type {
 } from '../ports/index.js';
 import type { ConnectionInfo } from '../report/index.js';
 import { MANAGEMENT_TAG_KEY, newRunId } from './executor.js';
-import { fencedBackend } from './fencing.js';
+import { withFencedLock } from './fencing.js';
 import {
   connectionHeader,
   resolveConnection,
@@ -81,8 +86,7 @@ export interface ImportDeps {
   cfnFactory: (region: string) => CloudFormationGateway;
   sts: StsGateway;
   backend: StateBackend;
-  /** 省略時は node:fs 実装(`defaultFileSystem`)。 */
-  fs?: ImportFileSystem;
+  fs: ImportFileSystem;
 }
 
 export interface ImportOptions {
@@ -141,14 +145,6 @@ export interface ImportResult {
   report: ImportReport;
 }
 
-/** node:fs による既定のファイル IO(本番経路)。 */
-export const defaultFileSystem: ImportFileSystem = {
-  readFile: (path) => readFileSync(path, 'utf8'),
-  writeFile: (path, content) => writeFileSync(path, content),
-  exists: (path) => existsSync(path),
-  realpath: (path) => realpathSync(path),
-};
-
 // ===========================================================================
 // runImport 本体
 // ===========================================================================
@@ -160,7 +156,7 @@ export async function runImport(input: {
   options: ImportOptions;
 }): Promise<ImportResult> {
   const { config, configPath, deps, options } = input;
-  const fs = deps.fs ?? defaultFileSystem;
+  const fs = deps.fs;
   const configDir = dirname(resolve(configPath));
   const templatePaths = new Map(
     Object.keys(config.stacks).map((templatePath) => [
@@ -176,13 +172,56 @@ export async function runImport(input: {
     regions: uniqueRegions(config),
   });
 
-  // 1. ステートロックの取得(FR-10-9)。取得失敗 → 一切の書き込みなしでエラー。
-  let lock: LockHandle;
+  // 1. 共通 runner でロック取得・fenced scope・条件付き解放を固定する。
   try {
-    lock = await deps.backend.acquireLock({
-      runId: newRunId(),
-      startedAt: new Date().toISOString(),
-      owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
+    return await withFencedLock({
+      backend: deps.backend,
+      info: {
+        runId: newRunId(),
+        startedAt: new Date().toISOString(),
+        owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
+      },
+      run: async ({ lock, backend: fenced }) => {
+        // 2. ロック配下でステートを再読込し accountId を照合(FR-10-8)。
+        //    不一致 → GuardError(書き込みゼロ)/ 未記録 → 同一ロック区間の CAS 保存で記録。
+        let stateCtx: {
+          state: CfnSyncState;
+          version: StateVersion | undefined;
+        };
+        try {
+          stateCtx = await verifyStateAccount({
+            backend: fenced,
+            accountId: connection.accountId,
+          });
+        } catch (err) {
+          if (err instanceof GuardError) {
+            return {
+              exitCode: 1,
+              report: emptyReport(header, 'account-mismatch', err.message),
+            };
+          }
+          if (err instanceof LockError) {
+            return {
+              exitCode: 1,
+              report: emptyReport(header, 'ownership-lost', err.message),
+            };
+          }
+          throw err;
+        }
+
+        return runImportLocked({
+          config,
+          configPath,
+          configDir,
+          deps,
+          fs,
+          options,
+          header,
+          templatePaths,
+          lock,
+          stateCtx,
+        });
+      },
     });
   } catch (err) {
     if (err instanceof LockError) {
@@ -197,122 +236,125 @@ export async function runImport(input: {
     }
     throw err;
   }
+}
 
-  try {
-    // 2. ロック配下でステートを再読込し accountId を照合(FR-10-8)。
-    //    不一致 → GuardError(書き込みゼロ)/ 未記録 → 同一ロック区間の CAS 保存で記録。
-    let stateCtx: { state: CfnSyncState; version: StateVersion | undefined };
-    try {
-      stateCtx = await verifyStateAccount({
-        backend: fencedBackend(deps.backend, lock),
-        accountId: connection.accountId,
-      });
-    } catch (err) {
-      if (err instanceof GuardError) {
-        return {
-          exitCode: 1,
-          report: emptyReport(header, 'account-mismatch', err.message),
-        };
-      }
-      if (err instanceof LockError) {
-        return {
-          exitCode: 1,
-          report: emptyReport(header, 'ownership-lost', err.message),
-        };
-      }
-      throw err;
-    }
+async function runImportLocked(input: {
+  config: CfnSyncConfig;
+  configPath: string;
+  configDir: string;
+  deps: ImportDeps;
+  fs: ImportFileSystem;
+  options: ImportOptions;
+  header: ConnectionInfo;
+  templatePaths: Map<string, string>;
+  lock: LockHandle;
+  stateCtx: { state: CfnSyncState; version: StateVersion | undefined };
+}): Promise<ImportResult> {
+  const {
+    config,
+    configPath,
+    configDir,
+    deps,
+    fs,
+    options,
+    header,
+    templatePaths,
+    lock,
+    stateCtx,
+  } = input;
+  // 3〜7. AWS からの読み取りと書き込み計画の立案(この段では一切書き込まない)。
+  const plan = await buildImportPlan({
+    config,
+    configPath,
+    options,
+    fs,
+    deps,
+    templatePaths,
+  });
 
-    // 3〜7. AWS からの読み取りと書き込み計画の立案(この段では一切書き込まない)。
-    const plan = await buildImportPlan({
-      config,
-      configPath,
-      options,
-      fs,
-      deps,
-      templatePaths,
-    });
-
-    // FR-10-4 / FR-10-5: 解決不能な差分・欠如がある場合は fail-closed(書き込みゼロ)。
-    if (plan.blocked) {
-      return {
-        exitCode: 1,
-        report: {
-          connection: header,
-          stacks: plan.stacks,
-          configWritten: false,
-          stateSaved: false,
-          aborted: 'template-blocking',
-          warnings: plan.warnings,
-        },
-      };
-    }
-
-    // 8. 各ローカル書き込みの直前ごとに fencing 検証(FR-1-9(import))。
-    let configWritten = false;
-    let stateSaved = false;
-    let ownershipLost = false;
-
-    // 4. cfnsync.yaml への書き戻し(コメント・キー順保持。FR-10-1)。
-    if (plan.reflect.size > 0) {
-      const doc = parseDocument(fs.readFile(configPath));
-      for (const [templatePath, reflect] of plan.reflect) {
-        applyReflect(doc, templatePath, reflect);
-      }
-      const nextConfigText = doc.toString();
-      if (await deps.backend.verifyLock(lock)) {
-        fs.writeFile(configPath, nextConfigText);
-        configWritten = true;
-      } else {
-        ownershipLost = true;
-      }
-    }
-
-    // 5. テンプレートファイルの書き出し(reconcile remote / write-template。FR-10-4/5)。
-    if (!ownershipLost) {
-      for (const write of plan.templateWrites) {
-        if (!(await deps.backend.verifyLock(lock))) {
-          ownershipLost = true;
-          break;
-        }
-        const safePath = resolveTemplatePathWithinConfig(
-          configDir,
-          write.templatePath,
-          fs,
-        );
-        fs.writeFile(safePath, write.content);
-      }
-    }
-
-    // 6. ステート保存(CAS。FR-10-6)。
-    if (!ownershipLost && plan.entries.length > 0) {
-      if (await deps.backend.verifyLock(lock)) {
-        let nextState = stateCtx.state;
-        for (const { key, entry } of plan.entries) {
-          nextState = upsertStackEntry(nextState, key, entry);
-        }
-        await deps.backend.save(prepareSave(nextState), stateCtx.version);
-        stateSaved = true;
-      } else {
-        ownershipLost = true;
-      }
-    }
-
+  // FR-10-4 / FR-10-5: 解決不能な差分・欠如がある場合は fail-closed(書き込みゼロ)。
+  if (plan.blocked) {
     return {
-      exitCode: ownershipLost ? 1 : 0,
+      exitCode: 1,
       report: {
         connection: header,
         stacks: plan.stacks,
-        configWritten,
-        stateSaved,
-        aborted: ownershipLost ? 'ownership-lost' : undefined,
+        configWritten: false,
+        stateSaved: false,
+        aborted: 'template-blocking',
         warnings: plan.warnings,
       },
     };
-  } finally {
-    // 9. ロックの解放(正常・異常とも)。所有権喪失時は条件不成立で無害に失敗する。
-    await deps.backend.releaseLock(lock);
   }
+
+  // 8. 各ローカル書き込みの直前ごとに fencing 検証(FR-1-9(import))。
+  let configWritten = false;
+  let stateSaved = false;
+  let ownershipLost = false;
+
+  // 4. cfnsync.yaml への書き戻し(コメント・キー順保持。FR-10-1)。
+  if (plan.reflect.size > 0) {
+    const doc = parseDocument(fs.readFile(configPath));
+    for (const [templatePath, reflect] of plan.reflect) {
+      applyReflect(doc, templatePath, reflect);
+    }
+    const nextConfigText = doc.toString();
+    if (await deps.backend.verifyLock(lock)) {
+      fs.writeFile(configPath, nextConfigText);
+      configWritten = true;
+    } else {
+      ownershipLost = true;
+    }
+  }
+
+  // 5. テンプレートファイルの書き出し(reconcile remote / write-template。FR-10-4/5)。
+  if (!ownershipLost) {
+    for (const write of plan.templateWrites) {
+      if (!(await deps.backend.verifyLock(lock))) {
+        ownershipLost = true;
+        break;
+      }
+      const safePath = resolveTemplatePathWithinConfig(
+        configDir,
+        write.templatePath,
+        fs,
+      );
+      fs.writeFile(safePath, write.content);
+    }
+  }
+
+  // 6. ステート保存(CAS。FR-10-6)。
+  if (!ownershipLost && plan.entries.length > 0) {
+    if (await deps.backend.verifyLock(lock)) {
+      let nextState = stateCtx.state;
+      for (const { key, entry } of plan.entries) {
+        nextState = upsertStackEntry(nextState, key, entry);
+      }
+      try {
+        await deps.backend.save(prepareSave(nextState), stateCtx.version);
+      } catch (cause) {
+        throw new StatePersistenceError(
+          'import 結果のステート保存に失敗しました',
+          { cause },
+        );
+      }
+      stateSaved = true;
+    } else {
+      ownershipLost = true;
+    }
+  }
+
+  return {
+    exitCode: ownershipLost ? 1 : 0,
+    report: {
+      connection: header,
+      stacks: plan.stacks,
+      configWritten,
+      stateSaved,
+      aborted: ownershipLost ? 'ownership-lost' : undefined,
+      warnings: plan.warnings,
+    },
+  };
 }
 
 // ===========================================================================
@@ -322,7 +364,7 @@ export async function runImport(input: {
 /** 1 テンプレートを cfnsync.yaml に反映するためのデータ。 */
 interface ReflectData {
   stackName: string;
-  capabilities: string[];
+  capabilities: Capability[];
   /** 設定上のリージョン数が 2 以上か(FR-13: 2 以上は regionOverrides に書き分ける)。 */
   multiRegion: boolean;
   regions: {
@@ -585,61 +627,40 @@ function applyReflect(
   reflect: ReflectData,
 ): void {
   doc.setIn(['stacks', templatePath, 'stackName'], reflect.stackName);
-  if (reflect.capabilities.length > 0) {
-    doc.setIn(
-      ['stacks', templatePath, 'capabilities'],
-      [...reflect.capabilities],
-    );
-  }
+  doc.setIn(
+    ['stacks', templatePath, 'capabilities'],
+    [...reflect.capabilities],
+  );
 
   if (reflect.multiRegion) {
+    doc.setIn(['stacks', templatePath, 'parameters'], {});
+    doc.setIn(['stacks', templatePath, 'tags'], {});
+    const overrides: Record<
+      string,
+      { parameters: Record<string, string>; tags: Record<string, string> }
+    > = {};
     for (const region of reflect.regions) {
-      for (const [key, value] of Object.entries(region.parameters)) {
-        doc.setIn(
-          [
-            'stacks',
-            templatePath,
-            'regionOverrides',
-            region.region,
-            'parameters',
-            key,
-          ],
-          value,
-        );
-      }
-      for (const [key, value] of Object.entries(region.tags)) {
-        doc.setIn(
-          [
-            'stacks',
-            templatePath,
-            'regionOverrides',
-            region.region,
-            'tags',
-            key,
-          ],
-          value,
-        );
-      }
+      overrides[region.region] = {
+        parameters: { ...region.parameters },
+        tags: { ...region.tags },
+      };
     }
+    doc.setIn(['stacks', templatePath, 'regionOverrides'], overrides);
     return;
   }
 
   const single = reflect.regions[0];
   if (single === undefined) return;
-  for (const [key, value] of Object.entries(single.parameters)) {
-    doc.setIn(['stacks', templatePath, 'parameters', key], value);
-  }
-  for (const [key, value] of Object.entries(single.tags)) {
-    doc.setIn(['stacks', templatePath, 'tags', key], value);
-  }
+  doc.setIn(['stacks', templatePath, 'parameters'], {
+    ...single.parameters,
+  });
+  doc.setIn(['stacks', templatePath, 'tags'], { ...single.tags });
+  doc.setIn(['stacks', templatePath, 'regionOverrides'], {});
 }
 
 // ===========================================================================
 // 補助
 // ===========================================================================
-
-/** deploy 時に残存していると検証エラーになる NoEcho プレースホルダ(design.md §8.2)。 */
-const REQUIRED_PLACEHOLDER = '__REQUIRED__';
 
 /**
  * DescribeStacks のパラメータを設定ファイルへ書き戻す値に変換する。NoEcho パラメータ

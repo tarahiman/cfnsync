@@ -1,13 +1,10 @@
-import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { CloudFormationGatewayImpl } from '../aws/cloudformation.js';
+import { S3StateBackend } from '../aws/s3state.js';
 import { StsGatewayImpl } from '../aws/sts.js';
-import { createStateBackend } from '../backend/factory.js';
-import {
-  type CfnSyncConfig,
-  loadConfig,
-  resolveTemplatePathWithinConfig,
-} from '../core/config.js';
+import { LOCAL_STATE_FILENAME, LocalStateBackend } from '../backend/local.js';
+import type { CfnSyncConfig } from '../core/config.js';
 import type {
   CloudFormationGateway,
   StateBackend,
@@ -20,12 +17,19 @@ import {
   deploy,
 } from '../usecase/deploy.js';
 import { type ForceUnlockResult, forceUnlock } from '../usecase/forceUnlock.js';
+import { type GraphResult, getGraph } from '../usecase/graph.js';
 import {
   type ImportDeps,
   type ImportOptions,
   type ImportResult,
   runImport,
 } from '../usecase/importer.js';
+import { getStatus, type StatusResult } from '../usecase/status.js';
+import {
+  loadConfigFile,
+  nodeFileSystem,
+  readTemplateFiles,
+} from './filesystem.js';
 
 export interface CliDependencies {
   loadConfig(path: string): CfnSyncConfig;
@@ -47,34 +51,43 @@ export interface CliDependencies {
   runImport(input: {
     config: CfnSyncConfig;
     configPath: string;
-    deps: ImportDeps;
+    deps: Omit<ImportDeps, 'fs'>;
     options: ImportOptions;
   }): Promise<ImportResult>;
   forceUnlock(input: {
     backend: StateBackend;
     runId: string;
   }): Promise<ForceUnlockResult>;
+  getStatus(input: {
+    config: CfnSyncConfig;
+    templates: Map<string, string>;
+    backend: StateBackend;
+  }): Promise<StatusResult>;
+  getGraph(input: {
+    config: CfnSyncConfig;
+    templates: Map<string, string>;
+  }): GraphResult;
 }
 
 export const defaultCliDependencies: CliDependencies = {
-  loadConfig,
-  readTemplates(config, configDir) {
-    return new Map(
-      Object.keys(config.stacks).map((templatePath) => [
-        templatePath,
-        readFileSync(
-          resolveTemplatePathWithinConfig(configDir, templatePath),
-          'utf8',
-        ),
-      ]),
-    );
+  loadConfig: loadConfigFile,
+  readTemplates: readTemplateFiles,
+  createBackend: ({ config, configDir, profile }) => {
+    if (config.state.backend === 'local') {
+      return new LocalStateBackend(resolve(configDir, LOCAL_STATE_FILENAME));
+    }
+    return new S3StateBackend({ ...config.state.s3, profile });
   },
-  createBackend: ({ config, configDir, profile }) =>
-    createStateBackend({ stateConfig: config.state, configDir, profile }),
   createCfn: ({ region, profile }) =>
     new CloudFormationGatewayImpl({ region, profile }),
   createSts: ({ region, profile }) => new StsGatewayImpl({ region, profile }),
   deploy,
-  runImport,
+  runImport: (input) =>
+    runImport({
+      ...input,
+      deps: { ...input.deps, fs: nodeFileSystem },
+    }),
   forceUnlock,
+  getStatus,
+  getGraph,
 };

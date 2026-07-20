@@ -63,7 +63,7 @@ describe('FR-7-6(基盤): GetCallerIdentity による接続先解決', () => {
     ).toEqual({});
   });
 
-  it('FR-7-6: 解決失敗(認証エラー)は例外としてそのまま伝播する', async () => {
+  it('FR-7-6: 解決失敗(認証エラー)は adapter 境界で AwsError になる', async () => {
     stsMock.on(GetCallerIdentityCommand).rejects(
       Object.assign(
         new Error('The security token included in the request is invalid'),
@@ -74,9 +74,12 @@ describe('FR-7-6(基盤): GetCallerIdentity による接続先解決', () => {
     );
     const gateway = new StsGatewayImpl({ region: 'ap-northeast-1' });
 
-    await expect(gateway.getCallerIdentity()).rejects.toThrow(
-      /security token included in the request is invalid/,
-    );
+    await expect(gateway.getCallerIdentity()).rejects.toMatchObject({
+      name: 'AwsError',
+      message: expect.stringMatching(
+        /security token included in the request is invalid/,
+      ),
+    });
   });
 });
 
@@ -115,7 +118,7 @@ describe('FR-7-1〜3(オプション伝播): クライアント生成オプシ�
 // ---------------------------------------------------------------------------
 
 describe('型適合', () => {
-  it('StsGatewayImpl は StsGateway 型に適合する', () => {
+  it('internal: StsGatewayImpl は StsGateway 型に適合する', () => {
     const gateway: StsGateway = new StsGatewayImpl({ region: 'us-east-1' });
     expect(typeof gateway.getCallerIdentity).toBe('function');
   });

@@ -171,8 +171,14 @@ function setup(
 function desiredInputsHash(
   config: CfnSyncConfig,
   templates: Map<string, string>,
+  templatePath?: string,
 ): string {
-  const target = resolveTargets(config)[0];
+  const targets = resolveTargets(config);
+  const target = templatePath
+    ? (targets.find(
+        (candidate) => candidate.templatePath === templatePath,
+      ) as (typeof targets)[number])
+    : targets[0];
   const source = templates.get(target.templatePath) as string;
   return computeInputsHash({
     templateContent: source,
@@ -299,18 +305,31 @@ describe('T-18 recovery', () => {
   });
 
   it('FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す', async () => {
-    const config = configOf({
-      stackName: 'ManagedStack',
-      parameters: { Secret: 'local-desired-secret' },
-      tags: { Team: 'platform' },
-      dependsOn: ['external.yaml'],
-    });
-    const templates = new Map([['stack.yaml', SECRET_TEMPLATE]]);
-    const s = setup(
-      config,
-      templates,
-      withAccountId(createInitialState(), ACCOUNT),
+    const config = validateConfig(
+      {
+        version: 1,
+        defaultRegion: REGION,
+        allowedAccounts: [ACCOUNT],
+        allowedRegions: [REGION],
+        stacks: {
+          'external.yaml': { stackName: 'ExternalStack' },
+          'stack.yaml': {
+            stackName: 'ManagedStack',
+            parameters: { Secret: 'local-desired-secret' },
+            tags: { Team: 'platform' },
+            dependsOn: ['external.yaml'],
+          },
+        },
+      },
+      { templateExists: () => true },
     );
+    const templates = new Map([
+      ['external.yaml', TEMPLATE],
+      ['stack.yaml', SECRET_TEMPLATE],
+    ]);
+    const initial = recordedState(config, templates);
+    delete initial.stacks['stack.yaml@ap-northeast-1'];
+    const s = setup(config, templates, initial);
     installExisting(
       s.cfn,
       {
@@ -326,13 +345,14 @@ describe('T-18 recovery', () => {
     expect(result.exitCode).toBe(0);
     expect(
       s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
-    ).toBe(desiredInputsHash(config, templates));
-    expect(result.report.diffs[0].warnings.join('\n')).toMatch(
+    ).toBe(desiredInputsHash(config, templates, 'stack.yaml'));
+    const stackDiff = result.report.diffs.find(
+      (diff) => diff.stackKey === 'stack.yaml@ap-northeast-1',
+    );
+    expect(stackDiff?.warnings.join('\n')).toMatch(
       /NoEcho.*Secret|Secret.*NoEcho/,
     );
-    expect(result.report.diffs[0].warnings.join('\n')).toMatch(
-      /dependsOn.*external\.yaml/,
-    );
+    expect(stackDiff?.warnings.join('\n')).toMatch(/dependsOn.*external\.yaml/);
   });
 
   it.each([

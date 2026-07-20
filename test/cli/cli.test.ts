@@ -12,6 +12,8 @@ import type {
   StsGateway,
 } from '../../src/ports/index.js';
 import type { DeployReport } from '../../src/report/index.js';
+import { getGraph } from '../../src/usecase/graph.js';
+import { getStatus } from '../../src/usecase/status.js';
 
 const config: CfnSyncConfig = {
   version: 1,
@@ -85,6 +87,8 @@ function dependencies(
       released: true,
       message: 'ロックを解除しました。',
     })),
+    getStatus: vi.fn(getStatus),
+    getGraph: vi.fn(getGraph),
     ...overrides,
   };
 }
@@ -256,7 +260,7 @@ describe('T-19 cli', () => {
     );
   });
 
-  it('NFR-5: status はローカルのみで変更検知し AWS factory を呼ばない', async () => {
+  it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {
     const deps = dependencies();
     const out = capture();
     expect(
@@ -265,9 +269,11 @@ describe('T-19 cli', () => {
     expect(JSON.parse(out.stdout()).entries[0].changeType).toBe('added');
     expect(deps.createCfn).not.toHaveBeenCalled();
     expect(deps.createSts).not.toHaveBeenCalled();
+    expect(deps.createBackend).toHaveBeenCalledTimes(1);
+    expect(deps.getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it('NFR-5: graph はテンプレート解析のみで AWS factory を呼ばない', async () => {
+  it('NFR-5: graph はテンプレート解析のみで CloudFormation / STS factory を呼ばない', async () => {
     const deps = dependencies();
     const out = capture();
     expect(
@@ -278,6 +284,8 @@ describe('T-19 cli', () => {
     ]);
     expect(deps.createCfn).not.toHaveBeenCalled();
     expect(deps.createSts).not.toHaveBeenCalled();
+    expect(deps.createBackend).not.toHaveBeenCalled();
+    expect(deps.getGraph).toHaveBeenCalledTimes(1);
   });
 
   it('FR-8-4 / §9: graph の循環は診断を stderr に出して exit 1', async () => {

@@ -394,7 +394,7 @@ describe('core/graph — FR-6-4(統合): 新旧グラフの統合と削除順序
     expect(merged.edges).toHaveLength(1);
   });
 
-  it('reverseOrder: 入力配列を変更せず逆順の新しい配列を返す', () => {
+  it('internal: reverseOrder は入力配列を変更せず逆順の新しい配列を返す', () => {
     const order: StackKey[] = [
       makeStackKey('a.yaml', REGION_A),
       makeStackKey('b.yaml', REGION_A),

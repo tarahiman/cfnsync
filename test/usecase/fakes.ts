@@ -22,6 +22,7 @@ import type {
   StackSummary,
   StateBackend,
   StateVersion,
+  StsGateway,
   TemplateStage,
   WaitForStackOptions,
 } from '../../src/ports/index.js';
@@ -30,6 +31,25 @@ import type {
 export interface CallRecord {
   method: string;
   args: unknown[];
+}
+
+/** 成功・失敗を関数注入できる STS フェイク。 */
+export class FakeStsGateway implements StsGateway {
+  calls = 0;
+
+  constructor(
+    private readonly resolveFn: () => Promise<{
+      accountId: string;
+      arn: string;
+    }>,
+    private readonly timeline?: string[],
+  ) {}
+
+  async getCallerIdentity(): Promise<{ accountId: string; arn: string }> {
+    this.calls += 1;
+    this.timeline?.push('sts.getCallerIdentity');
+    return this.resolveFn();
+  }
 }
 
 export function makeStackSummary(
@@ -274,6 +294,7 @@ export class FakeStateBackend implements StateBackend {
   /** true のとき、保持中ロックへの追加 acquire を LockError にする(T-18 並行開始用)。 */
   rejectConcurrentAcquire = false;
   saveError: Error | undefined;
+  forceUnlockResult: { released: boolean; reason?: string } | undefined;
   releaseCalls = 0;
   /**
    * verifyLock の判定を確定した直後、呼び出し元へ返す前に発火する任意フック。
@@ -285,6 +306,7 @@ export class FakeStateBackend implements StateBackend {
     verified: boolean,
   ) => void | Promise<void>;
   private lock: LockHandle | undefined;
+  private lockInfo: LockInfo | undefined;
   private verifyLockCalls = 0;
 
   constructor(
@@ -351,6 +373,7 @@ export class FakeStateBackend implements StateBackend {
       throw new LockError('別の実行がロックを保持しています(fake)');
     }
     this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
+    this.lockInfo = { ...info };
     return this.lock;
   }
 
@@ -373,28 +396,30 @@ export class FakeStateBackend implements StateBackend {
     if (this.lock?.runId !== handle.runId)
       return { released: false, reason: 'owner changed(fake)' };
     this.lock = undefined;
+    this.lockInfo = undefined;
     return { released: true };
   }
 
   async readLock(): Promise<LockInfo | undefined> {
     this.record('readLock');
-    return this.lock
-      ? {
-          runId: this.lock.runId,
-          startedAt: '2026-07-20T00:00:00.000Z',
-          owner: 'fake',
-        }
-      : undefined;
+    return this.lockInfo ? { ...this.lockInfo } : undefined;
   }
 
   async forceUnlock(
     runId: string,
   ): Promise<{ released: boolean; reason?: string }> {
     this.record('forceUnlock', runId);
+    if (this.forceUnlockResult) return this.forceUnlockResult;
     if (this.lock?.runId !== runId)
       return { released: false, reason: 'runId mismatch(fake)' };
     this.lock = undefined;
+    this.lockInfo = undefined;
     return { released: true };
+  }
+
+  setLock(info: LockInfo): void {
+    this.lock = { runId: info.runId, etag: 'fake-lock-etag' };
+    this.lockInfo = { ...info };
   }
 
   stateId(): string {

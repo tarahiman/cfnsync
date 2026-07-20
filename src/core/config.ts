@@ -6,23 +6,12 @@
  * 純粋ロジック(CLAUDE.md の `src/core/` 制約)。
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import {
-  dirname,
-  isAbsolute,
-  posix,
-  relative,
-  resolve,
-  sep,
-  win32,
-} from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { REQUIRED_PLACEHOLDER } from './constants.js';
 import { ConfigError } from './errors.js';
+import { assertSafeTemplatePath } from './templatePath.js';
 import { makeStackKey, type StackKey } from './types.js';
-
-/** deploy 時に残存していると検証エラーになるプレースホルダ(design.md §8.2)。 */
-const REQUIRED_PLACEHOLDER = '__REQUIRED__';
 
 // ---------------------------------------------------------------------------
 // zod スキーマ(design.md §4.2)
@@ -37,6 +26,14 @@ const stringValueSchema = z
   .transform((value) => String(value));
 
 const stringRecordSchema = z.record(z.string(), stringValueSchema);
+
+/** CloudFormation が受理する Capabilities の閉じた集合。 */
+export const capabilitySchema = z.enum([
+  'CAPABILITY_IAM',
+  'CAPABILITY_NAMED_IAM',
+  'CAPABILITY_AUTO_EXPAND',
+]);
+export type Capability = z.infer<typeof capabilitySchema>;
 
 const s3StateSchema = z.object({
   bucket: z.string().min(1),
@@ -53,18 +50,18 @@ const stateSchema = z
   .default({ backend: 'local' });
 
 const regionOverrideSchema = z.object({
-  parameters: stringRecordSchema.optional(),
-  tags: stringRecordSchema.optional(),
+  parameters: stringRecordSchema.default({}),
+  tags: stringRecordSchema.default({}),
 });
 
 const stackEntrySchema = z.object({
   stackName: z.string().min(1).optional(),
   regions: z.array(z.string().min(1)).optional(),
-  parameters: stringRecordSchema.optional(),
-  tags: stringRecordSchema.optional(),
-  capabilities: z.array(z.string().min(1)).optional(),
-  dependsOn: z.array(z.string().min(1)).optional(),
-  regionOverrides: z.record(z.string(), regionOverrideSchema).optional(),
+  parameters: stringRecordSchema.default({}),
+  tags: stringRecordSchema.default({}),
+  capabilities: z.array(capabilitySchema).default([]),
+  dependsOn: z.array(z.string().min(1)).default([]),
+  regionOverrides: z.record(z.string(), regionOverrideSchema).default({}),
 });
 
 const rawConfigSchema = z.object({
@@ -79,48 +76,12 @@ const rawConfigSchema = z.object({
   stacks: z.record(z.string(), stackEntrySchema),
 });
 
-type RawConfig = z.infer<typeof rawConfigSchema>;
-
-// ---------------------------------------------------------------------------
-// 公開型(下流タスクの契約)
-// ---------------------------------------------------------------------------
-
-export interface S3StateConfig {
-  bucket: string;
-  key: string;
-  region: string;
-}
-
-export interface StateConfig {
-  backend: 'local' | 's3';
-  s3?: S3StateConfig;
-}
-
-export interface RegionOverrideConfig {
-  parameters: Record<string, string>;
-  tags: Record<string, string>;
-}
-
-export interface StackConfigEntry {
-  stackName?: string;
-  regions?: string[];
-  parameters: Record<string, string>;
-  tags: Record<string, string>;
-  capabilities: string[];
-  dependsOn: string[];
-  regionOverrides: Record<string, RegionOverrideConfig>;
-}
-
-export interface CfnSyncConfig {
-  version: 1;
-  allowedAccounts?: string[];
-  allowedRegions?: string[];
-  defaultRegion: string;
-  stackNamePrefix?: string;
-  state: StateConfig;
-  /** キーはテンプレートの(設定ファイルのディレクトリを基準とした)相対パス。 */
-  stacks: Record<string, StackConfigEntry>;
-}
+/** 正規化済み設定型は zod の出力型から一意に導出する。 */
+export type CfnSyncConfig = z.infer<typeof rawConfigSchema>;
+export type StateConfig = CfnSyncConfig['state'];
+export type S3StateConfig = Extract<StateConfig, { backend: 's3' }>['s3'];
+export type StackConfigEntry = CfnSyncConfig['stacks'][string];
+export type RegionOverrideConfig = StackConfigEntry['regionOverrides'][string];
 
 export interface ResolvedStackTarget {
   stackKey: StackKey;
@@ -129,7 +90,7 @@ export interface ResolvedStackTarget {
   region: string;
   parameters: Record<string, string>;
   tags: Record<string, string>;
-  capabilities: string[];
+  capabilities: Capability[];
   dependsOn: string[];
 }
 
@@ -138,59 +99,9 @@ export interface ValidateConfigOptions {
   templateExists: (relativeTemplatePath: string) => boolean;
 }
 
-export interface TemplatePathFileSystem {
-  exists(path: string): boolean;
-  realpath(path: string): string;
-}
-
-const nodePathFileSystem: TemplatePathFileSystem = {
-  exists: existsSync,
-  realpath: realpathSync,
-};
-
 // ---------------------------------------------------------------------------
 // 検証本体
 // ---------------------------------------------------------------------------
-
-/**
- * zod でパースした RawConfig を、下流タスクが扱いやすいよう既定値を埋めた
- * CfnSyncConfig に正規化する。
- */
-function normalize(data: RawConfig): CfnSyncConfig {
-  const stacks: Record<string, StackConfigEntry> = {};
-
-  for (const [templatePath, entry] of Object.entries(data.stacks)) {
-    const regionOverrides: Record<string, RegionOverrideConfig> = {};
-    for (const [region, override] of Object.entries(
-      entry.regionOverrides ?? {},
-    )) {
-      regionOverrides[region] = {
-        parameters: override.parameters ?? {},
-        tags: override.tags ?? {},
-      };
-    }
-
-    stacks[templatePath] = {
-      stackName: entry.stackName,
-      regions: entry.regions,
-      parameters: entry.parameters ?? {},
-      tags: entry.tags ?? {},
-      capabilities: entry.capabilities ?? [],
-      dependsOn: entry.dependsOn ?? [],
-      regionOverrides,
-    };
-  }
-
-  return {
-    version: data.version,
-    allowedAccounts: data.allowedAccounts,
-    allowedRegions: data.allowedRegions,
-    defaultRegion: data.defaultRegion,
-    stackNamePrefix: data.stackNamePrefix,
-    state: data.state,
-    stacks,
-  };
-}
 
 /** zod のエラーを「対象キーを含む」ConfigError に変換する(FR-11-5)。 */
 function toConfigError(error: z.ZodError): ConfigError {
@@ -223,7 +134,7 @@ export function validateConfig(
     throw toConfigError(result.error);
   }
 
-  const config = normalize(result.data);
+  const config = result.data;
 
   // FR-11-5: 存在しないテンプレートへの参照を検出する。
   for (const templatePath of Object.keys(config.stacks)) {
@@ -238,113 +149,38 @@ export function validateConfig(
     }
   }
 
+  // 明示依存は同一リージョンの管理対象へ必ず解決できなければならない。
+  const targets = resolveTargets(config);
+  const managed = new Set(targets.map((target) => target.stackKey));
+  for (const target of targets) {
+    for (const rawDependency of target.dependsOn) {
+      const dependency = resolveDependsOnKey(rawDependency, target.region);
+      if (!managed.has(dependency)) {
+        throw new ConfigError(
+          `明示依存 dependsOn '${rawDependency}' は同一リージョンの管理対象へ解決できません: ${dependency}`,
+          { stackKey: target.stackKey, region: target.region },
+        );
+      }
+    }
+  }
+
   return config;
 }
 
-/**
- * stacks キーを lexical に検証する。Windows/Posix のどちらの絶対パス・区切りも
- * fail-closed に扱い、実行環境の OS によって判定が変わる抜け道を作らない。
- */
-export function assertSafeTemplatePath(templatePath: string): void {
-  const portable = templatePath.replaceAll('\\', '/');
-  const normalized = posix.normalize(portable);
-  const unsafe =
-    templatePath.includes('\0') ||
-    isAbsolute(templatePath) ||
-    posix.isAbsolute(portable) ||
-    win32.isAbsolute(templatePath) ||
-    normalized === '..' ||
-    normalized.startsWith('../');
-
-  if (unsafe) {
-    throw new ConfigError(
-      `テンプレートパスは設定ディレクトリ配下の相対パスでなければなりません: ${templatePath}`,
-      { stackKey: templatePath },
-    );
-  }
-}
-
-function isWithinDirectory(base: string, target: string): boolean {
-  const rel = relative(base, target);
-  return (
-    rel === '' ||
-    (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
-  );
-}
-
-/**
- * 読み書き対象を realpath ベースで設定ディレクトリ配下へ閉じ込める。
- * 対象が未作成なら、既存の最長親を realpath して残りの相対部分を解決する。
- */
-export function resolveTemplatePathWithinConfig(
-  configDir: string,
-  templatePath: string,
-  fs: TemplatePathFileSystem = nodePathFileSystem,
-): string {
-  assertSafeTemplatePath(templatePath);
-  const baseAbs = resolve(configDir);
-  const candidate = resolve(baseAbs, templatePath);
-
-  let baseReal: string;
-  let ancestor = candidate;
-  try {
-    baseReal = fs.realpath(baseAbs);
-    while (ancestor !== baseAbs && !fs.exists(ancestor)) {
-      ancestor = dirname(ancestor);
-    }
-    const ancestorReal = fs.realpath(ancestor);
-    const resolvedTarget =
-      ancestor === candidate
-        ? ancestorReal
-        : resolve(ancestorReal, relative(ancestor, candidate));
-
-    if (!isWithinDirectory(baseReal, resolvedTarget)) {
-      throw new ConfigError(
-        `テンプレートパスが設定ディレクトリ外へ解決されます: ${templatePath}`,
-        { stackKey: templatePath },
-      );
-    }
-    return resolvedTarget;
-  } catch (cause) {
-    if (cause instanceof ConfigError) throw cause;
-    throw new ConfigError(
-      `テンプレートパスの実パスを検証できません: ${templatePath}`,
-      { stackKey: templatePath, cause },
-    );
-  }
-}
-
-/**
- * cfnsync.yaml を読み込み、検証済みの CfnSyncConfig を返す。
- * テンプレートの存在チェックは configPath のディレクトリを基準とした相対パスで行う。
- */
-export function loadConfig(configPath: string): CfnSyncConfig {
-  const absConfigPath = resolve(configPath);
-
-  let content: string;
-  try {
-    content = readFileSync(absConfigPath, 'utf-8');
-  } catch (cause) {
-    throw new ConfigError(`設定ファイルを読み込めません: ${configPath}`, {
-      cause,
-    });
-  }
-
+/** YAML 文字列を解析・検証する core の純粋入口。ファイル読込は adapter が担う。 */
+export function parseConfig(
+  content: string,
+  opts: ValidateConfigOptions,
+): CfnSyncConfig {
   let raw: unknown;
   try {
     raw = parseYaml(content);
   } catch (cause) {
-    throw new ConfigError(
-      `設定ファイルの YAML 解析に失敗しました: ${configPath}`,
-      { cause },
-    );
+    throw new ConfigError('設定ファイルの YAML 解析に失敗しました', {
+      cause,
+    });
   }
-
-  const baseDir = dirname(absConfigPath);
-  return validateConfig(raw, {
-    templateExists: (relativeTemplatePath) =>
-      existsSync(resolve(baseDir, relativeTemplatePath)),
-  });
+  return validateConfig(raw, opts);
 }
 
 // ---------------------------------------------------------------------------

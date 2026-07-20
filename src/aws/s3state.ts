@@ -16,12 +16,13 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { z } from 'zod';
 import { AwsError, LockError, StateConflictError } from '../core/errors.js';
 import {
   type CfnSyncState,
   parseState,
   serializeState,
-  sha256Hex,
+  shortStateId,
 } from '../core/state.js';
 import type {
   LockHandle,
@@ -29,6 +30,7 @@ import type {
   StateBackend,
   StateVersion,
 } from '../ports/index.js';
+import { errorName, httpStatus, toAwsError } from './errors.js';
 
 /** `S3StateBackend` のコンストラクタオプション。 */
 export interface S3StateBackendOptions {
@@ -41,25 +43,28 @@ export interface S3StateBackendOptions {
   maxAttempts?: number;
 }
 
-/** バックエンド識別子から変更セット命名用の短縮ハッシュを導出する(§7)。 */
-function shortStateId(identifier: string): string {
-  return sha256Hex(identifier)
-    .replace(/^sha256:/, '')
-    .slice(0, 12);
-}
+const lockInfoSchema = z.object({
+  runId: z.string().min(1),
+  startedAt: z.string().min(1),
+  owner: z.string().min(1),
+});
 
-function errorName(err: unknown): string | undefined {
-  return typeof err === 'object' && err !== null && 'name' in err
-    ? ((err as { name?: unknown }).name as string | undefined)
-    : undefined;
-}
-
-function httpStatus(err: unknown): number | undefined {
-  if (typeof err === 'object' && err !== null && '$metadata' in err) {
-    const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata;
-    return meta?.httpStatusCode;
+function parseLockInfo(text: string, operation: string): LockInfo {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch (cause) {
+    throw new AwsError(`S3 ${operation} のロック JSON を解析できません`, {
+      cause,
+    });
   }
-  return undefined;
+  const parsed = lockInfoSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new AwsError(`S3 ${operation} のロック JSON が不正です`, {
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
 }
 
 /** CAS / ロックの条件不成立(If-Match / If-None-Match 不成立)。HTTP 412。 */
@@ -123,7 +128,7 @@ export class S3StateBackend implements StateBackend {
       );
     } catch (err) {
       if (isNotFound(err)) return undefined; // 初回(NoSuchKey)。
-      throw err;
+      throw toAwsError('S3 GetObject(state)', err);
     }
     const etag = requireEtag(output.ETag, 'GetObject(state)');
     const text = await output.Body?.transformToString();
@@ -163,7 +168,7 @@ export class S3StateBackend implements StateBackend {
           { cause: err },
         );
       }
-      throw err;
+      throw toAwsError('S3 PutObject(state)', err);
     }
     return {
       generation: state.generation,
@@ -197,7 +202,7 @@ export class S3StateBackend implements StateBackend {
           { cause: err },
         );
       }
-      throw err;
+      throw toAwsError('S3 PutObject(lock)', err);
     }
     return {
       runId: info.runId,
@@ -214,18 +219,17 @@ export class S3StateBackend implements StateBackend {
       );
     } catch (err) {
       if (isNotFound(err)) return false;
-      throw err;
+      throw toAwsError('S3 GetObject(lock)', err);
     }
     const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return false;
-    let parsed: { runId?: string };
     try {
-      parsed = JSON.parse(text) as { runId?: string };
+      const parsed = parseLockInfo(text, 'GetObject(lock)');
+      return parsed.runId === handle.runId && etag === handle.etag;
     } catch {
       return false;
     }
-    return parsed.runId === handle.runId && etag === handle.etag;
   }
 
   async releaseLock(
@@ -259,7 +263,7 @@ export class S3StateBackend implements StateBackend {
         // 冪等: 既に解放済み。エラーにしない。
         return { released: false, reason: 'ロックは既に解放済みです' };
       }
-      throw err;
+      throw toAwsError('S3 DeleteObject(lock)', err);
     }
   }
 
@@ -271,17 +275,12 @@ export class S3StateBackend implements StateBackend {
       );
     } catch (err) {
       if (isNotFound(err)) return undefined;
-      throw err;
+      throw toAwsError('S3 GetObject(lock)', err);
     }
     requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
-    const parsed = JSON.parse(text) as LockInfo;
-    return {
-      runId: parsed.runId,
-      startedAt: parsed.startedAt,
-      owner: parsed.owner,
-    };
+    return parseLockInfo(text, 'GetObject(lock)');
   }
 
   async forceUnlock(
@@ -297,16 +296,16 @@ export class S3StateBackend implements StateBackend {
     } catch (err) {
       if (isNotFound(err))
         return { released: false, reason: 'ロックは存在しません' };
-      throw err;
+      throw toAwsError('S3 GetObject(lock)', err);
     }
     const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined)
       return { released: false, reason: 'ロックは存在しません' };
 
-    let parsed: { runId?: string };
+    let parsed: LockInfo;
     try {
-      parsed = JSON.parse(text) as { runId?: string };
+      parsed = parseLockInfo(text, 'GetObject(lock)');
     } catch {
       return { released: false, reason: 'ロックの内容を解析できません' };
     }
@@ -336,7 +335,7 @@ export class S3StateBackend implements StateBackend {
       if (isNotFound(err)) {
         return { released: false, reason: 'ロックは既に解放済みです' };
       }
-      throw err;
+      throw toAwsError('S3 DeleteObject(lock)', err);
     }
   }
 

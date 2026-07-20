@@ -149,11 +149,11 @@ describe('core/detect — §4.3: computeInputsHash の複合ハッシュ感度',
 });
 
 describe('core/detect — computeTemplateHash', () => {
-  it('sha256Hex 形式("sha256:<64桁hex>")を返す', () => {
+  it('internal: sha256Hex 形式("sha256:<64桁hex>")を返す', () => {
     expect(computeTemplateHash(BASE_CONTENT)).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  it('同一内容は同一ハッシュ、異なる内容は異なるハッシュになる', () => {
+  it('internal: 同一内容は同一ハッシュ、異なる内容は異なるハッシュになる', () => {
     expect(computeTemplateHash(BASE_CONTENT)).toBe(
       computeTemplateHash(BASE_CONTENT),
     );

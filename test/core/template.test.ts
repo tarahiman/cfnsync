@@ -46,7 +46,7 @@ describe('parseCfnTemplate', () => {
     expect(yamlResult).toEqual(jsonResult);
   });
 
-  it('CFN 短縮タグをすべて完全形(Fn::X。Ref/Condition は例外)へ解決する', () => {
+  it('FR-8-1: CFN 短縮タグをすべて完全形(Fn::X。Ref/Condition は例外)へ解決する', () => {
     const source = `
 RefValue: !Ref MyResource
 ConditionValue: !Condition SomeCondition
@@ -159,7 +159,7 @@ describe('analyzeTemplate', () => {
     expect(result.noEchoParams).toEqual(['DbPassword', 'ApiKey']);
   });
 
-  it('import / export の重複は排除し、出現順を保つ', () => {
+  it('internal: import / export の重複は排除し、出現順を保つ', () => {
     const source = `
 Resources:
   A:
@@ -189,7 +189,7 @@ Outputs:
     expect(result.exports).toEqual(['export-a', 'export-b']);
   });
 
-  it('NoEcho が false または未指定のパラメータは対象外', () => {
+  it('NFR-4: NoEcho が false または未指定のパラメータは対象外', () => {
     const source = `
 Parameters:
   Visible:
@@ -204,13 +204,13 @@ Parameters:
 });
 
 describe('templatesEquivalent', () => {
-  it('YAML(短縮タグ)と JSON(完全形)が同一テンプレートであれば true を返す', () => {
+  it('FR-10-3: YAML(短縮タグ)と JSON(完全形)が同一テンプレートであれば true を返す', () => {
     expect(
       templatesEquivalent(readFixture('basic.yaml'), readFixture('basic.json')),
     ).toBe(true);
   });
 
-  it('キー順・インデント・コメントの違いを無視して同値と判定する', () => {
+  it('FR-10-3: キー順・インデント・コメントの違いを無視して同値と判定する', () => {
     const a = `
 Resources:
   A:
@@ -230,7 +230,7 @@ Resources:
     expect(templatesEquivalent(a, b)).toBe(true);
   });
 
-  it('内容が異なるテンプレートは false と判定する', () => {
+  it('FR-10-3: 内容が異なるテンプレートは false と判定する', () => {
     const a = `
 Resources:
   A:
@@ -244,7 +244,7 @@ Resources:
     expect(templatesEquivalent(a, b)).toBe(false);
   });
 
-  it('配列の順序差は同値とみなさない(意味が変わりうるため)', () => {
+  it('internal: 配列の順序差は同値とみなさない(意味が変わりうるため)', () => {
     const a = `Values: [a, b]`;
     const b = `Values: [b, a]`;
     expect(templatesEquivalent(a, b)).toBe(false);

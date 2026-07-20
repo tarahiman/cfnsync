@@ -424,7 +424,7 @@ describe('createManagedChangeSet', () => {
     expect(input.changeSetName).toBe(name);
   });
 
-  it('createManagedChangeSet: 成功(CREATE_COMPLETE)→ noChanges false・detail を返す', async () => {
+  it('internal: createManagedChangeSet 成功(CREATE_COMPLETE)→ noChanges false・detail を返す', async () => {
     const fake = new FakeCloudFormationGateway();
     fake.defaultChangeSetDetail = makeChangeSetDetail({
       status: 'CREATE_COMPLETE',

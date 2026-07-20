@@ -10,6 +10,7 @@
  * (StateBackend の load/save の対象)。これは型依存に限られ、実行時依存は持たない。
  */
 
+import type { Capability } from '../core/config.js';
 import type { CfnSyncState } from '../core/state.js';
 
 // ===========================================================================
@@ -30,7 +31,7 @@ export interface StackSummary {
   parameters: Record<string, string>;
   /** タグ Key → Value。管理タグ `cfnsync:state-id=<stateID>` の由来確認に用いる(§8.4)。 */
   tags: Record<string, string>;
-  capabilities: string[];
+  capabilities: Capability[];
   /** OutputKey → OutputValue。 */
   outputs: Record<string, string>;
   terminationProtection: boolean;
@@ -95,7 +96,7 @@ export interface ChangeSetDetail {
   changes: ResourceChange[];
   parameters: Record<string, string>;
   tags: Record<string, string>;
-  capabilities: string[];
+  capabilities: Capability[];
 }
 
 /** `DescribeStackEvents` の 1 イベントを正規化(FR-4-1。イベント逐次出力・失敗原因抽出に使う)。 */
@@ -126,7 +127,7 @@ export interface CreateChangeSetInput {
   templateBody: string;
   /** ParameterKey → ParameterValue。 */
   parameters: Record<string, string>;
-  capabilities: string[];
+  capabilities: Capability[];
   /** タグ Key → Value(管理タグ `cfnsync:state-id` はここにマージ済みで渡す想定。FR-2-9)。 */
   tags: Record<string, string>;
   description?: string;

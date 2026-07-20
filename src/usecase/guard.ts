@@ -17,20 +17,17 @@
  *   6. status / graph は AWS を呼ばないため対象外。import は許可設定なしでも実行できるが
  *      ステートを書き込むため `verifyStateAccount` とロック取得を必ず行う(呼び出し側の責務)。
  *
- * `guardMutation` は 1 → 2 → 4 → 3 の順(design §8.1 の記載順)にまとめた入口だが、
- * ステップ 3(`verifyStateAccount`)は「ロック取得後に呼ぶ」ことが前提条件であるため、
- * **`guardMutation` は呼び出し側が既にステートロックを取得済みであることを前提とする**。
- * 各サブ関数(`assertMutationAllowed` / `resolveConnection` / `assertAccountAllowed` /
- * `assertRegionsAllowed` / `verifyStateAccount`)は独立して呼び出し可能であり、ロック取得の
- * 前後で呼び分ける必要がある呼び出し側(T-14〜T-16)はそちらを直接使ってよい。
- *
  * 拒否ケース(許可設定未設定・アカウント不一致・STS 解決失敗・ステートアカウント不一致・
  * リージョン不許可)では、後続のステップに一切進まない — 特に `backend.save` は
  * ステップ 3 に到達し、かつ照合結果が `unrecorded` の場合のみ呼ばれる。
  */
 
 import type { CfnSyncConfig } from '../core/config.js';
-import { GuardError } from '../core/errors.js';
+import {
+  GuardError,
+  LockError,
+  StatePersistenceError,
+} from '../core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -48,7 +45,7 @@ import type { ConnectionInfo } from '../report/index.js';
 /**
  * `allowedAccounts` / `allowedRegions` が設定されていることを確認する
  * (design §8.1-1, FR-7-5)。未設定・空配列(実質未指定)のいずれも fail-closed で拒否する。
- * この関数は変更系操作のすべての入口(guardMutation を含む)で最初に呼ばれ、
+ * この関数は変更系操作のすべての入口で最初に呼ばれ、
  * STS 解決やステート読み書きより前に失敗することを保証する。
  */
 export function assertMutationAllowed(config: CfnSyncConfig): void {
@@ -164,7 +161,16 @@ export async function verifyStateAccount(input: {
   if (result === 'unrecorded') {
     const recorded = withAccountId(state, input.accountId);
     const toSave = prepareSave(recorded);
-    const savedVersion = await input.backend.save(toSave, version);
+    let savedVersion: StateVersion;
+    try {
+      savedVersion = await input.backend.save(toSave, version);
+    } catch (cause) {
+      if (cause instanceof LockError) throw cause;
+      throw new StatePersistenceError(
+        'ステートへの初回アカウント ID 保存に失敗しました',
+        { cause },
+      );
+    }
     return { state: toSave, version: savedVersion };
   }
 
@@ -189,64 +195,5 @@ export function connectionHeader(connection: {
   return {
     accountId: connection.accountId,
     regions: [...connection.regions],
-  };
-}
-
-// ===========================================================================
-// guardMutation — 変更系操作の統合入口
-// ===========================================================================
-
-/** `guardMutation` の結果(FR-7-8: 接続先を後続処理・出力へ引き渡すための最小限の情報)。 */
-export interface GuardResult {
-  /** report へそのまま渡せる接続先情報(FR-7-8)。 */
-  connection: ConnectionInfo;
-  /** ステップ 3 でロック取得後に再読込(必要なら CAS 保存)した最新のステート。 */
-  state: CfnSyncState;
-  /** 上記ステートの版(次の CAS 保存で expected として使う)。 */
-  version: StateVersion | undefined;
-}
-
-/**
- * design.md §8.1 の AccountGuard を 1 → 2 → 4 → 3 の順にまとめた統合入口。
- *
- * **前提条件: 呼び出し側が既にステートロックを取得済みであること。** ステップ 3
- * (`verifyStateAccount`)がロック取得後の再読込を要求するため(FR-1-13)、この関数
- * 全体がその前提の上で動作する。ロック取得前に許可設定・STS・リージョンだけを
- * 先に検証したい呼び出し側は、`assertMutationAllowed` / `resolveConnection` /
- * `assertAccountAllowed` / `assertRegionsAllowed` を個別に呼び出せばよい。
- *
- * 各ステップは前段が成功した場合のみ実行される(fail-closed): 許可設定なし →
- * STS 未呼び出し。アカウント不一致・リージョン不許可 → ステート未読込
- * (`backend.load` 未呼び出し)。ステートアカウント不一致 → `backend.save` 未呼び出し。
- */
-export async function guardMutation(input: {
-  config: CfnSyncConfig;
-  sts: StsGateway;
-  backend: StateBackend;
-  targetRegions: string[];
-}): Promise<GuardResult> {
-  // 1. 許可設定の存在確認(FR-7-5)。
-  assertMutationAllowed(input.config);
-
-  // 2. STS 解決 + アカウント照合(FR-7-6)。
-  const connection = await resolveConnection(input.sts);
-  assertAccountAllowed(input.config, connection.accountId);
-
-  // 4. 対象リージョンの許可リージョン照合(FR-13-8)。
-  assertRegionsAllowed(input.config, input.targetRegions);
-
-  // 3. ロック取得後のステートアカウント照合(FR-1-13。呼び出し側が既にロック取得済みの前提)。
-  const { state, version } = await verifyStateAccount({
-    backend: input.backend,
-    accountId: connection.accountId,
-  });
-
-  return {
-    connection: connectionHeader({
-      accountId: connection.accountId,
-      regions: input.targetRegions,
-    }),
-    state,
-    version,
   };
 }

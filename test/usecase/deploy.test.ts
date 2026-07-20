@@ -765,6 +765,7 @@ describe('deploy — T-14 integration', () => {
 
   it('§7 CREATE 復旧: added 既存スタックが完全一致なら NoEcho/dependsOn 除外を警告し SYNC 保存する', async () => {
     const config = configOf({
+      'external.yaml': { stackName: 'ExternalStack' },
       'secret.yaml': {
         stackName: 'SecretStack',
         parameters: { Secret: 'desired' },
@@ -773,12 +774,13 @@ describe('deploy — T-14 integration', () => {
         dependsOn: ['external.yaml'],
       },
     });
-    const templates = templatesOf({ 'secret.yaml': TEMPLATE_SECRET });
-    const s = setup(
-      config,
-      templates,
-      withAccountId(createInitialState(), ACCOUNT),
-    );
+    const templates = templatesOf({
+      'external.yaml': TEMPLATE_C,
+      'secret.yaml': TEMPLATE_SECRET,
+    });
+    const initial = recordedState(config, templates);
+    delete initial.stacks['secret.yaml@ap-northeast-1'];
+    const s = setup(config, templates, initial);
     const fake = gatewayFor(s);
     fake.stacks.set(
       'SecretStack',
@@ -802,9 +804,10 @@ describe('deploy — T-14 integration', () => {
     expect(
       s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].dependsOn,
     ).toEqual(['external.yaml@ap-northeast-1']);
-    expect(result.report.diffs[0].warnings.join('\n')).toMatch(
-      /Secret|dependsOn/,
+    const secretDiff = result.report.diffs.find(
+      (diff) => diff.stackKey === 'secret.yaml@ap-northeast-1',
     );
+    expect(secretDiff?.warnings.join('\n')).toMatch(/Secret|dependsOn/);
   });
 
   it('§7 CREATE 復旧: 管理タグ欠如は他が一致しても fail-closed で import を案内する', async () => {

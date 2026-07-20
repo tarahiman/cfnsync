@@ -23,7 +23,6 @@ import {
   computeTemplateHash,
   detectChanges,
 } from '../../src/core/detect.js';
-import { LockError, StateConflictError } from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -31,16 +30,8 @@ import {
 } from '../../src/core/state.js';
 import { parseCfnTemplate } from '../../src/core/template.js';
 import type {
-  ChangeSetDetail,
   CloudFormationGateway,
-  CreateChangeSetInput,
-  LockHandle,
-  LockInfo,
   StackSummary,
-  StateBackend,
-  StateVersion,
-  StsGateway,
-  TemplateStage,
 } from '../../src/ports/index.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import {
@@ -49,6 +40,11 @@ import {
   type ImportOptions,
   runImport,
 } from '../../src/usecase/importer.js';
+import {
+  FakeCloudFormationGateway,
+  FakeStateBackend,
+  FakeStsGateway,
+} from './fakes.js';
 
 // ---------------------------------------------------------------------------
 // fixture(コメント・キー順つき cfnsync.yaml と CFN テンプレート)
@@ -120,194 +116,6 @@ function makeSummary(overrides: Partial<StackSummary> = {}): StackSummary {
   };
 }
 
-function emptyDetail(): ChangeSetDetail {
-  return {
-    status: 'CREATE_COMPLETE',
-    changes: [],
-    parameters: {},
-    tags: {},
-    capabilities: [],
-  };
-}
-
-/** 全メソッド呼び出しを記録する CloudFormationGateway フェイク(読み取り以外も記録して FR-10-7 を検証)。 */
-class FakeCfn implements CloudFormationGateway {
-  readonly calls: { method: string; args: unknown[] }[] = [];
-  readonly stacks = new Map<string, StackSummary>();
-  readonly templates = new Map<string, string>();
-
-  constructor(readonly region: string) {}
-
-  private record(method: string, ...args: unknown[]): void {
-    this.calls.push({ method, args });
-  }
-
-  methods(): string[] {
-    return this.calls.map((call) => call.method);
-  }
-
-  async describeStack(stackName: string): Promise<StackSummary | undefined> {
-    this.record('describeStack', stackName);
-    return this.stacks.get(stackName);
-  }
-  async listChangeSets(stackName: string) {
-    this.record('listChangeSets', stackName);
-    return [];
-  }
-  async createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }> {
-    this.record('createChangeSet', input);
-    return { id: 'cs' };
-  }
-  async describeChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<ChangeSetDetail> {
-    this.record('describeChangeSet', stackName, changeSetName);
-    return emptyDetail();
-  }
-  async waitForChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<ChangeSetDetail> {
-    this.record('waitForChangeSet', stackName, changeSetName);
-    return emptyDetail();
-  }
-  async deleteChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<void> {
-    this.record('deleteChangeSet', stackName, changeSetName);
-  }
-  async executeChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<void> {
-    this.record('executeChangeSet', stackName, changeSetName);
-  }
-  async deleteStack(stackName: string): Promise<void> {
-    this.record('deleteStack', stackName);
-  }
-  async describeStackEvents(stackName: string) {
-    this.record('describeStackEvents', stackName);
-    return [];
-  }
-
-  async getStackEventCursor(stackName: string) {
-    this.record('getStackEventCursor', stackName);
-    return { timestamp: new Date(0).toISOString() };
-  }
-  async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
-    this.record('getTemplate', stackName, stage);
-    return this.templates.get(stackName) ?? '';
-  }
-  async waitForStack(stackName: string): Promise<StackSummary> {
-    this.record('waitForStack', stackName);
-    return this.stacks.get(stackName) ?? makeSummary({ stackName });
-  }
-}
-
-/** STS フェイク。timeline に記録する。 */
-class FakeSts implements StsGateway {
-  constructor(
-    private readonly accountId: string,
-    private readonly timeline: string[],
-  ) {}
-
-  async getCallerIdentity(): Promise<{ accountId: string; arn: string }> {
-    this.timeline.push('sts.getCallerIdentity');
-    return {
-      accountId: this.accountId,
-      arn: `arn:aws:iam::${this.accountId}:role/import`,
-    };
-  }
-}
-
-/**
- * StateBackend フェイク。generation 比較の簡易 CAS。ロック関連・load/save を
- * すべて timeline に記録し、`verifyLockPlan` で fencing の障害注入を行う。
- */
-class FakeBackend implements StateBackend {
-  stored: { state: CfnSyncState; version: StateVersion } | undefined;
-  readonly saveCalls: {
-    state: CfnSyncState;
-    expected: StateVersion | undefined;
-  }[] = [];
-  /** verifyLock の応答列(先頭から消費。空になったら常に true)。 */
-  verifyLockPlan: boolean[] = [];
-  failAcquire = false;
-  releaseCalls = 0;
-
-  constructor(
-    private readonly timeline: string[],
-    initial?: CfnSyncState,
-  ) {
-    if (initial) {
-      this.stored = {
-        state: initial,
-        version: { generation: initial.generation },
-      };
-    }
-  }
-
-  async load(): Promise<
-    { state: CfnSyncState; version: StateVersion } | undefined
-  > {
-    this.timeline.push('backend.load');
-    return this.stored
-      ? { state: this.stored.state, version: this.stored.version }
-      : undefined;
-  }
-
-  async save(
-    state: CfnSyncState,
-    expected: StateVersion | undefined,
-  ): Promise<StateVersion> {
-    this.timeline.push('backend.save');
-    this.saveCalls.push({ state, expected });
-    if (expected?.generation !== this.stored?.version.generation) {
-      throw new StateConflictError('世代不一致(fake CAS)');
-    }
-    const version: StateVersion = { generation: state.generation };
-    this.stored = { state, version };
-    return version;
-  }
-
-  async acquireLock(info: LockInfo): Promise<LockHandle> {
-    this.timeline.push('backend.acquireLock');
-    if (this.failAcquire) {
-      throw new LockError('別の実行がロックを保持しています(fake)');
-    }
-    return { runId: info.runId };
-  }
-
-  async verifyLock(_handle: LockHandle): Promise<boolean> {
-    this.timeline.push('backend.verifyLock');
-    return this.verifyLockPlan.length > 0
-      ? (this.verifyLockPlan.shift() as boolean)
-      : true;
-  }
-
-  async releaseLock(
-    _handle: LockHandle,
-  ): Promise<{ released: boolean; reason?: string }> {
-    this.timeline.push('backend.releaseLock');
-    this.releaseCalls++;
-    return { released: true };
-  }
-
-  async readLock(): Promise<LockInfo | undefined> {
-    return undefined;
-  }
-
-  async forceUnlock(): Promise<{ released: boolean; reason?: string }> {
-    return { released: false };
-  }
-
-  stateId(): string {
-    return 'aabbccddeeff';
-  }
-}
-
 /** インメモリのファイル IO。書き込みを timeline と writes に記録する。 */
 class FakeFs implements ImportFileSystem {
   readonly files = new Map<string, string>();
@@ -371,22 +179,29 @@ function setup(opts: SetupOptions = {}) {
     fs.files.set(path, content);
   }
 
-  const backend = new FakeBackend(
+  const backend = new FakeStateBackend(
     timeline,
     opts.initialState === 'none'
       ? undefined
       : (opts.initialState ?? recordedState()),
   );
-  const sts = new FakeSts(opts.stsAccount ?? ACCOUNT, timeline);
+  const stsAccount = opts.stsAccount ?? ACCOUNT;
+  const sts = new FakeStsGateway(
+    async () => ({
+      accountId: stsAccount,
+      arn: `arn:aws:iam::${stsAccount}:role/import`,
+    }),
+    timeline,
+  );
 
-  const cfns = new Map<string, FakeCfn>();
+  const cfns = new Map<string, FakeCloudFormationGateway>();
   for (const region of opts.regions ?? [REGION]) {
-    cfns.set(region, new FakeCfn(region));
+    cfns.set(region, new FakeCloudFormationGateway(timeline, `cfn.${region}`));
   }
   const cfnFactory = (region: string): CloudFormationGateway => {
     let cfn = cfns.get(region);
     if (!cfn) {
-      cfn = new FakeCfn(region);
+      cfn = new FakeCloudFormationGateway(timeline, `cfn.${region}`);
       cfns.set(region, cfn);
     }
     return cfn;
@@ -485,6 +300,43 @@ describe('FR-10-1: DescribeStacks の結果を cfnsync.yaml へ書き戻す(コ�
     expect(entry['capabilities']).toEqual(['CAPABILITY_NAMED_IAM']);
     expect(text).not.toContain(MANAGEMENT_TAG_KEY);
   });
+
+  it('FR-10-1: AWS 側で削除済みの parameters・tags・capabilities は設定から除去する', async () => {
+    const s = setup(`version: 1
+defaultRegion: ap-northeast-1
+stacks:
+  network.yaml:
+    stackName: prod-network
+    parameters:
+      VpcCidr: 10.0.0.0/16
+      RemovedParameter: stale
+    tags:
+      RemovedTag: stale
+    capabilities: [CAPABILITY_NAMED_IAM]
+    regionOverrides:
+      ap-northeast-1:
+        parameters:
+          RemovedOverride: stale
+`);
+    deployNetwork(s, NETWORK_TEMPLATE, {
+      parameters: { VpcCidr: '10.0.0.0/16' },
+      tags: { [MANAGEMENT_TAG_KEY]: 'aabbccddeeff' },
+      capabilities: [],
+    });
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(0);
+    const written = parseYaml(s.fs.files.get(CONFIG_PATH)!) as {
+      stacks: Record<string, Record<string, unknown>>;
+    };
+    expect(written.stacks['network.yaml']['parameters']).toEqual({
+      VpcCidr: '10.0.0.0/16',
+    });
+    expect(written.stacks['network.yaml']['tags']).toEqual({});
+    expect(written.stacks['network.yaml']['capabilities']).toEqual([]);
+    expect(written.stacks['network.yaml']['regionOverrides']).toEqual({});
+  });
 });
 
 // ===========================================================================
@@ -569,7 +421,7 @@ describe('FR-10-4: テンプレート差分の扱い', () => {
     expect(result.report.stateSaved).toBe(true);
   });
 
-  it('テンプレート書き込み先が symlink 経由で設定ディレクトリ外になる場合は書き込みゼロで拒否する', async () => {
+  it('FR-10-4: テンプレート書き込み先が symlink 経由で設定ディレクトリ外になる場合は書き込みゼロで拒否する', async () => {
     const configText = `version: 1
 defaultRegion: ap-northeast-1
 stacks:
@@ -696,7 +548,7 @@ describe('FR-10-7: AWS への読み取り専用性', () => {
     expect(result.exitCode).toBe(0);
 
     for (const cfn of s.cfns.values()) {
-      const methods = new Set(cfn.methods());
+      const methods = new Set(cfn.methodSequence());
       expect(methods.has('createChangeSet')).toBe(false);
       expect(methods.has('executeChangeSet')).toBe(false);
       expect(methods.has('deleteChangeSet')).toBe(false);
@@ -945,7 +797,7 @@ describe('FR-10-11: exports / imports のステート記録', () => {
     expect(saved.stacks[`app.yaml@${REGION}`].exports).toEqual([]);
   });
 
-  it('design §4.3: import 成功時の dependsOn は同一リージョンのスタックキーに解決して記録する', async () => {
+  it('FR-10-11: import 成功時の dependsOn は同一リージョンのスタックキーに解決して記録する', async () => {
     const configText = TWO_STACK_CONFIG.replace(
       '    stackName: prod-app',
       '    stackName: prod-app\n    dependsOn: [network.yaml]',
@@ -1016,8 +868,8 @@ describe('FR-13-9: マルチリージョンのインポート', () => {
     expect(saved.stacks[`network.yaml@${REGION2}`].region).toBe(REGION2);
 
     // 各リージョンのゲートウェイに対して読み取りが行われた(リージョンごとの実行)。
-    expect(cfn1.methods()).toContain('describeStack');
-    expect(cfn2.methods()).toContain('describeStack');
+    expect(cfn1.methodSequence()).toContain('describeStack');
+    expect(cfn2.methodSequence()).toContain('describeStack');
 
     // 設定にはリージョン別パラメータが regionOverrides として書き分けられる(FR-13-3)。
     const written = parseYaml(s.fs.files.get(CONFIG_PATH)!) as {

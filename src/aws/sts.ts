@@ -17,6 +17,7 @@
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import type { StsGateway } from '../ports/index.js';
+import { toAwsError } from './errors.js';
 
 /** `StsGatewayImpl` のコンストラクタオプション。 */
 export interface StsGatewayOptions {
@@ -40,12 +41,16 @@ export class StsGatewayImpl implements StsGateway {
     });
   }
 
-  /** FR-7-6: 接続先アカウントを解決する。認証エラー等はそのまま例外として伝播する。 */
+  /** FR-7-6: 接続先アカウントを解決し、SDK 例外は AwsError へ分類する。 */
   async getCallerIdentity(): Promise<{ accountId: string; arn: string }> {
-    const output = await this.client.send(new GetCallerIdentityCommand({}));
-    return {
-      accountId: output.Account ?? '',
-      arn: output.Arn ?? '',
-    };
+    try {
+      const output = await this.client.send(new GetCallerIdentityCommand({}));
+      return {
+        accountId: output.Account ?? '',
+        arn: output.Arn ?? '',
+      };
+    } catch (cause) {
+      throw toAwsError('STS GetCallerIdentity', cause);
+    }
   }
 }

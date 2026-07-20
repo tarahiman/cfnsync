@@ -88,7 +88,7 @@ const LOCK_INFO: LockInfo = {
 };
 
 describe('S3StateBackend load/save (FR-1-6 s3)', () => {
-  it('load: NoSuchKey は undefined、それ以外は ETag を version に保持する', async () => {
+  it('FR-1-4: load は NoSuchKey を undefined、それ以外は ETag を version に保持する', async () => {
     s3Mock.on(GetObjectCommand, { Key: KEY }).rejects(noSuchKey());
     expect(await makeBackend().load()).toBeUndefined();
 
@@ -276,10 +276,19 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).rejects(noSuchKey());
     expect(await makeBackend().verifyLock(handle)).toBe(false);
   });
+
+  it('internal: readLock は不正なロック JSON を zod で拒否する', async () => {
+    s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
+      Body: bodyOf(JSON.stringify({ runId: 'run-1' })),
+      ETag: '"lock-1"',
+    } as never);
+
+    await expect(makeBackend().readLock()).rejects.toBeInstanceOf(AwsError);
+  });
 });
 
 describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
-  it('runId 一致 → 読み取り時 ETag による If-Match 条件付き削除で解放する', async () => {
+  it('FR-1-8: runId 一致 → 読み取り時 ETag による If-Match 条件付き削除で解放する', async () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
       Body: bodyOf(JSON.stringify(LOCK_INFO)),
       ETag: '"lock-1"',
@@ -292,7 +301,7 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     expect(call.IfMatch).toBe('"lock-1"');
   });
 
-  it('runId 不一致 → DeleteObject 自体が呼ばれない', async () => {
+  it('FR-1-8: runId 不一致 → DeleteObject 自体が呼ばれない', async () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
       Body: bodyOf(JSON.stringify(LOCK_INFO)),
       ETag: '"lock-1"',
@@ -303,7 +312,7 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
 
-  it('読み取りレスポンスに ETag がなければ fail-closed で失敗し DeleteObject を呼ばない', async () => {
+  it('FR-1-8: 読み取りレスポンスに ETag がなければ fail-closed で失敗し DeleteObject を呼ばない', async () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
       Body: bodyOf(JSON.stringify(LOCK_INFO)),
     } as never);
@@ -314,7 +323,7 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
 
-  it('読み取り〜削除間の所有者交代(412)→ 削除せず報告する', async () => {
+  it('FR-1-8: 読み取り〜削除間の所有者交代(412)→ 削除せず報告する', async () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
       Body: bodyOf(JSON.stringify(LOCK_INFO)),
       ETag: '"lock-1"',
@@ -327,10 +336,21 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     expect(result.released).toBe(false);
     expect(result.reason).toBeTruthy();
   });
+
+  it('internal: 不正なロック JSON では forceUnlock の削除を呼ばない', async () => {
+    s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
+      Body: bodyOf(JSON.stringify({ runId: 'run-1', owner: 'ci' })),
+      ETag: '"lock-1"',
+    } as never);
+
+    const result = await makeBackend().forceUnlock('run-1');
+    expect(result.released).toBe(false);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
 });
 
 describe('S3StateBackend stateId', () => {
-  it('bucket/key から安定な短縮ハッシュを導出する', () => {
+  it('internal: bucket/key から安定な短縮ハッシュを導出する', () => {
     const a = new S3StateBackend({
       bucket: BUCKET,
       key: KEY,
