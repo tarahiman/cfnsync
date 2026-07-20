@@ -109,6 +109,14 @@ export interface StackEvent {
   resourceStatusReason?: string;
 }
 
+/** スタック操作開始前の最新イベント位置。以後のイベントだけを逐次取得する境界に使う。 */
+export interface StackEventCursor {
+  /** 境界イベントが存在する場合の EventId。スタック未作成時は省略する。 */
+  eventId?: string;
+  /** 境界取得時刻、または境界イベントの Timestamp(ISO8601)。 */
+  timestamp: string;
+}
+
 /** `CreateChangeSet` の入力(usecase/executor(T-13)が ResolvedStackTarget から組み立てる)。 */
 export interface CreateChangeSetInput {
   stackName: string;
@@ -135,6 +143,8 @@ export interface WaitForStackOptions {
   timeoutMs?: number;
   /** FR-4-1: 待機中に観測した新着イベントを古い順に逐次通知する。 */
   onEvent?: (event: StackEvent) => void;
+  /** 操作開始前に取得したイベント境界。省略時は waitForStack 開始時に取得する。 */
+  eventCursor?: StackEventCursor;
 }
 
 /**
@@ -173,13 +183,17 @@ export interface CloudFormationGateway {
   /** `DeleteStack`(§8.3。`REVIEW_IN_PROGRESS` には呼ばないのは呼び出し側の責務。FR-2-10)。 */
   deleteStack(stackName: string): Promise<void>;
 
+  /** 最新イベント 1 件だけから、操作開始前のイベント境界を取得する。 */
+  getStackEventCursor(stackName: string): Promise<StackEventCursor>;
+
   /**
-   * `DescribeStackEvents` を全ページ走査し、`seenEventIds` に含まれない新着イベントのみを
-   * **古い順**(oldest-first)で返す(FR-4-1。AWS は新しい順に返すため整列する)。
+   * `DescribeStackEvents` を `after` 境界(省略時は末尾)までページ走査し、既読を除いた
+   * 新着イベントのみを **古い順** で返す(FR-4-1)。
    */
   describeStackEvents(
     stackName: string,
     seenEventIds?: Set<string>,
+    after?: StackEventCursor,
   ): Promise<StackEvent[]>;
 
   /** `GetTemplate`(`Original` は CREATE 復旧比較・import 用。§7 / FR-10-3)。TemplateBody 文字列を返す。 */

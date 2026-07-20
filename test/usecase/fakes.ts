@@ -221,6 +221,15 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
       : [...all];
   }
 
+  async getStackEventCursor(stackName: string) {
+    this.record('getStackEventCursor', stackName);
+    const latest = (this.events.get(stackName) ?? []).at(-1);
+    return {
+      eventId: latest?.eventId,
+      timestamp: latest?.timestamp ?? new Date(0).toISOString(),
+    };
+  }
+
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
     this.record('getTemplate', stackName, stage);
     return this.templates.get(stackName) ?? '';

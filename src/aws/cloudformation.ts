@@ -34,6 +34,7 @@ import type {
   CreateChangeSetInput,
   ResourceChange,
   StackEvent,
+  StackEventCursor,
   StackSummary,
   TemplateStage,
   WaitForStackOptions,
@@ -46,10 +47,16 @@ export interface CloudFormationGatewayOptions {
   profile?: string;
   /** SDK クライアントの maxAttempts(NFR-3)。既定 10。 */
   maxAttempts?: number;
-  /** ゲートウェイ層スロットリングリトライの最大再試行回数。既定 10。 */
+  /** SDK の retry exhausted 後に行う最大再試行回数。既定 2(初回を含め 3 attempts)。 */
   maxRetries?: number;
   /** スロットリングリトライの基底バックオフ(ms)。既定 100。 */
   baseDelayMs?: number;
+  /** ゲートウェイ層リトライの総経過時間上限(ms)。既定 60 秒。 */
+  maxRetryElapsedMs?: number;
+  /** full jitter 用乱数。既定 Math.random。テストで固定値を注入。 */
+  random?: () => number;
+  /** リトライ経過時間を測る時計。既定 Date.now。テストで注入。 */
+  retryNow?: () => number;
   /** 待機ポーリング間隔(ms)。既定 5000。テストで 0 を注入。 */
   pollIntervalMs?: number;
   /** 待機タイムアウト(ms)。既定 30 分。 */
@@ -151,13 +158,20 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
   private readonly maxRetries: number;
   private readonly baseDelayMs: number;
+  private readonly maxRetryElapsedMs: number;
+  private readonly random: () => number;
+  private readonly retryNow: () => number;
   private readonly pollIntervalMs: number;
   private readonly pollTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: CloudFormationGatewayOptions) {
-    this.maxRetries = options.maxRetries ?? 10;
+    // SDK adaptive retry が尽きた後だけ働く最終防衛層。初回を含め最大 3 回送信する。
+    this.maxRetries = options.maxRetries ?? 2;
     this.baseDelayMs = options.baseDelayMs ?? 100;
+    this.maxRetryElapsedMs = options.maxRetryElapsedMs ?? 60_000;
+    this.random = options.random ?? Math.random;
+    this.retryNow = options.retryNow ?? Date.now;
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.pollTimeoutMs = options.pollTimeoutMs ?? 30 * 60 * 1_000;
     this.sleep = options.sleep ?? defaultSleep;
@@ -181,12 +195,25 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
    */
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
     let attempt = 0;
+    const startedAt = this.retryNow();
     for (;;) {
       try {
         return await fn();
       } catch (err) {
         if (isThrottlingError(err) && attempt < this.maxRetries) {
-          await this.sleep(this.baseDelayMs * 2 ** attempt);
+          const elapsed = Math.max(0, this.retryNow() - startedAt);
+          const remaining = this.maxRetryElapsedMs - elapsed;
+          if (remaining <= 0) throw err;
+
+          // Full jitter: [0, exponential cap)。上限までの残り時間を超えて待たない。
+          const exponentialCap = this.baseDelayMs * 2 ** attempt;
+          const delay = Math.min(
+            Math.floor(this.random() * exponentialCap),
+            remaining,
+          );
+          await this.sleep(delay);
+          // 上限ちょうどまで sleep した場合は、次の SDK attempts を開始しない。
+          if (this.retryNow() - startedAt >= this.maxRetryElapsedMs) throw err;
           attempt += 1;
           continue;
         }
@@ -387,9 +414,24 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     );
   }
 
+  async getStackEventCursor(stackName: string): Promise<StackEventCursor> {
+    const capturedAt = new Date().toISOString();
+    const output = await this.withRetry(() =>
+      this.client.send(
+        new DescribeStackEventsCommand({ StackName: stackName }),
+      ),
+    );
+    const latest = output.StackEvents?.[0];
+    return {
+      eventId: latest?.EventId,
+      timestamp: toIso(latest?.Timestamp) ?? capturedAt,
+    };
+  }
+
   async describeStackEvents(
     stackName: string,
     seenEventIds?: Set<string>,
+    after?: StackEventCursor,
   ): Promise<StackEvent[]> {
     const seen = seenEventIds ?? new Set<string>();
     // AWS は新しい順に返す。ページ順(newest-first)で貯め、最後に反転して古い順にする。
@@ -407,11 +449,25 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       );
       const pageEvents = output.StackEvents ?? [];
       let newInPage = 0;
+      let reachedBoundary = false;
       for (const event of pageEvents) {
+        const timestamp = toIso(event.Timestamp) ?? '';
+        if (
+          (after?.eventId !== undefined && event.EventId === after.eventId) ||
+          (after?.eventId === undefined &&
+            timestamp !== '' &&
+            timestamp <= (after?.timestamp ?? '')) ||
+          (after?.eventId !== undefined &&
+            timestamp !== '' &&
+            timestamp < after.timestamp)
+        ) {
+          reachedBoundary = true;
+          break;
+        }
         if (event.EventId !== undefined && seen.has(event.EventId)) continue;
         collectedNewestFirst.push({
           eventId: event.EventId ?? '',
-          timestamp: toIso(event.Timestamp) ?? '',
+          timestamp,
           logicalResourceId: event.LogicalResourceId ?? '',
           resourceType: event.ResourceType ?? '',
           resourceStatus: event.ResourceStatus ?? '',
@@ -420,6 +476,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
         newInPage += 1;
       }
       nextToken = output.NextToken;
+      if (reachedBoundary) break;
       // イベントは厳密に新しい順。ページ全体が既読なら、それより古いページも既読なので打ち切る。
       if (pageEvents.length > 0 && newInPage === 0) break;
     } while (nextToken);
@@ -445,6 +502,9 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     const timeout = opts.timeoutMs ?? this.pollTimeoutMs;
     const deadline = Date.now() + timeout;
     const seen = new Set<string>();
+    const eventCursor = opts.onEvent
+      ? (opts.eventCursor ?? (await this.getStackEventCursor(stackName)))
+      : undefined;
     let last: StackSummary | undefined;
 
     for (;;) {
@@ -452,7 +512,11 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
       // FR-4-1: 待機中の新着イベントを古い順で逐次通知する。
       if (opts.onEvent) {
-        const events = await this.describeStackEvents(stackName, seen);
+        const events = await this.describeStackEvents(
+          stackName,
+          seen,
+          eventCursor,
+        );
         for (const event of events) {
           seen.add(event.eventId);
           opts.onEvent(event);

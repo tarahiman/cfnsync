@@ -522,8 +522,11 @@ async function processCreateOrUpdate(
     return { hasDiff: true };
   }
 
+  // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
+  const eventCursor = await cfn.getStackEventCursor(target.stackName);
   await executeWithReinspection(executor, target.stackName, created.name);
   const final = await cfn.waitForStack(target.stackName, {
+    eventCursor,
     onEvent: (event) => {
       const line: StackEventLine = {
         stackKey: operation.stackKey,
@@ -831,8 +834,9 @@ function fencedGateway(
       gateway.describeChangeSet(stackName, changeSetName),
     waitForChangeSet: (stackName, changeSetName) =>
       gateway.waitForChangeSet(stackName, changeSetName),
-    describeStackEvents: (stackName, seen) =>
-      gateway.describeStackEvents(stackName, seen),
+    describeStackEvents: (stackName, seen, after) =>
+      gateway.describeStackEvents(stackName, seen, after),
+    getStackEventCursor: (stackName) => gateway.getStackEventCursor(stackName),
     getTemplate: (stackName, stage) => gateway.getTemplate(stackName, stage),
     waitForStack: (stackName, opts) => gateway.waitForStack(stackName, opts),
     async createChangeSet(changeSetInput) {

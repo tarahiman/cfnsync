@@ -334,6 +334,15 @@ describe('deploy — T-14 integration', () => {
       resourceStatus: 'UPDATE_FAILED',
       resourceStatusReason: 'bucket policy rejected',
     };
+    const historicalEvent: StackEvent = {
+      ...failureEvent,
+      eventId: 'historical',
+      timestamp: '2026-07-20T11:59:00.000Z',
+      logicalResourceId: 'OldResource',
+      resourceStatus: 'UPDATE_COMPLETE',
+      resourceStatusReason: undefined,
+    };
+    fake.events.set('B', [historicalEvent]);
     fake.waitEvents.set('B', [failureEvent]);
     fake.waitResults.set('B', [
       makeStackSummary({
@@ -353,6 +362,19 @@ describe('deploy — T-14 integration', () => {
       }),
     ]);
     expect(s.emitted).toEqual(result.report.events);
+    expect(result.report.events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ logicalResourceId: 'OldResource' }),
+      ]),
+    );
+    const cursorCall = fake.calls.findIndex(
+      (call) => call.method === 'getStackEventCursor' && call.args[0] === 'B',
+    );
+    const executeCall = fake.calls.findIndex(
+      (call) => call.method === 'executeChangeSet' && call.args[0] === 'B',
+    );
+    expect(cursorCall).toBeGreaterThanOrEqual(0);
+    expect(cursorCall).toBeLessThan(executeCall);
     expect(result.report.result?.stacks).toContainEqual(
       expect.objectContaining({
         stackName: 'B',

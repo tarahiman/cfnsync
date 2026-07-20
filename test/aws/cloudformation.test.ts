@@ -85,10 +85,10 @@ function makeSummary(name: string) {
   };
 }
 
-function makeEvent(eventId: string) {
+function makeEvent(eventId: string, timestamp = '2026-07-19T00:00:00Z') {
   return {
     EventId: eventId,
-    Timestamp: new Date('2026-07-19T00:00:00Z'),
+    Timestamp: new Date(timestamp),
     LogicalResourceId: 'Vpc',
     ResourceType: 'AWS::EC2::VPC',
     ResourceStatus: 'CREATE_COMPLETE',
@@ -475,6 +475,27 @@ describe('FR-4-1(基盤): スタックイベント取得', () => {
     });
     expect(events[0].timestamp).toBe('2026-07-19T00:00:00.000Z');
   });
+
+  it('FR-4-1 / NFR-5: 開始境界に到達したページで走査を打ち切り、過去 2 ページ分を読み込まない', async () => {
+    cfnMock.on(DescribeStackEventsCommand, { StackName: 'stk' }).resolvesOnce({
+      StackEvents: [
+        makeEvent('new-2', '2026-07-20T00:02:00Z'),
+        makeEvent('new-1', '2026-07-20T00:01:00Z'),
+        makeEvent('boundary', '2026-07-20T00:00:00Z'),
+        makeEvent('old-page-1', '2026-07-19T23:59:00Z'),
+      ],
+      NextToken: 'historical-page-2',
+    });
+
+    const gateway = makeGateway();
+    const events = await gateway.describeStackEvents('stk', new Set(), {
+      eventId: 'boundary',
+      timestamp: '2026-07-20T00:00:00.000Z',
+    });
+
+    expect(events.map((event) => event.eventId)).toEqual(['new-1', 'new-2']);
+    expect(cfnMock.commandCalls(DescribeStackEventsCommand)).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -558,9 +579,14 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
           { StackName: 'stk', StackId: 'id', StackStatus: 'UPDATE_COMPLETE' },
         ],
       });
-    cfnMock.on(DescribeStackEventsCommand).resolves({
-      StackEvents: [makeEvent('e2'), makeEvent('e1')], // newest-first
-    });
+    cfnMock
+      .on(DescribeStackEventsCommand)
+      // wait 開始時の境界取得。過去履歴の最新は e0。
+      .resolvesOnce({ StackEvents: [makeEvent('e0')] })
+      .resolvesOnce({ StackEvents: [makeEvent('e1'), makeEvent('e0')] })
+      .resolvesOnce({
+        StackEvents: [makeEvent('e2'), makeEvent('e1'), makeEvent('e0')],
+      });
 
     const streamed: string[] = [];
     const gateway = makeGateway();
@@ -572,6 +598,7 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     expect(summary.status).toBe('UPDATE_COMPLETE');
     // 古い順で通知され、ポーリング間で重複しない。
     expect(streamed).toEqual(['e1', 'e2']);
+    expect(cfnMock.commandCalls(DescribeStackEventsCommand)).toHaveLength(3);
   });
 });
 
@@ -609,19 +636,45 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('NFR-3: Throttling が maxRetries を超えると最終的に throw する(指数バックオフ回数)', async () => {
+  it('NFR-3: 最終防衛層は既定 3 attempts で打ち切り、full jitter の指数バックオフを使う', async () => {
     const sleep = vi.fn(async () => {});
     cfnMock
       .on(ExecuteChangeSetCommand)
       .rejects(throttlingError('ThrottlingException'));
 
-    const gateway = makeGateway({ sleep, maxRetries: 2 });
+    const gateway = makeGateway({ sleep, random: () => 0.5 });
     await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
       /ThrottlingException/,
     );
     // 初回 + 2 リトライ = 3 回 send、sleep は 2 回。
     expect(cfnMock.commandCalls(ExecuteChangeSetCommand)).toHaveLength(3);
     expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls).toEqual([[50], [100]]);
+  });
+
+  it('NFR-3: 総経過時間上限に達した後は sleep も次の attempt も行わない', async () => {
+    let elapsed = 0;
+    const sleep = vi.fn(async (ms: number) => {
+      elapsed += ms;
+    });
+    const retryNow = vi.fn(() => elapsed);
+    cfnMock
+      .on(ExecuteChangeSetCommand)
+      .rejects(throttlingError('ThrottlingException'));
+
+    const gateway = makeGateway({
+      sleep,
+      retryNow,
+      baseDelayMs: 100_000,
+      random: () => 1,
+      maxRetryElapsedMs: 60_000,
+    });
+    await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
+      /ThrottlingException/,
+    );
+    expect(cfnMock.commandCalls(ExecuteChangeSetCommand)).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(60_000);
   });
 
   it('NFR-3: スロットリング以外のエラーはリトライせず即伝播する', async () => {

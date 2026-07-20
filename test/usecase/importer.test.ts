@@ -191,6 +191,11 @@ class FakeCfn implements CloudFormationGateway {
     this.record('describeStackEvents', stackName);
     return [];
   }
+
+  async getStackEventCursor(stackName: string) {
+    this.record('getStackEventCursor', stackName);
+    return { timestamp: new Date(0).toISOString() };
+  }
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
     this.record('getTemplate', stackName, stage);
     return this.templates.get(stackName) ?? '';
