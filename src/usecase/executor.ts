@@ -196,11 +196,11 @@ export async function reclaimStaleChangeSets(
 ): Promise<void> {
   const summaries = await ctx.cfn.listChangeSets(stackName);
 
-  const own: string[] = [];
+  const own: Array<{ name: string; id: string }> = [];
   const foreign: string[] = [];
   for (const summary of summaries) {
     if (isOwnChangeSet(summary.name, ctx.stateId)) {
-      own.push(summary.name);
+      own.push({ name: summary.name, id: summary.id });
     } else {
       foreign.push(summary.name);
     }
@@ -215,8 +215,9 @@ export async function reclaimStaleChangeSets(
     );
   }
 
-  for (const name of own) {
-    await ctx.cfn.deleteChangeSet(stackName, name);
+  for (const changeSet of own) {
+    // 過去形式で ARN が記録されていない残骸も、自 stateId の名前なら従来どおり回収する。
+    await ctx.cfn.deleteChangeSet(stackName, changeSet.id || changeSet.name);
   }
 }
 
@@ -226,7 +227,8 @@ export async function reclaimStaleChangeSets(
 
 function isNoChangeReason(reason: string | undefined): boolean {
   if (!reason) return false;
-  return NO_CHANGE_REASONS.some((pattern) => reason.startsWith(pattern));
+  const normalized = reason.trim();
+  return NO_CHANGE_REASONS.some((pattern) => normalized === pattern);
 }
 
 /** `createManagedChangeSet` の入力。`ResolvedStackTarget` からスタック名・入力を取り出す。 */
@@ -241,6 +243,8 @@ export interface CreateManagedChangeSetInput {
 export interface CreateManagedChangeSetResult {
   /** 作成した変更セット名(実行直前再検査で自変更セットの識別に使う)。 */
   name: string;
+  /** CreateChangeSet が返した固有 ARN。以後の全操作をこの値へ固定する。 */
+  id: string;
   /** 完了までポーリングした変更セット詳細(差分表示に使う)。 */
   detail: ChangeSetDetail;
   /** 空変更セット(実質差分なし)として削除・スキップしたか(FR-2-3)。 */
@@ -266,7 +270,7 @@ export async function createManagedChangeSet(
   });
   const tags = { ...target.tags, [MANAGEMENT_TAG_KEY]: ctx.stateId };
 
-  await ctx.cfn.createChangeSet({
+  const created = await ctx.cfn.createChangeSet({
     stackName: target.stackName,
     changeSetName: name,
     changeSetType: input.kind === 'create' ? 'CREATE' : 'UPDATE',
@@ -276,8 +280,23 @@ export async function createManagedChangeSet(
     tags,
     description: `cfnsync ${input.kind} (${ctx.runId})`,
   });
+  if (!created.id) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の CreateChangeSet が変更セット ARN を返しませんでした。実行対象を固定できないため中断します`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
 
-  const rawDetail = await ctx.cfn.waitForChangeSet(target.stackName, name);
+  const rawDetail = await ctx.cfn.waitForChangeSet(
+    target.stackName,
+    created.id,
+  );
+  if (rawDetail.name !== name || rawDetail.id !== created.id) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の変更セット待機結果が作成対象と一致しません(name/ARN mismatch)。差し替えの可能性があるため中断します`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
   const redact = ctx.redact ?? identityRedactor;
   const detail: ChangeSetDetail = {
     ...rawDetail,
@@ -293,8 +312,8 @@ export async function createManagedChangeSet(
       isNoChangeReason(rawDetail.statusReason)
     ) {
       // 空変更セットはエラーではなく「変更なし」。作成された空の変更セットを削除する。
-      await ctx.cfn.deleteChangeSet(target.stackName, name);
-      return { name, detail, noChanges: true };
+      await ctx.cfn.deleteChangeSet(target.stackName, created.id);
+      return { name, id: created.id, detail, noChanges: true };
     }
     throw new StackStateError(
       `スタック '${target.stackName}' の変更セット作成に失敗しました: ${detail.statusReason ?? '(理由不明)'}`,
@@ -302,7 +321,7 @@ export async function createManagedChangeSet(
     );
   }
 
-  return { name, detail, noChanges: false };
+  return { name, id: created.id, detail, noChanges: false };
 }
 
 // ===========================================================================
@@ -320,19 +339,27 @@ export async function executeWithReinspection(
   ctx: ExecutorContext,
   stackName: string,
   ownChangeSetName: string,
+  ownChangeSetId: string,
+  beforeExecute?: () => Promise<void>,
 ): Promise<void> {
   const summaries = await ctx.cfn.listChangeSets(stackName);
+  const own = summaries.filter(
+    (summary) =>
+      summary.name === ownChangeSetName && summary.id === ownChangeSetId,
+  );
   const others = summaries.filter(
-    (summary) => summary.name !== ownChangeSetName,
+    (summary) =>
+      summary.name !== ownChangeSetName || summary.id !== ownChangeSetId,
   );
 
-  if (others.length > 0) {
+  if (own.length !== 1 || others.length > 0 || summaries.length !== 1) {
     throw new StackStateError(
-      `実行直前の再検査で、自変更セット '${ownChangeSetName}' 以外の変更セットを検出しました: ` +
-        `${others.map((summary) => summary.name).join(', ')}。` +
+      `実行直前の再検査で、自変更セット '${ownChangeSetName}' (${ownChangeSetId}) の名前と ARN を一意に確認できませんでした: ` +
+        `${summaries.map((summary) => `${summary.name} (${summary.id})`).join(', ') || '(対象なし)'}。` +
         `ExecuteChangeSet は同一スタックの他の変更セットを暗黙削除するため、実行を中止します`,
     );
   }
 
-  await ctx.cfn.executeChangeSet(stackName, ownChangeSetName);
+  await beforeExecute?.();
+  await ctx.cfn.executeChangeSet(stackName, ownChangeSetId);
 }

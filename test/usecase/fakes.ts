@@ -162,10 +162,17 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     return this.calls.map((c) => c.method);
   }
 
-  private detailFor(changeSetName: string): ChangeSetDetail {
-    return (
-      this.changeSetDetails.get(changeSetName) ?? this.defaultChangeSetDetail
-    );
+  private detailFor(identifier: string): ChangeSetDetail {
+    const summary = [...this.changeSets.values()]
+      .flat()
+      .find((item) => item.id === identifier || item.name === identifier);
+    const name = summary?.name ?? identifier.split('/').at(-1) ?? identifier;
+    const id = summary?.id ?? identifier;
+    const detail =
+      this.changeSetDetails.get(identifier) ??
+      this.changeSetDetails.get(name) ??
+      this.defaultChangeSetDetail;
+    return { ...detail, name: detail.name ?? name, id: detail.id ?? id };
   }
 
   async describeStack(stackName: string): Promise<StackSummary | undefined> {
@@ -183,7 +190,13 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
 
   async createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }> {
     this.record('createChangeSet', input);
-    return { id: `arn:aws:cloudformation:changeSet/${input.changeSetName}` };
+    const id = `arn:aws:cloudformation:changeSet/${input.changeSetName}`;
+    const existing = this.changeSets.get(input.stackName) ?? [];
+    this.changeSets.set(input.stackName, [
+      ...existing,
+      makeChangeSetSummary(input.changeSetName, { id }),
+    ]);
+    return { id };
   }
 
   async describeChangeSet(
@@ -211,7 +224,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     if (list) {
       this.changeSets.set(
         stackName,
-        list.filter((cs) => cs.name !== changeSetName),
+        list.filter(
+          (cs) => cs.name !== changeSetName && cs.id !== changeSetName,
+        ),
       );
     }
   }
@@ -221,10 +236,23 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     changeSetName: string,
   ): Promise<void> {
     this.record('executeChangeSet', stackName, changeSetName);
+    const list = this.changeSets.get(stackName);
+    if (list) {
+      this.changeSets.set(
+        stackName,
+        list.filter(
+          (changeSet) =>
+            changeSet.id !== changeSetName && changeSet.name !== changeSetName,
+        ),
+      );
+    }
   }
 
   async deleteStack(stackName: string): Promise<void> {
-    if (this.stacks.get(stackName)?.status === 'REVIEW_IN_PROGRESS') {
+    const stack =
+      this.stacks.get(stackName) ??
+      [...this.stacks.values()].find((item) => item.stackId === stackName);
+    if (stack?.status === 'REVIEW_IN_PROGRESS') {
       this.reviewInProgressDeleteCalls.push(stackName);
     }
     this.record('deleteStack', stackName);
@@ -260,17 +288,22 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     opts?: WaitForStackOptions,
   ): Promise<StackSummary> {
     this.record('waitForStack', stackName, opts);
-    await this.onWaitForStack?.(stackName);
-    for (const event of this.waitEvents.get(stackName) ?? []) {
+    const resolvedName =
+      this.stacks.get(stackName)?.stackName ??
+      [...this.stacks.values()].find((item) => item.stackId === stackName)
+        ?.stackName ??
+      stackName;
+    await this.onWaitForStack?.(resolvedName);
+    for (const event of this.waitEvents.get(resolvedName) ?? []) {
       opts?.onEvent?.(event);
     }
-    const queued = this.waitResults.get(stackName);
+    const queued = this.waitResults.get(resolvedName);
     if (queued && queued.length > 0) {
       return queued.shift() as StackSummary;
     }
     return (
-      this.stacks.get(stackName) ??
-      makeStackSummary({ stackName, status: 'CREATE_COMPLETE' })
+      this.stacks.get(resolvedName) ??
+      makeStackSummary({ stackName: resolvedName, status: 'CREATE_COMPLETE' })
     );
   }
 }

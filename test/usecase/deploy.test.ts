@@ -121,6 +121,7 @@ function recordedState(
     });
     state = upsertStackEntry(state, target.stackKey, {
       stackName: target.stackName,
+      stackId: `arn:aws:cloudformation:${target.region}:${ACCOUNT}:stack/${target.stackName}/managed`,
       region: target.region,
       templateHash: computeTemplateHash(source),
       inputsHash: opts.modified
@@ -138,6 +139,8 @@ function recordedState(
       dependsOn: target.dependsOn.map((raw) =>
         resolveDependsOnKey(raw, target.region),
       ),
+      dependencyAnalysisIncomplete:
+        analysis.warnings.length > 0 && target.dependsOn.length === 0,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     });
@@ -238,6 +241,7 @@ function setExistingStacks(
       target.stackName,
       makeStackSummary({
         stackName: target.stackName,
+        stackId: `arn:aws:cloudformation:${target.region}:${ACCOUNT}:stack/${target.stackName}/managed`,
         status: 'UPDATE_COMPLETE',
       }),
     );
@@ -300,6 +304,9 @@ describe('deploy — T-14 integration', () => {
       'A',
       'B',
     ]);
+    expect(s.backend.stored?.state.stacks[`a.yaml@${REGION}`].stackId).toBe(
+      `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/A/managed`,
+    );
   });
 
   it('FR-5-3: dry-run は差分 describe 後に変更セットを削除し、実行しない', async () => {
@@ -474,7 +481,12 @@ describe('deploy — T-14 integration', () => {
     const stale = 'cfnsync-aabbccddeeff-fedcba9876543210-20260720T110000000';
     fake.changeSets.set('B', [makeChangeSetSummary(stale)]);
     fake.waitResults.set('B', [
-      makeStackSummary({ stackName: 'B', status: 'UPDATE_COMPLETE' }),
+      makeStackSummary({
+        stackName: 'B',
+        stackId:
+          s.backend.stored?.state.stacks[`b.yaml@${REGION}`].stackId ?? '',
+        status: 'UPDATE_COMPLETE',
+      }),
     ]);
     const rerun = await s.run();
 
@@ -489,7 +501,7 @@ describe('deploy — T-14 integration', () => {
     ).toEqual(['B']);
     expect(
       fake.callsOf('deleteChangeSet').map((call) => call.args[1]),
-    ).toContain(stale);
+    ).toContain(makeChangeSetSummary(stale).id);
     expect(
       fake.calls.filter(
         (call) =>
@@ -774,6 +786,138 @@ describe('deploy — T-14 integration', () => {
     );
   });
 
+  it('FR-9-2(__REQUIRED__再レビュー⑥): 必須値不足を計画失敗として AWS 前に依存下流を skipped にする', async () => {
+    const providerTemplate = `${TEMPLATE_SECRET}\nOutputs:\n  Shared:\n    Value: value\n    Export:\n      Name: SharedValue\n`;
+    const config = configOf({
+      'provider.yaml': {
+        stackName: 'Provider',
+        parameters: { Secret: '__REQUIRED__' },
+      },
+      'consumer.yaml': { stackName: 'Consumer' },
+      'independent.yaml': { stackName: 'Independent' },
+    });
+    const templates = templatesOf({
+      'provider.yaml': providerTemplate,
+      'consumer.yaml': TEMPLATE_B,
+      'independent.yaml': TEMPLATE_C,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+
+    const result = await s.run({ onFailure: 'continue' });
+    const created = fake
+      .callsOf('createChangeSet')
+      .map((call) => (call.args[0] as { stackName: string }).stackName);
+
+    expect(result.exitCode).toBe(1);
+    expect(created).toEqual(['Independent']);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({ stackName: 'Consumer', outcome: 'skipped' }),
+    );
+  });
+
+  it('§4.3(Stack ARN再レビュー⑥): UPDATE は state stackId 未記録・不一致なら変更セット作成前に拒否する', async () => {
+    for (const stackId of [null, 'arn:aws:cloudformation:replaced-stack']) {
+      const config = configOf({ 'a.yaml': { stackName: 'A' } });
+      const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+      const initial = recordedState(config, templates, { modified: true });
+      initial.stacks[`a.yaml@${REGION}`].stackId = stackId;
+      const s = setup(config, templates, initial);
+      const fake = gatewayFor(s);
+      setExistingStacks(config, fake);
+
+      const result = await s.run();
+
+      expect(result.exitCode).toBe(1);
+      expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+      expect(result.report.result?.stacks).toContainEqual(
+        expect.objectContaining({
+          errorMessage: expect.stringMatching(/stackId|ARN|import|移行/i),
+        }),
+      );
+    }
+  });
+
+  it('§4.3(Stack ARN再レビュー⑥): UPDATE は ExecuteChangeSet 直前の stackId 差し替えも拒否する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const describeStack = fake.describeStack.bind(fake);
+    fake.describeStack = async (stackName) => {
+      const summary = await describeStack(stackName);
+      if (fake.callsOf('createChangeSet').length > 0 && summary) {
+        return {
+          ...summary,
+          stackId: 'arn:aws:cloudformation:replaced-before-execute',
+        };
+      }
+      return summary;
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('createChangeSet')).toHaveLength(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/stackId|ARN|import/i),
+      }),
+    );
+  });
+
+  it('§6(解析再レビュー⑥): 動的依存警告を state に incomplete 保存し、明示 dependsOn があれば完全扱いにする', async () => {
+    const dynamic = `
+Resources: {}
+Outputs:
+  Dynamic:
+    Value: value
+    Export:
+      Name: !Sub '\${Prefix}-value'
+`;
+    const config = configOf({
+      'provider.yaml': { stackName: 'Provider' },
+      'dynamic.yaml': { stackName: 'Dynamic' },
+      'covered.yaml': {
+        stackName: 'Covered',
+        dependsOn: ['provider.yaml'],
+      },
+    });
+    const templates = templatesOf({
+      'provider.yaml': TEMPLATE_C,
+      'dynamic.yaml': dynamic,
+      'covered.yaml': dynamic,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+
+    expect((await s.run()).exitCode).toBe(0);
+    expect(
+      s.backend.stored?.state.stacks[`dynamic.yaml@${REGION}`]
+        .dependencyAnalysisIncomplete,
+    ).toBe(true);
+    expect(
+      s.backend.stored?.state.stacks[`covered.yaml@${REGION}`]
+        .dependencyAnalysisIncomplete,
+    ).toBe(false);
+  });
+
   it('§7 CREATE 復旧: added 既存スタックが完全一致なら NoEcho/dependsOn 除外を警告し SYNC 保存する', async () => {
     const config = configOf({
       'external.yaml': { stackName: 'ExternalStack' },
@@ -812,6 +956,9 @@ describe('deploy — T-14 integration', () => {
     expect(
       s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].lastAction,
     ).toBe('SYNC');
+    expect(
+      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].stackId,
+    ).toBe(fake.stacks.get('SecretStack')?.stackId);
     expect(
       s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].dependsOn,
     ).toEqual(['external.yaml@ap-northeast-1']);
@@ -865,11 +1012,16 @@ describe('deploy — T-14 integration', () => {
     const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
     const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
     const config = configOf({});
-    const s = setup(config, new Map(), recordedState(oldConfig, oldTemplates));
+    const state = recordedState(oldConfig, oldTemplates);
+    const s = setup(config, new Map(), state);
     const fake = gatewayFor(s);
     fake.stacks.set(
       'Old',
-      makeStackSummary({ stackName: 'Old', status: 'CREATE_COMPLETE' }),
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: state.stacks[`old.yaml@${REGION}`].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
     );
     fake.waitResults.set('Old', [
       makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' }),
@@ -881,7 +1033,7 @@ describe('deploy — T-14 integration', () => {
       expect.objectContaining({ stackName: 'Old', operation: 'delete' }),
     );
     expect(fake.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
-      'Old',
+      state.stacks[`old.yaml@${REGION}`].stackId,
     ]);
   });
 });

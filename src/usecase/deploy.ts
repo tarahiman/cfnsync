@@ -266,6 +266,40 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   let ownershipLost = false;
   const skipped = new Set<StackKey>();
 
+  // FR-9-2: __REQUIRED__ は AWS 副作用前に確定した計画上の失敗として伝播する。
+  for (const failedStackKey of ctx.required.keys()) {
+    const decision = computeSkips({
+      plan: prepared.plan,
+      failedStackKey,
+      mergedGraphs: prepared.mergedGraphs,
+      onFailure: ctx.options.onFailure ?? 'stop',
+      failureKind: 'deploy',
+    });
+    for (const key of decision.skipped) skipped.add(key);
+  }
+
+  // FR-6-5: 依存メタデータ自体が unknown/incomplete の削除は、provider を特定できない。
+  // その対象より前に並んだ削除も含め、同じ削除バッチの他対象を事前に止める。
+  if (ctx.options.allowDelete && !ctx.options.dryRun) {
+    const deleteOperations = prepared.plan.regions.flatMap((region) =>
+      region.operations.filter((operation) => operation.kind === 'delete'),
+    );
+    const unsafeDependencyKeys = new Set(
+      deleteOperations
+        .filter((operation) =>
+          hasUnsafeDependencyMetadata(operation.entry.stateEntry),
+        )
+        .map((operation) => operation.stackKey),
+    );
+    if (unsafeDependencyKeys.size > 0) {
+      for (const operation of deleteOperations) {
+        if (!unsafeDependencyKeys.has(operation.stackKey)) {
+          skipped.add(operation.stackKey);
+        }
+      }
+    }
+  }
+
   // 将来並列化メモ: AWS ワーカーは state delta / report fragment を返し、このループの
   // 単一コミットキューが直列マージしてスタックごとに CAS 保存する形へ分離する。
   // 現状は fencing・失敗スキップ・即時 CAS の境界が密結合なため、挙動を変えない本バッチでは
@@ -312,6 +346,16 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
               );
         hasDiff ||= operationResult.hasDiff;
         hasError ||= operationResult.failed === true;
+        if (operationResult.failed) {
+          const skipDecision = computeSkips({
+            plan: prepared.plan,
+            failedStackKey: operation.stackKey,
+            mergedGraphs: prepared.mergedGraphs,
+            onFailure: ctx.options.onFailure ?? 'stop',
+            failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
+          });
+          for (const key of skipDecision.skipped) skipped.add(key);
+        }
       } catch (error) {
         hasError = true;
         results.push(
@@ -336,6 +380,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           failedStackKey: operation.stackKey,
           mergedGraphs: prepared.mergedGraphs,
           onFailure: ctx.options.onFailure ?? 'stop',
+          failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
         });
         for (const key of skipDecision.skipped) skipped.add(key);
       }
@@ -502,9 +547,17 @@ async function processCreateOrUpdate(
     redact,
   };
   const prepared = await prepareStack(executor, target.stackName, knownSummary);
+  if (prepared.kind === 'update') {
+    await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
+  }
   // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。通常パスのみ明示回収する。
   if (!prepared.reviewInProgress)
     await reclaimStaleChangeSets(executor, target.stackName);
+
+  // UPDATE の副作用(CreateChangeSet)直前にも再取得し、同名差し替えを fail-closed にする。
+  if (prepared.kind === 'update') {
+    await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
+  }
 
   const created = await createManagedChangeSet(executor, {
     target,
@@ -523,11 +576,22 @@ async function processCreateOrUpdate(
     diff.warnings.push(...analysis.warnings);
     report.diffs.push(diff);
     report.result?.stacks.push(stackResult(target, 'no-change'));
+    const stackId =
+      prepared.kind === 'update'
+        ? (
+            await requireManagedStackIdentity(
+              cfn,
+              target,
+              operation.entry.stateEntry,
+            )
+          ).stackId
+        : await requireExistingStackId(cfn, target);
     await saveSuccessfulEntry(
       ctx,
       operation.entry,
       analysis,
       prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+      stackId,
     );
     return { hasDiff: false };
   }
@@ -545,14 +609,29 @@ async function processCreateOrUpdate(
 
   if (ctx.options.dryRun) {
     // design §5.2: DescribeChangeSet 済みの変更セットを後始末する。proxy が直前 fencing を担う。
-    await cfn.deleteChangeSet(target.stackName, created.name);
+    await cfn.deleteChangeSet(target.stackName, created.id);
     report.result?.stacks.push(stackResult(target, 'skipped'));
     return { hasDiff: true };
   }
 
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
-  await executeWithReinspection(executor, target.stackName, created.name);
+  await executeWithReinspection(
+    executor,
+    target.stackName,
+    created.name,
+    created.id,
+    prepared.kind === 'update'
+      ? async () => {
+          // UPDATE の実副作用直前: 変更セット再検査後にも不変 ARN を再照合する。
+          await requireManagedStackIdentity(
+            cfn,
+            target,
+            operation.entry.stateEntry,
+          );
+        }
+      : undefined,
+  );
   const final = await cfn.waitForStack(target.stackName, {
     eventCursor,
     onEvent: (event) => {
@@ -595,12 +674,29 @@ async function processCreateOrUpdate(
     );
   }
 
+  if (!final.stackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の成功結果に stackId(ARN) がありません。state を更新せず import/移行を要求します`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+  if (
+    prepared.kind === 'update' &&
+    operation.entry.stateEntry?.stackId !== final.stackId
+  ) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の stackId(ARN) が UPDATE 中に変化しました。state を更新せず cfnsync import を案内します`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+
   // FR-1-9: waitForStack 完了後、CAS 保存直前に saveSuccessfulEntry が再 fencing する。
   await saveSuccessfulEntry(
     ctx,
     operation.entry,
     analysis,
     prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+    final.stackId,
   );
   report.result?.stacks.push(stackResult(target, 'succeeded'));
   return { hasDiff: true };
@@ -782,7 +878,7 @@ async function recoverExistingCreate(
     templateHash,
     inputsHash,
   };
-  await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC');
+  await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
   report.result?.stacks.push(stackResult(target, 'no-change'));
 }
 
@@ -791,6 +887,7 @@ async function saveSuccessfulEntry(
   detected: DetectedEntry,
   analysis: TemplateAnalysis,
   lastAction: StackEntry['lastAction'],
+  stackId: string,
 ): Promise<void> {
   const target = detected.target;
   if (!target || !detected.templateHash || !detected.inputsHash) {
@@ -798,8 +895,14 @@ async function saveSuccessfulEntry(
       `内部エラー: ${detected.stackKey} の成功 state 入力が不足しています`,
     );
   }
+  if (!stackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の stackId(ARN) を確認できないため成功 state を保存できません。cfnsync import を実行してください`,
+    );
+  }
   const entry: StackEntry = {
     stackName: target.stackName,
+    stackId,
     region: target.region,
     templateHash: detected.templateHash,
     inputsHash: detected.inputsHash,
@@ -808,6 +911,8 @@ async function saveSuccessfulEntry(
     dependsOn: target.dependsOn.map((raw) =>
       resolveDependsOnKey(raw, target.region),
     ),
+    dependencyAnalysisIncomplete:
+      analysis.warnings.length > 0 && target.dependsOn.length === 0,
     lastAction,
     lastSuccessAt: now(ctx.deps).toISOString(),
   };
@@ -839,6 +944,53 @@ async function saveState(
 // ===========================================================================
 // 補助
 // ===========================================================================
+
+async function requireManagedStackIdentity(
+  cfn: CloudFormationGateway,
+  target: ResolvedStackTarget,
+  stateEntry: StackEntry | undefined,
+): Promise<
+  NonNullable<Awaited<ReturnType<CloudFormationGateway['describeStack']>>>
+> {
+  if (!stateEntry?.stackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の state に stackId(ARN) が記録されていません。自動 UPDATE を拒否します。cfnsync import または state 移行を実行してください`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+  const summary = await cfn.describeStack(target.stackName);
+  if (!summary || summary.stackId !== stateEntry.stackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の stackId(ARN) が state と一致しません。同名スタックが差し替えられた可能性があるため自動 UPDATE を拒否します。cfnsync import を実行してください`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+  return summary;
+}
+
+function hasUnsafeDependencyMetadata(entry: StackEntry | undefined): boolean {
+  return (
+    entry === undefined ||
+    !Array.isArray(entry.exports) ||
+    !Array.isArray(entry.imports) ||
+    !Array.isArray(entry.dependsOn) ||
+    entry.dependencyAnalysisIncomplete
+  );
+}
+
+async function requireExistingStackId(
+  cfn: CloudFormationGateway,
+  target: ResolvedStackTarget,
+): Promise<string> {
+  const summary = await cfn.describeStack(target.stackName);
+  if (!summary?.stackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の stackId(ARN) を確認できません。成功 state を保存せず cfnsync import を案内します`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+  return summary.stackId;
+}
 
 function mergeGraphMaps(
   current: Map<string, RegionGraph>,

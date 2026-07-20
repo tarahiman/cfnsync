@@ -39,6 +39,7 @@ import {
 const ACCOUNT = '123456789012';
 const REGION = 'ap-northeast-1';
 const STATE_ID = 'aabbccddeeff';
+const STACK_ID = `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/ManagedStack/managed`;
 const FIXED_NOW = () => new Date('2026-07-20T12:00:00.000Z');
 const scenarioGateways: FakeCloudFormationGateway[] = [];
 
@@ -99,6 +100,7 @@ function recordedState(
     });
     state = upsertStackEntry(state, target.stackKey, {
       stackName: target.stackName,
+      stackId: STACK_ID,
       region: target.region,
       templateHash: computeTemplateHash(source),
       inputsHash: options.staleInputs
@@ -116,6 +118,7 @@ function recordedState(
       dependsOn: target.dependsOn.map((raw) =>
         resolveDependsOnKey(raw, target.region),
       ),
+      dependencyAnalysisIncomplete: false,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     });
@@ -199,6 +202,7 @@ function installExisting(
     'ManagedStack',
     makeStackSummary({
       stackName: 'ManagedStack',
+      stackId: STACK_ID,
       status: 'CREATE_COMPLETE',
       parameters: { Environment: 'dev' },
       tags: { Team: 'platform', [MANAGEMENT_TAG_KEY]: STATE_ID },
@@ -407,6 +411,7 @@ describe('T-18 recovery', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'CREATE_COMPLETE',
       }),
     );
@@ -424,7 +429,7 @@ describe('T-18 recovery', () => {
 
     expect(interrupted.exitCode).toBe(1);
     expect(s.cfn.callsOf('deleteStack').map((call) => call.args[0])).toEqual([
-      'ManagedStack',
+      STACK_ID,
     ]);
     expect(
       s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
@@ -453,6 +458,7 @@ describe('T-18 recovery', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );
@@ -498,6 +504,7 @@ describe('T-18 recovery', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );

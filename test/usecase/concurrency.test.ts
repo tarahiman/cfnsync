@@ -36,6 +36,7 @@ import {
 const ACCOUNT = '123456789012';
 const REGION = 'ap-northeast-1';
 const STATE_ID = 'aabbccddeeff';
+const STACK_ID = `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/ManagedStack/managed`;
 const FIXED_NOW = () => new Date('2026-07-20T12:00:00.000Z');
 const scenarioGateways: FakeCloudFormationGateway[] = [];
 
@@ -76,6 +77,7 @@ function modifiedState(
     target.stackKey,
     {
       stackName: target.stackName,
+      stackId: STACK_ID,
       region: target.region,
       templateHash: computeTemplateHash(source),
       inputsHash: 'sha256:old-inputs',
@@ -84,6 +86,7 @@ function modifiedState(
       dependsOn: target.dependsOn.map((raw) =>
         resolveDependsOnKey(raw, target.region),
       ),
+      dependencyAnalysisIncomplete: false,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     },
@@ -195,12 +198,14 @@ describe('T-18 concurrency', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );
     s.cfn.waitResults.set('ManagedStack', [
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     ]);
@@ -241,6 +246,7 @@ describe('T-18 concurrency', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );
@@ -295,12 +301,14 @@ describe('T-18 concurrency', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );
     s.cfn.waitResults.set('ManagedStack', [
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     ]);
@@ -332,6 +340,7 @@ describe('T-18 concurrency', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'REVIEW_IN_PROGRESS',
       }),
     );
@@ -343,6 +352,7 @@ describe('T-18 concurrency', () => {
     s.cfn.waitResults.set('ManagedStack', [
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'CREATE_COMPLETE',
       }),
     ]);
@@ -363,6 +373,7 @@ describe('T-18 concurrency', () => {
       'ManagedStack',
       makeStackSummary({
         stackName: 'ManagedStack',
+        stackId: STACK_ID,
         status: 'UPDATE_COMPLETE',
       }),
     );

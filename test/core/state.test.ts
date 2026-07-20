@@ -18,17 +18,21 @@ import {
 
 // design.md §4.3 のステート例そのままの妥当な JSON。
 const validStateJson = JSON.stringify({
-  schemaVersion: 1,
+  schemaVersion: 2,
   accountId: '123456789012',
   generation: 42,
   stacks: {
     'network.yaml@ap-northeast-1': {
       stackName: 'prod-network',
+      stackId:
+        'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network/id',
       region: 'ap-northeast-1',
       templateHash: 'sha256:abc',
       inputsHash: 'sha256:def',
       exports: ['prod-network-VpcId'],
       imports: [],
+      dependsOn: [],
+      dependencyAnalysisIncomplete: false,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00Z',
     },
@@ -38,12 +42,15 @@ const validStateJson = JSON.stringify({
 function makeEntry(overrides: Partial<StackEntry> = {}): StackEntry {
   return {
     stackName: 'prod-network',
+    stackId:
+      'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network/id',
     region: 'ap-northeast-1',
     templateHash: 'sha256:abc',
     inputsHash: 'sha256:def',
     exports: ['prod-network-VpcId'],
     imports: ['other-Export'],
     dependsOn: [],
+    dependencyAnalysisIncomplete: false,
     lastAction: 'UPDATE',
     lastSuccessAt: '2026-07-19T00:00:00Z',
     ...overrides,
@@ -53,17 +60,20 @@ function makeEntry(overrides: Partial<StackEntry> = {}): StackEntry {
 describe('core/state — §4.3 ステートスキーマ', () => {
   it('§4.3: design.md §4.3 の形をそのまま受理する', () => {
     const state = parseState(validStateJson);
-    expect(state.schemaVersion).toBe(1);
+    expect(state.schemaVersion).toBe(2);
     expect(state.accountId).toBe('123456789012');
     expect(state.generation).toBe(42);
     expect(state.stacks['network.yaml@ap-northeast-1']).toEqual({
       stackName: 'prod-network',
+      stackId:
+        'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network/id',
       region: 'ap-northeast-1',
       templateHash: 'sha256:abc',
       inputsHash: 'sha256:def',
       exports: ['prod-network-VpcId'],
       imports: [],
       dependsOn: [],
+      dependencyAnalysisIncomplete: false,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00Z',
     });
@@ -71,7 +81,7 @@ describe('core/state — §4.3 ステートスキーマ', () => {
 
   it('§4.3: 必須トップレベル項目(generation)の欠落を拒否する', () => {
     const missingGeneration = JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       accountId: null,
       stacks: {},
     });
@@ -98,14 +108,41 @@ describe('core/state — §4.3 ステートスキーマ', () => {
     expect(() => parseState(missingExports)).toThrow(StateCorruptionError);
   });
 
-  it('§4.3: 不正な schemaVersion(2 等)を拒否する', () => {
+  it('§4.3: 不正な schemaVersion(3 等)を拒否する', () => {
     const wrongVersion = JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       accountId: null,
       generation: 0,
       stacks: {},
     });
     expect(() => parseState(wrongVersion)).toThrow(StateCorruptionError);
+  });
+
+  it('§4.3(再レビュー⑥): v1 dependsOn 欠落を unknown(null)へ移行し、次回保存は v2 に正規化する', () => {
+    const migrated = parseState(
+      JSON.stringify({
+        schemaVersion: 1,
+        accountId: '123456789012',
+        generation: 7,
+        stacks: {
+          'legacy.yaml@ap-northeast-1': {
+            stackName: 'legacy',
+            region: 'ap-northeast-1',
+            templateHash: 'sha256:legacy',
+            inputsHash: 'sha256:legacy-inputs',
+            exports: [],
+            imports: [],
+            lastAction: 'UPDATE',
+            lastSuccessAt: '2026-07-19T00:00:00Z',
+          },
+        },
+      }),
+    );
+
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.stacks['legacy.yaml@ap-northeast-1'].dependsOn).toBeNull();
+    expect(migrated.stacks['legacy.yaml@ap-northeast-1'].stackId).toBeNull();
+    expect(JSON.parse(serializeState(migrated)).schemaVersion).toBe(2);
   });
 
   it('§4.3: serializeState → parseState のラウンドトリップで内容が保持される', () => {
@@ -216,7 +253,7 @@ describe('core/state — FR-1-15: ステート未存在(初回)の扱い', () =>
   it('FR-1-15: createInitialState は accountId: null / generation: 0 / stacks: {} の空ステートを返す', () => {
     const state = createInitialState();
     expect(state).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       accountId: null,
       generation: 0,
       stacks: {},

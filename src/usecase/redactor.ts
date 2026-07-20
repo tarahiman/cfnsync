@@ -13,13 +13,28 @@ export function createNoEchoRedactor(
   parameters: Record<string, string>,
   noEchoParams: string[],
 ): TextRedactor {
-  const values = [
+  const rawValues = [
     ...new Set(
       noEchoParams
         .map((name) => parameters[name])
         .filter(
           (value): value is string => value !== undefined && value.length >= 4,
         ),
+    ),
+  ];
+
+  const values = [
+    ...new Set(
+      rawValues.flatMap((value) => {
+        const json = JSON.stringify(value);
+        const variants = [value, json, json.slice(1, -1)];
+        try {
+          variants.push(encodeURIComponent(value));
+        } catch {
+          // 不正な単独 surrogate 等は URI エンコード不能。生値/JSON 表現は引き続きマスクする。
+        }
+        return variants;
+      }),
     ),
   ].sort((a, b) => b.length - a.length);
 

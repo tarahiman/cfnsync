@@ -242,9 +242,9 @@ export interface LockInfo {
 }
 
 /**
- * ステートの読み書きとロックを抽象化する(§4.5)。`local`(既定・ロックなし)と
- * `s3`(CAS + 条件付き書き込みロック)が実装する。`local` の `acquireLock` /
- * `verifyLock` は常に成功するダミーでよい(design §4.5: 単一環境前提)。
+ * ステートの読み書きとロックを抽象化する(§4.5)。`local`(save 内 O_EXCL mutex)と
+ * `s3`(CAS + 条件付き書き込みロック)が実装する。`local` の実行スコープ用
+ * `acquireLock` / `verifyLock` はダミーだが、save の比較〜rename はプロセス間排他する。
  */
 export interface StateBackend {
   /** ステートを読み込む。未存在(初回)は `undefined`(FR-1-15)。 */

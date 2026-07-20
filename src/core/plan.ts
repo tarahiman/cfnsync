@@ -54,6 +54,8 @@ export interface ComputeSkipsInput {
   /** 依存関係の再構成に使う新旧統合グラフ(区切りなく参照可能な正本)。 */
   mergedGraphs: Map<string, RegionGraph>;
   onFailure: 'stop' | 'continue';
+  /** delete 失敗では辺を逆向きに辿り、残存 dependent が必要とする provider を保護する。 */
+  failureKind?: 'deploy' | 'delete';
 }
 
 export interface ComputeSkipsResult {
@@ -240,6 +242,31 @@ function transitiveDependents(
   return visited;
 }
 
+/** delete 失敗対象から辺を逆向きに辿り、必要な provider を推移的に返す。 */
+function transitiveProviders(
+  graph: RegionGraph,
+  start: StackKey,
+): Set<StackKey> {
+  const reverseAdjacency = new Map<StackKey, StackKey[]>();
+  for (const edge of graph.edges) {
+    const list = reverseAdjacency.get(edge.to);
+    if (list) list.push(edge.from);
+    else reverseAdjacency.set(edge.to, [edge.from]);
+  }
+
+  const visited = new Set<StackKey>();
+  const toVisit = [...(reverseAdjacency.get(start) ?? [])];
+  while (toVisit.length > 0) {
+    const next = toVisit.pop();
+    if (next === undefined || visited.has(next)) continue;
+    visited.add(next);
+    for (const neighbor of reverseAdjacency.get(next) ?? []) {
+      if (!visited.has(neighbor)) toVisit.push(neighbor);
+    }
+  }
+  return visited;
+}
+
 /**
  * FR-9-2(判定): 失敗スタック(`failedStackKey`)より後(`plan` をリージョン
  * 出現順・操作順で平坦化した列における後続)の操作について、以下のとおり
@@ -249,7 +276,8 @@ function transitiveDependents(
  *   `onFailure: 'stop'` なら `skipped`、`'continue'` なら `continued`。
  *
  * 失敗スタックより前(既に実行済みの操作)は対象外。`failedStackKey` が
- * `plan` に見つからない場合は空の結果を返す。
+ * `plan` にない事前検証失敗(__REQUIRED__ 等)では、計画先頭から分類する。
+ * delete 失敗は `failureKind: delete` により辺を逆向きに辿って provider を保護する。
  */
 export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
   const { plan, failedStackKey, mergedGraphs, onFailure } = input;
@@ -260,14 +288,15 @@ export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
   const failedIndex = flattened.findIndex(
     (op) => op.stackKey === failedStackKey,
   );
-  if (failedIndex === -1) {
-    return { skipped: [], continued: [] };
-  }
-
-  const failedRegion = flattened[failedIndex].region;
+  const failedRegion =
+    failedIndex === -1
+      ? parseStackKey(failedStackKey).region
+      : flattened[failedIndex].region;
   const failedRegionGraph = mergedGraphs.get(failedRegion);
-  const downstream = failedRegionGraph
-    ? transitiveDependents(failedRegionGraph, failedStackKey)
+  const protectedByFailure = failedRegionGraph
+    ? input.failureKind === 'delete'
+      ? transitiveProviders(failedRegionGraph, failedStackKey)
+      : transitiveDependents(failedRegionGraph, failedStackKey)
     : new Set<StackKey>();
 
   const skipped: StackKey[] = [];
@@ -275,7 +304,7 @@ export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
 
   for (let i = failedIndex + 1; i < flattened.length; i += 1) {
     const stackKey = flattened[i].stackKey;
-    if (downstream.has(stackKey)) {
+    if (protectedByFailure.has(stackKey)) {
       skipped.push(stackKey);
     } else if (onFailure === 'stop') {
       skipped.push(stackKey);

@@ -16,7 +16,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "generate:shrinkwrap": "npm install --package-lock-only --ignore-scripts && npm shrinkwrap",
+    "verify:dist": "node scripts/verify-dist.mjs",
+    "prepack": "pnpm run generate:shrinkwrap && pnpm run clean && pnpm run build && pnpm run verify:dist",
+    "prepublishOnly": "pnpm run clean && pnpm run build",
     "test": "vitest run",
     "lint": "biome check .",
     "format": "biome format --write ."

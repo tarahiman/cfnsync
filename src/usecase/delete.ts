@@ -72,11 +72,43 @@ export async function deleteManagedStack(
     };
   }
 
+  if (!Array.isArray(target.entry.dependsOn)) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の明示依存 dependsOn が旧 state で unknown です。` +
+        `安全な削除順を復元できないため削除を拒否します。cfnsync import または state 移行を実行してください`,
+    );
+  }
+
+  if (target.entry.dependencyAnalysisIncomplete) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' は依存解析が不完全です。` +
+        `明示 dependsOn で解消して再同期するか、手動対応してください`,
+    );
+  }
+
+  if (!target.entry.stackId) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の state に stackId(ARN) が記録されていません。` +
+        `同名スタックの差し替えを検証できないため削除を拒否します。cfnsync import または state 移行を実行してください`,
+    );
+  }
+
   // FR-2 / FR-2-10: DeleteStack の直前に実状態を再取得し、並行操作と
   // REVIEW_IN_PROGRESS を fail-closed に拒否する。競合で既に消えた場合は復旧成功扱い。
   const summary = await cfn.describeStack(target.entry.stackName);
   if (summary === undefined || summary.status === 'DELETE_COMPLETE') {
     return saveDeletedState(input);
+  }
+
+  if (summary.stackId !== target.entry.stackId) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の stackId(ARN) が state と一致しません。` +
+        `同名スタックが差し替えられた可能性があるため DeleteStack を拒否します。cfnsync import を実行してください`,
+    );
   }
 
   if (summary.status === 'REVIEW_IN_PROGRESS') {
@@ -112,10 +144,10 @@ export async function deleteManagedStack(
 
   // FR-1-9(削除): DeleteStack の実 API 呼び出し直前に fencing。
   await assertFenced(backend, lock);
-  await cfn.deleteStack(target.entry.stackName);
+  await cfn.deleteStack(summary.stackId);
 
   // §8.3: CloudFormation がスタック不存在を DELETE_COMPLETE に正規化するまで待つ。
-  const final = await cfn.waitForStack(target.entry.stackName);
+  const final = await cfn.waitForStack(summary.stackId);
   if (final.status !== 'DELETE_COMPLETE') {
     throw new StackStateError(
       `スタック '${target.entry.stackName}' の削除が完了しませんでした(final status: ${final.status})`,

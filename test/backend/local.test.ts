@@ -93,6 +93,35 @@ describe('LocalStateBackend', () => {
     );
   });
 
+  it('FR-1-6(local再レビュー⑥): 並行する2プロセス相当の save は O_EXCL mutex により一方が必ず StateConflictError', async () => {
+    const seed = new LocalStateBackend(statePath);
+    await seed.save(stateWith(1), undefined);
+    const loaded = await seed.load();
+    let releaseRename!: () => void;
+    const renameGate = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    let reachedRename!: () => void;
+    const renameReached = new Promise<void>((resolve) => {
+      reachedRename = resolve;
+    });
+    const first = new LocalStateBackend(statePath, {
+      onBeforeRename: async () => {
+        reachedRename();
+        await renameGate;
+      },
+    });
+    const second = new LocalStateBackend(statePath);
+
+    const firstSave = first.save(stateWith(2), loaded!.version);
+    await renameReached;
+    await expect(
+      second.save(stateWith(3), loaded!.version),
+    ).rejects.toBeInstanceOf(StateConflictError);
+    releaseRename();
+    await expect(firstSave).resolves.toEqual({ generation: 2 });
+  });
+
   it('FR-1-12(local): 原子的置換で .bak に直前の内容が残る', async () => {
     const backend = new LocalStateBackend(statePath);
     await backend.save(stateWith(1), undefined); // 初回: 置換対象なし → .bak なし

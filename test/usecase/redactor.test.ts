@@ -24,4 +24,15 @@ describe('NoEcho usecase redactor', () => {
       `prefix ${shortValue} suffix`,
     );
   });
+
+  it('NFR-4(再レビュー⑥): JSON.stringify と encodeURIComponent の可逆表現も同時にマスクする', () => {
+    const secret = 'line1\n"quoted"/値';
+    const redact = createNoEchoRedactor({ Secret: secret }, ['Secret']);
+    const jsonEscaped = JSON.stringify(secret).slice(1, -1);
+    const uriEncoded = encodeURIComponent(secret);
+
+    expect(redact(`raw=${secret} json=${jsonEscaped} uri=${uriEncoded}`)).toBe(
+      'raw=**** json=**** uri=****',
+    );
+  });
 });

@@ -531,6 +531,7 @@ describe('FR-10-6: templateHash / inputsHash はデプロイ済み内容に基�
       }),
     );
     expect(entry.lastAction).toBe('IMPORT');
+    expect(entry.stackId).toBe(makeSummary().stackId);
   });
 });
 

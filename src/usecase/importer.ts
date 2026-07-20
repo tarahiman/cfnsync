@@ -42,6 +42,7 @@ import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import {
   GuardError,
   LockError,
+  StackStateError,
   StatePersistenceError,
 } from '../core/errors.js';
 import {
@@ -445,6 +446,11 @@ async function buildImportPlan(args: {
       });
       continue;
     }
+    if (!summary.stackId) {
+      throw new StackStateError(
+        `スタック '${target.stackName}' の stackId(ARN) を確認できないため import を拒否します`,
+      );
+    }
 
     // FR-10-7: GetTemplate(Original)(読み取り)。
     const deployedTemplate = await cfn.getTemplate(
@@ -568,6 +574,7 @@ async function buildImportPlan(args: {
       key: target.stackKey,
       entry: {
         stackName: summary.stackName,
+        stackId: summary.stackId,
         region: target.region,
         templateHash: baselineHash,
         inputsHash: computeInputsHash({
@@ -584,6 +591,8 @@ async function buildImportPlan(args: {
         dependsOn: target.dependsOn.map((raw) =>
           resolveDependsOnKey(raw, target.region),
         ),
+        dependencyAnalysisIncomplete:
+          baselineAnalysis.warnings.length > 0 && target.dependsOn.length === 0,
         lastAction: 'IMPORT',
         lastSuccessAt: new Date().toISOString(),
       },

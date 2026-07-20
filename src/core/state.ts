@@ -19,20 +19,40 @@ import type { StackKey } from './types.js';
 /** 破損したステート(不完全 JSON・スキーマ不一致)を検出した際のエラー(FR-1-12, fail-closed)。 */
 export class StateCorruptionError extends CfnSyncError {}
 
-const StackEntrySchema = z.object({
+const StackEntryBaseSchema = z.object({
   stackName: z.string().min(1),
   region: z.string().min(1),
   templateHash: z.string().min(1),
   inputsHash: z.string().min(1),
   exports: z.array(z.string()),
   imports: z.array(z.string()),
-  dependsOn: z.array(z.string()).default([]),
   lastAction: z.enum(['CREATE', 'UPDATE', 'IMPORT', 'SYNC']),
   lastSuccessAt: z.string().min(1),
 });
 
-const CfnSyncStateSchema = z.object({
+const StackEntrySchema = StackEntryBaseSchema.extend({
+  /** v1 由来の未移行エントリだけ null。新規成功保存では必ず ARN。 */
+  stackId: z.string().min(1).nullable(),
+  /** v1 で欠落していた明示依存情報を空配列と区別する unknown。 */
+  dependsOn: z.array(z.string()).nullable(),
+  dependencyAnalysisIncomplete: z.boolean(),
+});
+
+const V1StackEntrySchema = StackEntryBaseSchema.extend({
+  stackId: z.string().min(1).optional(),
+  dependsOn: z.array(z.string()).optional(),
+  dependencyAnalysisIncomplete: z.boolean().optional(),
+});
+
+const CfnSyncStateV1Schema = z.object({
   schemaVersion: z.literal(1),
+  accountId: z.string().nullable(),
+  generation: z.number().int().nonnegative(),
+  stacks: z.record(z.string(), V1StackEntrySchema),
+});
+
+const CfnSyncStateV2Schema = z.object({
+  schemaVersion: z.literal(2),
   accountId: z.string().nullable(),
   generation: z.number().int().nonnegative(),
   stacks: z.record(z.string(), StackEntrySchema),
@@ -42,7 +62,7 @@ const CfnSyncStateSchema = z.object({
 export type StackEntry = z.infer<typeof StackEntrySchema>;
 
 /** design.md §4.3 のステートスキーマから導出したステート全体の型。 */
-export type CfnSyncState = z.infer<typeof CfnSyncStateSchema> & {
+export type CfnSyncState = z.infer<typeof CfnSyncStateV2Schema> & {
   stacks: Record<StackKey, StackEntry>;
 };
 
@@ -68,21 +88,38 @@ export function parseState(
     );
   }
 
-  const result = CfnSyncStateSchema.safeParse(parsedJson);
-  if (!result.success) {
+  const v2Result = CfnSyncStateV2Schema.safeParse(parsedJson);
+  if (v2Result.success) return v2Result.data as CfnSyncState;
+
+  const v1Result = CfnSyncStateV1Schema.safeParse(parsedJson);
+  if (!v1Result.success) {
     throw new StateCorruptionError('ステートのスキーマが不正です', {
       ...context,
-      cause: result.error,
+      cause: v2Result.error,
     });
   }
 
-  return result.data as CfnSyncState;
+  const stacks: Record<string, StackEntry> = {};
+  for (const [key, entry] of Object.entries(v1Result.data.stacks)) {
+    stacks[key] = {
+      ...entry,
+      stackId: entry.stackId ?? null,
+      dependsOn: entry.dependsOn ?? null,
+      dependencyAnalysisIncomplete: entry.dependencyAnalysisIncomplete ?? false,
+    };
+  }
+  return {
+    schemaVersion: 2,
+    accountId: v1Result.data.accountId,
+    generation: v1Result.data.generation,
+    stacks,
+  } as CfnSyncState;
 }
 
 /** ステート未存在(初回実行)時に使う空ステート(FR-1-15)。 */
 export function createInitialState(): CfnSyncState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     accountId: null,
     generation: 0,
     stacks: {},
@@ -99,12 +136,14 @@ export function serializeState(state: CfnSyncState): string {
     const entry = state.stacks[key];
     sortedStacks[key] = {
       stackName: entry.stackName,
+      stackId: entry.stackId,
       region: entry.region,
       templateHash: entry.templateHash,
       inputsHash: entry.inputsHash,
       exports: entry.exports,
       imports: entry.imports,
       dependsOn: entry.dependsOn,
+      dependencyAnalysisIncomplete: entry.dependencyAnalysisIncomplete,
       lastAction: entry.lastAction,
       lastSuccessAt: entry.lastSuccessAt,
     };
@@ -128,6 +167,7 @@ export function serializeState(state: CfnSyncState): string {
 export function prepareSave(state: CfnSyncState): CfnSyncState {
   return {
     ...state,
+    schemaVersion: 2,
     generation: state.generation + 1,
   };
 }
