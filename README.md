@@ -58,6 +58,8 @@ stacks:
 
 `allowedAccounts` と `allowedRegions` は変更系操作の fail-closed ガードです。`regions` を省略すると `defaultRegion` が使われ、`stackName` を省略すると `stackNamePrefix` とテンプレートのファイル名から導出されます。`regionOverrides` のパラメータとタグは共通値へ浅くマージされます。`NoEcho` パラメータの `__REQUIRED__` は実値に置き換えるまで deploy が拒否されます。
 
+設定ファイルの全パラメータのリファレンスは [`docs/config-reference.md`](./docs/config-reference.md)、コメント付きのサンプル設定ファイルは [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml) を参照してください。
+
 `state` を省略した場合は `local` バックエンドとなり、設定ファイルと同じディレクトリに `cfnsync.state.json` を保存します。local 保存は `<state>.lock` の排他作成でプロセス間競合を即時拒否しますが、複数の実行環境（CI ランナー等）から利用する場合は、分散ロックと条件付き書き込みを備えた `s3` バックエンドを使用してください。S3 バケットはバージョニングの有効化を推奨します。
 
 ## コマンド
@@ -231,5 +233,14 @@ jobs:
 | `0` | 成功（変更なしを含む） |
 | `1` | エラー（検証・ガード・AWS 操作の失敗） |
 | `2` | 差分あり（plan / dry-run 時のみ） |
+
+## Claude Code プラグイン
+
+Claude Code から cfnsync を対話的に操作・解釈する際の手引きとして、Claude Code プラグイン（skill）を同梱しています。サブコマンドの使い分け、終了コードの意味、fail-closed・ロック・change set 所有権などの安全性不変条件をまとめてあります。
+
+- プラグインマニフェスト: [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)
+- skill 本体: [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md)
+
+`cfnsync.yaml` の書き方自体は skill 側では重複説明せず、上記の [`docs/config-reference.md`](./docs/config-reference.md) と [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml) を参照する構成になっています。
 
 今後のリリース強化課題として、配布物の SBOM と provenance の生成・検証を追加します。
