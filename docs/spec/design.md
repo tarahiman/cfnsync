@@ -64,6 +64,10 @@ graph TD
 
 依存方向: `cli → usecase → core / ports / report`。`aws` / `backend` は `ports` を実装する。`core` はどこにも依存しない。
 
+cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、各サブコマンドの `--help` に
+共通オプション(`--config` / `--profile` / `--region` / `--output`)を「Global Options」として表示する
+(FR-12-5)。
+
 ## 4. データ設計
 
 ### 4.1 スタックキー

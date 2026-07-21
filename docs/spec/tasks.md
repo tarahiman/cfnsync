@@ -305,6 +305,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-1 | status / plan / deploy / graph / import(+ force-unlock)を提供 | 各サブコマンドが定義され、対応する usecase が呼ばれる |
 | FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
 | FR-12-3 | TTY なしで動作 | 非 TTY 環境でプロンプトなしに完走する |
+| FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-5-2(オプション) | ローカル向け確認プロンプトはオプトイン | 確認オプション指定時のみプロンプト(既定は非対話) |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |

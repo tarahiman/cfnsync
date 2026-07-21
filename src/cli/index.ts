@@ -108,6 +108,7 @@ export function createCliProgram(
     .name('cfnsync')
     .description('CloudFormation template synchronization CLI')
     .version(readPackageVersion(), '-v, --version', 'バージョンを表示')
+    .configureHelp({ showGlobalOptions: true })
     .showHelpAfterError()
     .exitOverride();
   addCommonOptions(program);

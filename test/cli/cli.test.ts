@@ -449,6 +449,38 @@ describe('T-19 cli', () => {
     expect(out.stdout()).toBe('');
   });
 
+  it.each([
+    'status',
+    'plan',
+    'deploy',
+    'graph',
+    'import',
+    'force-unlock',
+  ] as const)('FR-12-5: %s の --help に共通オプションを表示する', async (name) => {
+    const out = capture();
+    expect(
+      await runCli([name, '--help'], { deps: dependencies(), io: out.io }),
+    ).toBe(0);
+    expect(out.stdout()).toContain('Global Options:');
+    expect(out.stdout()).toContain('--config');
+    expect(out.stdout()).toContain('--profile');
+    expect(out.stdout()).toContain('--region');
+    expect(out.stdout()).toContain('--output');
+  });
+
+  it('FR-12-5: ルートの --help は従来どおり Options: の下に共通オプションを表示する', async () => {
+    const out = capture();
+    expect(await runCli(['--help'], { deps: dependencies(), io: out.io })).toBe(
+      0,
+    );
+    expect(out.stdout()).toContain('Options:');
+    expect(out.stdout()).not.toContain('Global Options:');
+    expect(out.stdout()).toContain('--config');
+    expect(out.stdout()).toContain('--profile');
+    expect(out.stdout()).toContain('--region');
+    expect(out.stdout()).toContain('--output');
+  });
+
   it('NFR-1: 結果は stdout、進捗イベントは stderr に分離する', async () => {
     const deps = dependencies({
       deploy: vi.fn(async (input) => {
