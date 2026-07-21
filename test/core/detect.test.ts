@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ResolvedStackTarget } from '../../src/core/config.js';
+import {
+  type ResolvedStackTarget,
+  resolveTargets,
+  validateConfig,
+} from '../../src/core/config.js';
 import {
   computeInputsHash,
   computeTemplateHash,
@@ -327,6 +331,53 @@ describe('core/detect — §4.3: detectChanges 経由での構成要素変更の
   it('§4.3: dependsOn のみの変更は modified として検知される', () => {
     const result = runWithChangedTarget({ dependsOn: ['other.yaml'] });
     expect(result.entries[0].changeType).toBe('modified');
+  });
+});
+
+describe('core/detect — FR-11-6: defaultTags の変更検知(core/config の resolveTargets 経由)', () => {
+  /** defaultTags のみが異なる config から実際に resolveTargets した target を作る。 */
+  function targetWithDefaultTags(
+    defaultTags: Record<string, string>,
+  ): ResolvedStackTarget {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: 'ap-northeast-1',
+      defaultTags,
+      stacks: { 'network.yaml': { stackName: 'prod-network' } },
+    });
+    return resolveTargets(config)[0];
+  }
+
+  it('FR-11-6: defaultTags のみの変更(スタック固有の tags・テンプレート内容は同一)は modified として検知される', () => {
+    const before = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
+    const after = targetWithDefaultTags({ ManagedBy: 'cfnsync', Env: 'prod' });
+    const state = stateWith({
+      [before.stackKey]: stateEntryFor(before, BASE_CONTENT),
+    });
+
+    const result = detectChanges({
+      targets: [after],
+      templates: new Map([[after.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    expect(result.entries[0].changeType).toBe('modified');
+  });
+
+  it('FR-11-6: defaultTags が変わらなければ unchanged のままになる(対照実験)', () => {
+    const before = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
+    const after = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
+    const state = stateWith({
+      [before.stackKey]: stateEntryFor(before, BASE_CONTENT),
+    });
+
+    const result = detectChanges({
+      targets: [after],
+      templates: new Map([[after.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    expect(result.entries[0].changeType).toBe('unchanged');
   });
 });
 

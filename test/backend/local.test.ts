@@ -205,6 +205,7 @@ describe('createStateBackend (FR-1-4)', () => {
     const config: CfnSyncConfig = {
       version: 1,
       defaultRegion: 'ap-northeast-1',
+      defaultTags: {},
       state: { backend: 'local' },
       stacks: {},
     };
@@ -219,6 +220,7 @@ describe('createStateBackend (FR-1-4)', () => {
     const config: CfnSyncConfig = {
       version: 1,
       defaultRegion: 'ap-northeast-1',
+      defaultTags: {},
       state: {
         backend: 's3',
         s3: {

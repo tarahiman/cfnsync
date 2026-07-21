@@ -367,6 +367,131 @@ describe('core/config', () => {
     });
   });
 
+  describe('FR-11-6: defaultTags — 全管理対象スタックへの既定タグ', () => {
+    it('FR-11-6: 独自の tags を持たないスタックへ defaultTags がそのまま適用される', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultTags: { ManagedBy: 'cfnsync' },
+          stacks: { 'network.yaml': {} },
+        }),
+      );
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({ ManagedBy: 'cfnsync' });
+    });
+
+    it('FR-11-6: defaultTags とスタック独自の別キーの tags はマージされる', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultTags: { ManagedBy: 'cfnsync' },
+          stacks: {
+            'network.yaml': { tags: { Project: 'legacy-app' } },
+          },
+        }),
+      );
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({
+        ManagedBy: 'cfnsync',
+        Project: 'legacy-app',
+      });
+    });
+
+    it('FR-11-6: キー衝突時は stacks.<path>.tags の値が defaultTags より優先される(エラーにはしない)', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultTags: { Env: 'default-env' },
+          stacks: {
+            'network.yaml': { tags: { Env: 'prod' } },
+          },
+        }),
+      );
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({ Env: 'prod' });
+    });
+
+    it('FR-11-6/FR-13-3: キー衝突時は regionOverrides.<region>.tags の値が defaultTags より優先される', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultRegion: 'ap-northeast-1',
+          defaultTags: { Env: 'default-env' },
+          stacks: {
+            'network.yaml': {
+              regionOverrides: {
+                'ap-northeast-1': { tags: { Env: 'region-override' } },
+              },
+            },
+          },
+        }),
+      );
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({ Env: 'region-override' });
+    });
+
+    it('FR-11-6/FR-13-3: 三者混在時の優先順位は defaultTags < tags < regionOverrides.tags', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultRegion: 'ap-northeast-1',
+          defaultTags: { Level: 'default', Common: 'from-default' },
+          stacks: {
+            'network.yaml': {
+              tags: { Level: 'stack', Project: 'legacy-app' },
+              regionOverrides: {
+                'ap-northeast-1': { tags: { Level: 'region' } },
+              },
+            },
+          },
+        }),
+      );
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({
+        Level: 'region',
+        Common: 'from-default',
+        Project: 'legacy-app',
+      });
+    });
+
+    it('internal: defaultTags の数値・真偽値も文字列へ正規化される', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultTags: { RetentionDays: 30, Enabled: true },
+          stacks: { 'network.yaml': {} },
+        }),
+      );
+      expect(config.defaultTags).toEqual({
+        RetentionDays: '30',
+        Enabled: 'true',
+      });
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({ RetentionDays: '30', Enabled: 'true' });
+    });
+
+    it('FR-11-6: defaultTags 省略時は従来どおりタグは付与されない', () => {
+      const config = validateConfig(
+        minimalRaw({
+          stacks: { 'network.yaml': {} },
+        }),
+      );
+      expect(config.defaultTags).toEqual({});
+      const [target] = resolveTargets(config);
+      expect(target.tags).toEqual({});
+    });
+
+    it('FR-11-6/FR-13: マルチリージョンの全リージョンへ defaultTags が適用される', () => {
+      const config = validateConfig(
+        minimalRaw({
+          defaultTags: { ManagedBy: 'cfnsync' },
+          stacks: {
+            'network.yaml': { regions: ['ap-northeast-1', 'us-east-1'] },
+          },
+        }),
+      );
+      const targets = resolveTargets(config);
+      expect(targets).toHaveLength(2);
+      for (const target of targets) {
+        expect(target.tags).toEqual({ ManagedBy: 'cfnsync' });
+      }
+    });
+  });
+
   describe('FR-7-5(前半): 許可アカウント・許可リージョン', () => {
     it('FR-7-5: allowedAccounts / allowedRegions が設定ファイルから読み取れる', () => {
       const config = validateConfig(
