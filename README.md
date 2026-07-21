@@ -1,6 +1,6 @@
 # cfnsync
 
-`cfnsync` は、ディレクトリ内の生の AWS CloudFormation テンプレート（YAML / JSON）とスタックを同期する、Node.js 20 以上向けの CLI です。テンプレートとデプロイ入力の追加・変更・削除を検知し、Change Set の作成、差分表示、依存順のデプロイ、既存スタックのインポートを行います。CI/CD、特に GitHub Actions からの非対話実行を想定しています。
+`cfnsync` は、ディレクトリ内の生の AWS CloudFormation テンプレート（YAML / JSON）とスタックを同期する、Node.js 24 以上向けの CLI です。テンプレートとデプロイ入力の追加・変更・削除を検知し、Change Set の作成、差分表示、依存順のデプロイ、既存スタックのインポートを行います。CI/CD、特に GitHub Actions からの非対話実行を想定しています。
 
 ## スコープ
 
@@ -10,7 +10,7 @@
 
 ## インストールと実行
 
-Node.js 20 以上が必要です。インストールせずに npm から実行できます。
+Node.js 24 以上が必要です。インストールせずに npm から実行できます。
 
 ```sh
 npx cfnsync --help

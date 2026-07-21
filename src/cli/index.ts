@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { Command, Option } from 'commander';
 
 import {
@@ -19,6 +21,18 @@ import {
 export type { CliDependencies } from './dependencies.js';
 
 type ExitCode = 0 | 1 | 2;
+
+// package.json はビルド後も dist/cli/index.js の 2 階層上に位置し、
+// npm 公開物にも常に含まれる。JSON import は rootDir(src) 外のため使わない。
+function readPackageVersion(): string {
+  try {
+    const url = new URL('../../package.json', import.meta.url);
+    const pkg = JSON.parse(readFileSync(url, 'utf8')) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 export interface RunCliOptions {
   deps?: CliDependencies;
@@ -93,6 +107,7 @@ export function createCliProgram(
   const program = new Command()
     .name('cfnsync')
     .description('CloudFormation template synchronization CLI')
+    .version(readPackageVersion(), '-v, --version', 'バージョンを表示')
     .showHelpAfterError()
     .exitOverride();
   addCommonOptions(program);
