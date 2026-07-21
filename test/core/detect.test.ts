@@ -334,7 +334,7 @@ describe('core/detect — §4.3: detectChanges 経由での構成要素変更の
   });
 });
 
-describe('core/detect — FR-11-6: defaultTags の変更検知(core/config の resolveTargets 経由)', () => {
+describe('core/detect — FR-11-9: defaultTags の変更検知(core/config の resolveTargets 経由)', () => {
   /** defaultTags のみが異なる config から実際に resolveTargets した target を作る。 */
   function targetWithDefaultTags(
     defaultTags: Record<string, string>,
@@ -348,7 +348,7 @@ describe('core/detect — FR-11-6: defaultTags の変更検知(core/config の r
     return resolveTargets(config)[0];
   }
 
-  it('FR-11-6: defaultTags のみの変更(スタック固有の tags・テンプレート内容は同一)は modified として検知される', () => {
+  it('FR-11-9: defaultTags のみの変更(スタック固有の tags・テンプレート内容は同一)は modified として検知される', () => {
     const before = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
     const after = targetWithDefaultTags({ ManagedBy: 'cfnsync', Env: 'prod' });
     const state = stateWith({
@@ -364,7 +364,7 @@ describe('core/detect — FR-11-6: defaultTags の変更検知(core/config の r
     expect(result.entries[0].changeType).toBe('modified');
   });
 
-  it('FR-11-6: defaultTags が変わらなければ unchanged のままになる(対照実験)', () => {
+  it('FR-11-9: defaultTags が変わらなければ unchanged のままになる(対照実験)', () => {
     const before = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
     const after = targetWithDefaultTags({ ManagedBy: 'cfnsync' });
     const state = stateWith({

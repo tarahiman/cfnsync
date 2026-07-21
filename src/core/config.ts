@@ -83,7 +83,7 @@ const rawConfigSchema = z
     allowedRegions: z.array(z.string().min(1)).optional(),
     defaultRegion: z.string().min(1),
     stackNamePrefix: z.string().optional(),
-    // FR-11: 全管理対象スタックへ既定付与するタグ。resolveTargets での
+    // FR-11-8: 全管理対象スタックへ既定付与するタグ。resolveTargets での
     // マージ(defaultTags < tags < regionOverrides.tags)により実効タグへ反映される。
     defaultTags: stringRecordSchema.default({}),
     state: stateSchema,
@@ -240,7 +240,7 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
         region,
         // FR-13-3: 共通値に regionOverrides.<region> を浅くマージ。
         parameters: { ...entry.parameters, ...(override?.parameters ?? {}) },
-        // FR-11/FR-13-3: タグは defaultTags < tags < regionOverrides.tags の
+        // FR-11-8/FR-13-3: タグは defaultTags < tags < regionOverrides.tags の
         // 順に浅くマージ(後勝ち)。重複キーはエラーとせず、より狭いスコープが優先される。
         tags: {
           ...config.defaultTags,

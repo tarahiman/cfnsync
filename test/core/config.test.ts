@@ -41,6 +41,7 @@ describe('core/config', () => {
       expect(config.allowedRegions).toEqual(['ap-northeast-1', 'us-east-1']);
       expect(config.defaultRegion).toBe('ap-northeast-1');
       expect(config.stackNamePrefix).toBe('legacy-app-');
+      expect(config.defaultTags).toEqual({ ManagedBy: 'cfnsync' });
 
       const network = config.stacks['templates/network.yaml'];
       expect(network).toBeDefined();
@@ -367,8 +368,8 @@ describe('core/config', () => {
     });
   });
 
-  describe('FR-11-6: defaultTags — 全管理対象スタックへの既定タグ', () => {
-    it('FR-11-6: 独自の tags を持たないスタックへ defaultTags がそのまま適用される', () => {
+  describe('FR-11-8: defaultTags — 全管理対象スタックへの既定タグ', () => {
+    it('FR-11-8: 独自の tags を持たないスタックへ defaultTags がそのまま適用される', () => {
       const config = validateConfig(
         minimalRaw({
           defaultTags: { ManagedBy: 'cfnsync' },
@@ -379,7 +380,7 @@ describe('core/config', () => {
       expect(target.tags).toEqual({ ManagedBy: 'cfnsync' });
     });
 
-    it('FR-11-6: defaultTags とスタック独自の別キーの tags はマージされる', () => {
+    it('FR-11-8: defaultTags とスタック独自の別キーの tags はマージされる', () => {
       const config = validateConfig(
         minimalRaw({
           defaultTags: { ManagedBy: 'cfnsync' },
@@ -395,7 +396,7 @@ describe('core/config', () => {
       });
     });
 
-    it('FR-11-6: キー衝突時は stacks.<path>.tags の値が defaultTags より優先される(エラーにはしない)', () => {
+    it('FR-11-8: キー衝突時は stacks.<path>.tags の値が defaultTags より優先される(エラーにはしない)', () => {
       const config = validateConfig(
         minimalRaw({
           defaultTags: { Env: 'default-env' },
@@ -408,7 +409,7 @@ describe('core/config', () => {
       expect(target.tags).toEqual({ Env: 'prod' });
     });
 
-    it('FR-11-6/FR-13-3: キー衝突時は regionOverrides.<region>.tags の値が defaultTags より優先される', () => {
+    it('FR-11-8/FR-13-3: キー衝突時は regionOverrides.<region>.tags の値が defaultTags より優先される', () => {
       const config = validateConfig(
         minimalRaw({
           defaultRegion: 'ap-northeast-1',
@@ -426,7 +427,7 @@ describe('core/config', () => {
       expect(target.tags).toEqual({ Env: 'region-override' });
     });
 
-    it('FR-11-6/FR-13-3: 三者混在時の優先順位は defaultTags < tags < regionOverrides.tags', () => {
+    it('FR-11-8/FR-13-3: 三者混在時の優先順位は defaultTags < tags < regionOverrides.tags', () => {
       const config = validateConfig(
         minimalRaw({
           defaultRegion: 'ap-northeast-1',
@@ -464,7 +465,7 @@ describe('core/config', () => {
       expect(target.tags).toEqual({ RetentionDays: '30', Enabled: 'true' });
     });
 
-    it('FR-11-6: defaultTags 省略時は従来どおりタグは付与されない', () => {
+    it('FR-11-8: defaultTags 省略時は従来どおりタグは付与されない', () => {
       const config = validateConfig(
         minimalRaw({
           stacks: { 'network.yaml': {} },
@@ -475,7 +476,7 @@ describe('core/config', () => {
       expect(target.tags).toEqual({});
     });
 
-    it('FR-11-6/FR-13: マルチリージョンの全リージョンへ defaultTags が適用される', () => {
+    it('FR-11-8/FR-13: マルチリージョンの全リージョンへ defaultTags が適用される', () => {
       const config = validateConfig(
         minimalRaw({
           defaultTags: { ManagedBy: 'cfnsync' },
