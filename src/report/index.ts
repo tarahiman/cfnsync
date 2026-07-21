@@ -61,6 +61,26 @@ export interface StackEventLine {
   resourceStatusReason?: string;
 }
 
+/** FR-5-4: スタック単位の進捗マイルストーンの段階。 */
+export type ProgressPhase =
+  | 'changeset-create-start'
+  | 'diff-ready'
+  | 'no-change'
+  | 'execute-start'
+  | 'delete-start'
+  | 'done'
+  | 'skipped'
+  | 'failed';
+
+/** FR-5-4: スタック単位の進捗マイルストーン。CFN リソースイベント(StackEventLine)とは独立したチャネル。
+ *  DeployReport には含めない — onProgress でのみ配送する(JSON 出力契約を変えないため)。 */
+export interface ProgressEvent {
+  stackKey: string;
+  region: string;
+  phase: ProgressPhase;
+  message: string;
+}
+
 /** スタック単位の最終結果(FR-1-3 / FR-4-2 / FR-4-3)。 */
 export type StackOutcome = 'succeeded' | 'failed' | 'skipped' | 'no-change';
 

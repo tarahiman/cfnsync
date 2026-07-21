@@ -60,7 +60,7 @@ graph TD
 | `ports` | `CloudFormationGateway` / `StsGateway` / `StateBackend` インターフェース定義 | NFR-2, FR-1 |
 | `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド | NFR-3, FR-1 |
 | `backend` | `StateBackend` の `local` 実装(原子的ファイル置換・`.bak` 保持) | FR-1 |
-| `report` | 人間可読テキスト / JSON 出力、NoEcho マスク | FR-3, NFR-4 |
+| `report` | 人間可読テキスト / JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4) | FR-3, NFR-4 |
 
 依存方向: `cli → usecase → core / ports / report`。`aws` / `backend` は `ports` を実装する。`core` はどこにも依存しない。
 
@@ -193,6 +193,8 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 5. 差分を出力(リージョン明示・Replacement 警告・NoEcho マスク)
 6. 終了コード: 差分あり 2 / なし 0 / エラー 1
 
+各スタックの変更セット作成開始・差分確定・スキップ(dry-run 停止)は `DeployDeps.onProgress`(FR-5-4)を通じてスタックキー付きで標準エラーへ逐次通知する。CFN リソースイベント(`onEvent`、FR-4-1)とは独立したチャネルであり、差分・結果の最終 report(標準出力)には一切含まれない。
+
 ### 5.3 `cfnsync deploy`
 
 1. config 検証 → AccountGuard → ステートロック取得 → state 読込(世代 / ETag 記録)
@@ -203,6 +205,8 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
    - 差分出力 → `ExecuteChangeSet` → イベントをポーリングして逐次出力 → 完了待機
    - **成功のたびに fencing 検証(§4.5)の上でステートを更新・保存(CAS)**。失敗したスタックのステートは更新しない(FR-1)。これにより途中失敗後の再実行は成功済み分をスキップできる(NFR-3)
    - 失敗時: 依存する後続スタックを中止。独立スタックの扱いは `--on-failure stop|continue`(既定 `stop`)(FR-9)
+
+   各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの文字列を再利用し、NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
 4. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)
 5. `--dry-run` は plan と同一動作(FR-5)
 

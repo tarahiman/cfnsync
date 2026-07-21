@@ -175,6 +175,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | NFR-4 | NoEcho 値をマスク | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) |
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
+| FR-5-4(契約) | 進捗マイルストーンの型を定義する | `ProgressEvent`(stackKey・region・phase・message)/ `ProgressPhase` の union 型が report/index.ts で定義され、usecase が依存する出力契約に含まれる |
 | FR-7-8(出力) | 接続先を出力の先頭に含める | レポート先頭にアカウント ID・リージョン |
 
 ## 6. M3: usecase
@@ -226,6 +227,10 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | **NFR-3(継続)** | **途中失敗後の再実行は成功済みをスキップし、失敗地点から継続** | A 成功・B 失敗の直後の状態からそのまま再実行 → A は `unchanged` となり **A への CreateChangeSet / ExecuteChangeSet が一切呼ばれない**、B から処理が再開して収束する。変種: B の失敗実行が残した変更セットが FR-2-7 の残存回収で処理されること |
 | **FR-13-4** | **テンプレート変更時、設定された全対象リージョンに変更セットを作成** | 2 リージョン設定のテンプレートを変更 → 各リージョンに CreateChangeSet が**ちょうど 1 回ずつ**、リージョン別の実効パラメータ・タグで呼ばれ、設定順に直列実行される |
 | FR-1-9 | 各副作用の直前に fencing 検証。喪失時は中断 | 副作用(変更セット作成・実行・削除、ステート保存)の直前ごとにロック検証が呼ばれる(呼び出し順序検証)/ 完了待機後・CAS 保存直前の検証で所有権喪失 → 保存せず中断 |
+| FR-5-4 | 一括実行の各段階で進捗をスタックキー付きで通知する | CREATE 成功シナリオで `onProgress` が ['changeset-create-start','diff-ready','execute-start','done'] の順に、対象スタックキー付きで呼ばれる / 空変更セットでは ['changeset-create-start','no-change'] で止まる / `--dry-run` では ['changeset-create-start','diff-ready','skipped'] で止まり execute-start/done は呼ばれない |
+| FR-5-4(失敗) | 失敗時の progress メッセージは report と同じ redactor 適用済み文字列を再利用する | NoEcho を含む StatusReason で失敗させた場合、`onProgress` の 'failed' メッセージに実値が含まれない(report.result の errorMessage と同一文字列であることを確認) |
+| FR-5-4(スキップ) | 依存失敗によるスキップも通知する | A 失敗・B が A に依存 → B の `onProgress` に phase 'skipped' が呼ばれる |
+| NFR-1(進捗) | 進捗は標準エラーのみに出力し、`--output json` の標準出力を汚さない | CLI 統合テストで `--output json` 実行中に `onProgress` を複数回発火させても stdout が単一の有効な JSON のままであることを確認(cli.test.ts 側) |
 | FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue` | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行 |
 | FR-1-7(統合) | ロックは正常・異常を問わず終了時に解放 | 成功時・途中エラー時の双方で解放される(所有権喪失時は解放試行が条件不成立で無害) |
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |

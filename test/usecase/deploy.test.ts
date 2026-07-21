@@ -167,6 +167,7 @@ function setup(
 ) {
   const timeline: string[] = [];
   const emitted: StackEventLineForTest[] = [];
+  const progress: ProgressEventForTest[] = [];
   const backend = new FakeStateBackend(timeline, state, STATE_ID);
   const gateways = new Map<string, FakeCloudFormationGateway>();
   const cfnFactory = (region: string): CloudFormationGateway => {
@@ -202,10 +203,11 @@ function setup(
         now: FIXED_NOW,
         runId: () => RUN_ID,
         onEvent: (event) => emitted.push(event),
+        onProgress: (event) => progress.push(event),
       },
       options,
     });
-  return { timeline, emitted, backend, gateways, cfnFactory, run };
+  return { timeline, emitted, progress, backend, gateways, cfnFactory, run };
 }
 
 type StackEventLineForTest = {
@@ -216,6 +218,13 @@ type StackEventLineForTest = {
   resourceType: string;
   resourceStatus: string;
   resourceStatusReason?: string;
+};
+
+type ProgressEventForTest = {
+  stackKey: string;
+  region: string;
+  phase: string;
+  message: string;
 };
 
 function gatewayFor(
@@ -1149,5 +1158,266 @@ Outputs:
       'New',
     );
     expect(result.exitCode).toBe(0);
+  });
+
+  it('FR-5-4: CREATE 成功は changeset-create-start→diff-ready→execute-start→done を通知する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      s.progress
+        .filter((p) => p.stackKey === `a.yaml@${REGION}`)
+        .map((p) => p.phase),
+    ).toEqual([
+      'changeset-create-start',
+      'diff-ready',
+      'execute-start',
+      'done',
+    ]);
+    // 全イベントが自スタックのキー・リージョンを保持する(将来並列化の属性付け)。
+    for (const event of s.progress) {
+      expect(event.stackKey).toBe(`a.yaml@${REGION}`);
+      expect(event.region).toBe(REGION);
+    }
+  });
+
+  it('FR-5-4: 空変更セットは changeset-create-start→no-change で止まり execute しない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason:
+        "The submitted information didn't contain changes. Submit different information to create a change set.",
+    });
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      s.progress
+        .filter((p) => p.stackKey === `a.yaml@${REGION}`)
+        .map((p) => p.phase),
+    ).toEqual(['changeset-create-start', 'no-change']);
+  });
+
+  it('FR-5-4: dry-run は changeset-create-start→diff-ready→skipped で止まる', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+
+    const result = await s.run({ dryRun: true });
+
+    expect(result.exitCode).toBe(2);
+    const phases = s.progress
+      .filter((p) => p.stackKey === `a.yaml@${REGION}`)
+      .map((p) => p.phase);
+    expect(phases).toEqual(['changeset-create-start', 'diff-ready', 'skipped']);
+    expect(phases).not.toContain('execute-start');
+    expect(phases).not.toContain('done');
+  });
+
+  it('FR-5-4(失敗): failed の progress メッセージは report の errorMessage と同一文字列で NoEcho をマスク済み', async () => {
+    const secret = 'S3cr3t-Value-From-Config';
+    const config = configOf({
+      'secret.yaml': {
+        stackName: 'SecretStack',
+        parameters: { Secret: secret },
+      },
+    });
+    const templates = templatesOf({ 'secret.yaml': TEMPLATE_SECRET });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'secret-failure',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason: `custom resource rejected password ${secret}`,
+      },
+    ]);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+        statusReason: `rollback after ${secret}`,
+      }),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    const key = 'secret.yaml@ap-northeast-1';
+    const stackProgress = s.progress.filter((p) => p.stackKey === key);
+    const failedProgress = stackProgress.at(-1);
+    expect(failedProgress?.phase).toBe('failed');
+    const reportFailed = result.report.result?.stacks.find(
+      (stack) => stack.stackKey === key && stack.outcome === 'failed',
+    );
+    // 単一の redaction 経路: progress の failed メッセージは report の errorMessage と同一文字列。
+    expect(failedProgress?.message).toBe(reportFailed?.errorMessage);
+    expect(failedProgress?.message).not.toContain(secret);
+    expect(failedProgress?.message).toContain('****');
+  });
+
+  it('FR-5-4(スキップ): A 失敗で A に依存する B の progress に skipped が入る', async () => {
+    const config = configOf({
+      'a.yaml': { stackName: 'A' },
+      'b.yaml': { stackName: 'B' },
+    });
+    const templates = templatesOf({
+      'a.yaml': TEMPLATE_A,
+      'b.yaml': TEMPLATE_B,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitResults.set('A', [
+      makeStackSummary({ stackName: 'A', status: 'UPDATE_ROLLBACK_COMPLETE' }),
+    ]);
+
+    const result = await s.run({ onFailure: 'continue' });
+
+    expect(result.exitCode).toBe(1);
+    const bPhases = s.progress
+      .filter((p) => p.stackKey === `b.yaml@${REGION}`)
+      .map((p) => p.phase);
+    expect(bPhases).toEqual(['skipped']);
+    expect(bPhases).not.toContain('changeset-create-start');
+    expect(
+      fake
+        .callsOf('createChangeSet')
+        .map((call) => (call.args[0] as { stackName: string }).stackName),
+    ).not.toContain('B');
+  });
+
+  it('FR-5-4: 削除は allowDelete 有無で delete-start→done / delete-start→skipped を通知する', async () => {
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const config = configOf({});
+    const key = `old.yaml@${REGION}`;
+
+    const success = setup(
+      config,
+      new Map(),
+      recordedState(oldConfig, oldTemplates),
+    );
+    const successFake = gatewayFor(success);
+    successFake.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId:
+          recordedState(oldConfig, oldTemplates).stacks[key].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
+    );
+    successFake.waitResults.set('Old', [
+      makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' }),
+    ]);
+    await success.run({ allowDelete: true });
+    expect(
+      success.progress.filter((p) => p.stackKey === key).map((p) => p.phase),
+    ).toEqual(['delete-start', 'done']);
+
+    const skip = setup(
+      config,
+      new Map(),
+      recordedState(oldConfig, oldTemplates),
+    );
+    const skipFake = gatewayFor(skip);
+    skipFake.stacks.set(
+      'Old',
+      makeStackSummary({ stackName: 'Old', status: 'CREATE_COMPLETE' }),
+    );
+    await skip.run();
+    expect(
+      skip.progress.filter((p) => p.stackKey === key).map((p) => p.phase),
+    ).toEqual(['delete-start', 'skipped']);
+  });
+
+  it('FR-5-4: 削除保護で拒否された削除は delete-start→failed を通知する', async () => {
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const config = configOf({});
+    const key = `old.yaml@${REGION}`;
+    const state = recordedState(oldConfig, oldTemplates);
+    const s = setup(config, new Map(), state);
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: state.stacks[key].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+        terminationProtection: true,
+      }),
+    );
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+    expect(
+      s.progress.filter((p) => p.stackKey === key).map((p) => p.phase),
+    ).toEqual(['delete-start', 'failed']);
+  });
+
+  it('FR-5-4: マルチリージョンでも各 progress が自スタックのキー・リージョンを保持する', async () => {
+    const config = configOf(
+      {
+        'a.yaml': { stackName: 'A', regions: [REGION, REGION_2] },
+      },
+      [REGION, REGION_2],
+    );
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    for (const region of [REGION, REGION_2])
+      setExistingStacks(config, gatewayFor(s, region), region);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(s.progress.length).toBeGreaterThan(0);
+    // stackKey は必ず `<path>@<region>` 形式で、region フィールドと一致する。
+    for (const event of s.progress) {
+      expect(event.stackKey.endsWith(`@${event.region}`)).toBe(true);
+    }
+    expect(s.progress.some((p) => p.stackKey === `a.yaml@${REGION}`)).toBe(
+      true,
+    );
+    expect(s.progress.some((p) => p.stackKey === `a.yaml@${REGION_2}`)).toBe(
+      true,
+    );
   });
 });

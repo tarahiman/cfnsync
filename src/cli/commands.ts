@@ -173,6 +173,9 @@ function deploymentDeps(
         `[${event.stackKey}] ${event.logicalResourceId} ${event.resourceStatus}`,
       );
     },
+    onProgress: (event: { stackKey: string; message: string }) => {
+      writeLine(ctx.io.stderr, `[${event.stackKey}] ${event.message}`);
+    },
   };
 }
 
