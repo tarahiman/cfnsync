@@ -298,6 +298,52 @@ export function mergeGraphs(
   return { region: current.region, nodes, edges };
 }
 
+/**
+ * トポロジカル順序に基づく階層(レベル)を算出する(FR-8-6)。各ノードのレベルは
+ * 「入力辺を持つ先行ノードの最大レベル+1」(先行ノードなしは 0)。同一レベル内の
+ * スタックは互いに直接の辺を持たない(= 並列デプロイ可能)ことがレベルの定義から
+ * 保証される。循環がある場合は内部で呼ぶ `topologicalOrder` がそのまま
+ * `DependencyCycleError` を投げる(FR-8-4。レベル分割より前に fail-closed で停止し、
+ * 部分的なレベル分割を返すことはない)。
+ *
+ * `levels[i]` の内部順序は topo 順ではなく `graph.nodes`(宣言順)を保つ —
+ * 表示の決定性・設定順との対応のため。この算出はテキスト表示専用であり、
+ * `core/plan.ts` の実行順序決定には使用しない(FR-9-3: 実行は引き続き直列)。
+ */
+export function computeLevels(graph: RegionGraph): StackKey[][] {
+  const order = topologicalOrder(graph);
+
+  const predecessors = new Map<StackKey, StackKey[]>();
+  for (const edge of graph.edges) {
+    const list = predecessors.get(edge.to);
+    if (list) {
+      list.push(edge.from);
+    } else {
+      predecessors.set(edge.to, [edge.from]);
+    }
+  }
+
+  const level = new Map<StackKey, number>();
+  for (const key of order) {
+    const preds = predecessors.get(key) ?? [];
+    let lvl = 0;
+    for (const pred of preds) {
+      const predLevel = level.get(pred) ?? 0;
+      if (predLevel + 1 > lvl) lvl = predLevel + 1;
+    }
+    level.set(key, lvl);
+  }
+
+  const levels: StackKey[][] = [];
+  for (const key of graph.nodes) {
+    const lvl = level.get(key) ?? 0;
+    while (levels.length <= lvl) levels.push([]);
+    levels[lvl].push(key);
+  }
+
+  return levels;
+}
+
 /** 削除用の逆順ヘルパ。引数を変更せず新しい配列を返す。 */
 export function reverseOrder(order: StackKey[]): StackKey[] {
   return [...order].reverse();

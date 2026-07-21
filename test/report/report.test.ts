@@ -460,18 +460,55 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     return new Map([[REGION, graph]]);
   }
 
-  it('FR-8-3: renderGraphText は依存関係をリージョンごとのテキストツリーとして出力する', () => {
+  it('FR-8-3/FR-8-6: renderGraphText は依存関係をリージョンごとのレベル(Lv0, Lv1, ...)として出力する', () => {
     const text = renderGraphText(makeGraphs());
-    expect(text).toContain(REGION);
-    expect(text).toContain('network.yaml@' + REGION);
-    expect(text).toContain('database.yaml@' + REGION);
-    // database は network に依存することがわかる。
+    const lv0Index = text.indexOf('Lv0:');
+    const lv1Index = text.indexOf('Lv1:');
+    expect(lv0Index).toBeGreaterThanOrEqual(0);
+    expect(lv1Index).toBeGreaterThan(lv0Index);
+
+    // network は依存元(Lv0)、database はそれに依存する側(Lv1)。
+    const networkIndex = text.indexOf('network.yaml@' + REGION);
     const databaseIndex = text.indexOf('database.yaml@' + REGION);
-    const dependsLineIndex = text.indexOf(
-      'network.yaml@' + REGION,
-      databaseIndex,
-    );
-    expect(dependsLineIndex).toBeGreaterThan(databaseIndex);
+    expect(networkIndex).toBeGreaterThan(lv0Index);
+    expect(networkIndex).toBeLessThan(lv1Index);
+    expect(databaseIndex).toBeGreaterThan(lv1Index);
+  });
+
+  it('FR-8-6: diamond 依存でも依存関係の記述は重複しない(db1/db2 は同一 Lv1 にまとまる)', () => {
+    const network = makeStackKey('network.yaml', REGION);
+    const db1 = makeStackKey('db1.yaml', REGION);
+    const db2 = makeStackKey('db2.yaml', REGION);
+    const app = makeStackKey('app.yaml', REGION);
+    const graph: RegionGraph = {
+      region: REGION,
+      nodes: [network, db1, db2, app],
+      edges: [
+        { from: network, to: db1 },
+        { from: network, to: db2 },
+        { from: db1, to: app },
+        { from: db2, to: app },
+      ],
+    };
+
+    const text = renderGraphText(new Map([[REGION, graph]]));
+
+    // db1/db2 はそれぞれちょうど 1 回だけ出現する(下流参照ごとに重複しない)。
+    const countOccurrences = (needle: string): number =>
+      text.split(needle).length - 1;
+    expect(countOccurrences('db1.yaml@' + REGION)).toBe(1);
+    expect(countOccurrences('db2.yaml@' + REGION)).toBe(1);
+
+    const lv1Index = text.indexOf('Lv1:');
+    const lv2Index = text.indexOf('Lv2:');
+    expect(lv1Index).toBeGreaterThanOrEqual(0);
+    expect(lv2Index).toBeGreaterThan(lv1Index);
+    const db1Index = text.indexOf('db1.yaml@' + REGION);
+    const db2Index = text.indexOf('db2.yaml@' + REGION);
+    expect(db1Index).toBeGreaterThan(lv1Index);
+    expect(db1Index).toBeLessThan(lv2Index);
+    expect(db2Index).toBeGreaterThan(lv1Index);
+    expect(db2Index).toBeLessThan(lv2Index);
   });
 
   it('FR-8-3: renderGraphJson はリージョンごとのノード・辺を機械可読 JSON として出力する', () => {
@@ -488,7 +525,35 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     ]);
   });
 
-  it('FR-8-3: renderGraphText / renderGraphJson は複数リージョンを独立に出力する', () => {
+  it('FR-8-6: renderGraphJson には levels キーは追加されない(JSON 契約は不変)', () => {
+    const network = makeStackKey('network.yaml', REGION);
+    const db1 = makeStackKey('db1.yaml', REGION);
+    const db2 = makeStackKey('db2.yaml', REGION);
+    const app = makeStackKey('app.yaml', REGION);
+    const graph: RegionGraph = {
+      region: REGION,
+      nodes: [network, db1, db2, app],
+      edges: [
+        { from: network, to: db1 },
+        { from: network, to: db2 },
+        { from: db1, to: app },
+        { from: db2, to: app },
+      ],
+    };
+
+    const parsed = JSON.parse(renderGraphJson(new Map([[REGION, graph]])));
+
+    expect(Object.keys(parsed)).toEqual(['regions']);
+    expect(Object.keys(parsed.regions[0])).toEqual([
+      'region',
+      'nodes',
+      'edges',
+    ]);
+    expect(parsed.regions[0]).not.toHaveProperty('levels');
+    expect(JSON.stringify(parsed)).not.toContain('levels');
+  });
+
+  it('FR-8-3/FR-8-6: renderGraphText / renderGraphJson は複数リージョンを独立に出力する', () => {
     const graphs = makeGraphs();
     const soloKey = makeStackKey('solo.yaml', REGION_B);
     graphs.set(REGION_B, { region: REGION_B, nodes: [soloKey], edges: [] });
@@ -503,6 +568,29 @@ describe('FR-8-3: 依存マッピングの出力', () => {
       REGION,
       REGION_B,
     ]);
+  });
+
+  it('FR-8-6: 各リージョンのレベル見出しは Lv0 から独立に再開する', () => {
+    const graphs = makeGraphs();
+    const soloKey = makeStackKey('solo.yaml', REGION_B);
+    graphs.set(REGION_B, { region: REGION_B, nodes: [soloKey], edges: [] });
+
+    const text = renderGraphText(graphs);
+
+    // REGION ブロック: Lv0(network) → Lv1(database)。
+    const regionAHeaderIndex = text.indexOf(`region: ${REGION}\n`);
+    const regionBHeaderIndex = text.indexOf(`region: ${REGION_B}\n`);
+    expect(regionAHeaderIndex).toBeGreaterThanOrEqual(0);
+    expect(regionBHeaderIndex).toBeGreaterThan(regionAHeaderIndex);
+
+    const regionABlock = text.slice(regionAHeaderIndex, regionBHeaderIndex);
+    const regionBBlock = text.slice(regionBHeaderIndex);
+
+    expect(regionABlock).toContain('Lv0:');
+    expect(regionABlock).toContain('Lv1:');
+    // REGION_B は独立ノードのみなので Lv0 のみで再開する(Lv1 は存在しない)。
+    expect(regionBBlock).toContain('Lv0:');
+    expect(regionBBlock).not.toContain('Lv1:');
   });
 });
 

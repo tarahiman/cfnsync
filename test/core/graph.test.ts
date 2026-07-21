@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ConfigError, DependencyCycleError } from '../../src/core/errors.js';
 import {
   buildGraphs,
+  computeLevels,
   mergeGraphs,
   type RegionGraph,
   reverseOrder,
@@ -476,5 +477,123 @@ describe('core/graph — FR-13-6: グラフはリージョンごとに独立', (
     expect(edgeSet(graphFor(graphs, REGION_B))).toEqual(
       new Set([`${networkB.stackKey}=>${appB.stackKey}`]),
     );
+  });
+});
+
+describe('core/graph — FR-8-6: computeLevels', () => {
+  it('FR-8-6: 単純な鎖(a→b→c)は各ノードが個別のレベルに分かれる', () => {
+    const network = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['VpcId'],
+    });
+    const database = node({
+      stackKey: makeStackKey('database.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['DbEndpoint'],
+      imports: ['VpcId'],
+    });
+    const app = node({
+      stackKey: makeStackKey('app.yaml', REGION_A),
+      region: REGION_A,
+      imports: ['DbEndpoint'],
+    });
+
+    const graph = graphFor(buildGraphs([network, database, app]), REGION_A);
+    const levels = computeLevels(graph);
+
+    expect(levels).toEqual([
+      [network.stackKey],
+      [database.stackKey],
+      [app.stackKey],
+    ]);
+  });
+
+  it('FR-8-6: diamond 依存(network → db1/db2 → app)は db1/db2 が同一レベルにまとまる', () => {
+    const network = node({
+      stackKey: makeStackKey('network.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['VpcId'],
+    });
+    const db1 = node({
+      stackKey: makeStackKey('db1.yaml', REGION_A),
+      region: REGION_A,
+      imports: ['VpcId'],
+    });
+    const db2 = node({
+      stackKey: makeStackKey('db2.yaml', REGION_A),
+      region: REGION_A,
+      imports: ['VpcId'],
+    });
+    const app = node({
+      stackKey: makeStackKey('app.yaml', REGION_A),
+      region: REGION_A,
+      explicitDependsOn: [db1.stackKey, db2.stackKey],
+    });
+
+    const graph = graphFor(buildGraphs([network, db1, db2, app]), REGION_A);
+    const levels = computeLevels(graph);
+
+    expect(levels).toHaveLength(3);
+    expect(levels[0]).toEqual([network.stackKey]);
+    expect(levels[1]).toEqual([db1.stackKey, db2.stackKey]);
+    expect(levels[2]).toEqual([app.stackKey]);
+  });
+
+  it('FR-8-6: 独立ノード(辺なし)はすべて Lv0 にまとまる', () => {
+    const x = node({
+      stackKey: makeStackKey('x.yaml', REGION_A),
+      region: REGION_A,
+    });
+    const y = node({
+      stackKey: makeStackKey('y.yaml', REGION_A),
+      region: REGION_A,
+    });
+
+    const graph = graphFor(buildGraphs([x, y]), REGION_A);
+    const levels = computeLevels(graph);
+
+    expect(levels).toEqual([[x.stackKey, y.stackKey]]);
+  });
+
+  it('FR-8-6: 循環がある場合は DependencyCycleError を投げ、部分的なレベル分割を返さない', () => {
+    const a = node({
+      stackKey: makeStackKey('a.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['A-Out'],
+      imports: ['C-Out'],
+    });
+    const b = node({
+      stackKey: makeStackKey('b.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['B-Out'],
+      imports: ['A-Out'],
+    });
+    const c = node({
+      stackKey: makeStackKey('c.yaml', REGION_A),
+      region: REGION_A,
+      exports: ['C-Out'],
+      imports: ['B-Out'],
+    });
+
+    const graph = graphFor(buildGraphs([a, b, c]), REGION_A);
+
+    let thrown: unknown;
+    try {
+      computeLevels(graph);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(DependencyCycleError);
+    const cycle = (thrown as InstanceType<typeof DependencyCycleError>).cycle;
+    expect(new Set(cycle)).toEqual(
+      new Set([a.stackKey, b.stackKey, c.stackKey]),
+    );
+  });
+
+  it('FR-8-6: 空グラフ(nodes: [])は空配列を返す', () => {
+    const graph: RegionGraph = { region: REGION_A, nodes: [], edges: [] };
+    expect(computeLevels(graph)).toEqual([]);
   });
 });
