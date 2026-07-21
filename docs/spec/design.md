@@ -79,6 +79,10 @@ allowedRegions: [ap-northeast-1, us-east-1]
 defaultRegion: ap-northeast-1
 stackNamePrefix: legacy-app-             # 任意。スタック名導出規約に使用
 
+defaultTags:                             # 任意。全管理対象スタックへ既定付与するタグ(FR-11)
+  ManagedBy: cfnsync
+  Env: prod
+
 state:                                   # ステートバックエンド(FR-1)。省略時は local
   backend: s3
   s3:
@@ -103,7 +107,9 @@ stacks:
           VpcCidr: 10.1.0.0/16
 ```
 
-- パラメータ・タグの実効値 = 共通値に `regionOverrides.<region>` を浅くマージしたもの。
+- パラメータの実効値 = 共通値に `regionOverrides.<region>.parameters` を浅くマージしたもの。
+- タグの実効値 = `defaultTags` に スタックの `tags`、さらに `regionOverrides.<region>.tags` を順に浅くマージしたもの(後勝ち)。同名キーの重複は設定エラーとせず、より狭いスコープの値が優先される。`defaultTags` は `stacks` 配下の各エントリへ展開された時点で通常のタグと区別されないため、`inputsHash`(§4.3)にも自然に含まれ、`defaultTags` のみの変更は付与先の全スタックを `modified` として検知させる。管理タグ(§8.4)は実行時に最後にマージされるため、`defaultTags` で同名キーを指定しても管理タグの値が優先される。
+- import(§5.4)は実スタックのタグを `stacks` 配下へ書き戻す。`defaultTags` と同名のキーであっても書き戻しは抑止しない(実スタックの値が失われないことを優先し、スタック側が優先される上記の順位により実効値は取り込み時点と一致する)。
 - インポート(FR-10)はこのファイルの `stacks` 配下を機械的に更新する。コメント・キー順を保持するため YAML の AST 編集(`yaml` パッケージの Document API)で書き戻す。
 - 設定オブジェクトは未知キーを拒否する。`stacks` のテンプレートパスは相対パスのみとし、絶対パス・NUL・空・正規化後の `.` / `..`、正規化後に重複するパスを config 検証で拒否する。通常の読取では対象が通常ファイルであることを確認する。import の `--write-template` だけは不存在を許可するが、読み取りおよび書き込みでは、対象(未作成なら既存の最長親)の realpath が設定ディレクトリ配下であることを CLI filesystem adapter が再検証し、シンボリックリンク経由の脱出も fail-closed に拒否する。
 - CLI の `--region` / 環境変数による既定リージョン上書き後にも実効設定全体を再検証する。明示依存は同一リージョンの管理対象へ解決できることを必須とし、自己依存も拒否する。
