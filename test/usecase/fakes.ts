@@ -140,6 +140,14 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
    */
   onListChangeSets?: (stackName: string, callCount: number) => void;
 
+  /**
+   * true の場合、`listChangeSets` は `stacks` に未登録のスタック名に対して実 AWS の
+   * `ListChangeSets`(実際には `ValidationError: Stack [...] does not exist`)を模した
+   * 例外を投げる。既定は false(既存テストの非破壊のため)。真の新規 CREATE(スタックが
+   * CloudFormation に一切存在しない)経路の回帰テストで使う。
+   */
+  strictStackExistence = false;
+
   private readonly listCallCounts = new Map<string, number>();
 
   constructor(
@@ -181,6 +189,12 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   }
 
   async listChangeSets(stackName: string): Promise<ChangeSetSummary[]> {
+    if (this.strictStackExistence && !this.stacks.has(stackName)) {
+      this.record('listChangeSets', stackName);
+      throw new Error(
+        `CloudFormation ListChangeSets に失敗しました: Stack [${stackName}] does not exist`,
+      );
+    }
     const callCount = (this.listCallCounts.get(stackName) ?? 0) + 1;
     this.listCallCounts.set(stackName, callCount);
     this.onListChangeSets?.(stackName, callCount);
@@ -196,6 +210,21 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
       ...existing,
       makeChangeSetSummary(input.changeSetName, { id }),
     ]);
+    if (
+      this.strictStackExistence &&
+      input.changeSetType === 'CREATE' &&
+      !this.stacks.has(input.stackName)
+    ) {
+      // 実 AWS は CREATE 型の CreateChangeSet でスタックを REVIEW_IN_PROGRESS として
+      // 新規作成する。strictStackExistence 下ではこれ以降の存在チェックを実体に合わせる。
+      this.stacks.set(
+        input.stackName,
+        makeStackSummary({
+          stackName: input.stackName,
+          status: 'REVIEW_IN_PROGRESS',
+        }),
+      );
+    }
     return { id };
   }
 
@@ -245,6 +274,16 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
             changeSet.id !== changeSetName && changeSet.name !== changeSetName,
         ),
       );
+    }
+    if (this.strictStackExistence) {
+      // 実 AWS では ExecuteChangeSet が REVIEW_IN_PROGRESS のスタックの実体作成を開始し、
+      // 完了すると CREATE_COMPLETE へ遷移する。waitForStack が古い REVIEW_IN_PROGRESS を
+      // 返し続けないよう、CREATE 型実行の成功をここで模す(個別の waitResults 設定があれば
+      // そちらが優先される)。
+      const current = this.stacks.get(stackName);
+      if (current?.status === 'REVIEW_IN_PROGRESS') {
+        this.stacks.set(stackName, { ...current, status: 'CREATE_COMPLETE' });
+      }
     }
   }
 

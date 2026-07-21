@@ -578,8 +578,12 @@ async function processCreateOrUpdate(
   if (prepared.kind === 'update') {
     await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
   }
-  // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。通常パスのみ明示回収する。
-  if (!prepared.reviewInProgress)
+  // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。
+  // スタックが実在しない(真の新規 CREATE)場合、ListChangeSets 自体が CloudFormation の
+  // 実エラー("Stack ... does not exist")を返すため呼んではならない。prepared.stackStatus は
+  // DescribeStacks が結果を返した(＝スタックが実在する)場合のみ設定される。
+  // 実在し REVIEW_IN_PROGRESS でもない通常パス(update)のみ明示回収する。
+  if (prepared.stackStatus !== undefined && !prepared.reviewInProgress)
     await reclaimStaleChangeSets(executor, target.stackName);
 
   // UPDATE の副作用(CreateChangeSet)直前にも再取得し、同名差し替えを fail-closed にする。
