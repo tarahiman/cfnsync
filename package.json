@@ -12,7 +12,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc",
@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.13",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "aws-sdk-client-mock": "^4",
     "typescript": "^5",
     "vitest": "^3"

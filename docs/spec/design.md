@@ -13,7 +13,7 @@
 
 | 事項 | 決定 | 理由 |
 |---|---|---|
-| 実装言語・ランタイム | TypeScript / Node.js 20+ | GitHub Actions の JS アクション(node20 ランタイム)としてコンテナ不要でそのまま動かせる。CLI とアクションでコードを共有できる。AWS SDK v3 と `aws-sdk-client-mock` により TDD との相性が良い |
+| 実装言語・ランタイム | TypeScript / Node.js 24+ | GitHub Actions の JS アクション(node24 ランタイム)としてコンテナ不要でそのまま動かせる。CLI とアクションでコードを共有できる。AWS SDK v3 と `aws-sdk-client-mock` により TDD との相性が良い |
 | 配布 | npm パッケージ(`npx cfnsync`)。将来 GitHub Action としてパッケージング | CI からの利用が最も簡単 |
 | 開発時パッケージマネージャ | pnpm | 高速かつ厳密な依存管理のため。配布形式は npm パッケージのまま |
 | 設定ファイル | `cfnsync.yaml`(テンプレートディレクトリ直下、YAML) | FR-11。スキーマ検証は zod で行う |
