@@ -1,11 +1,5 @@
 {
   "mcpServers": {
-    "terraform": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "hashicorp/terraform-mcp-server"],
-      "env": {}
-    },
     "aws-mcp-oauth": {
       "type": "http",
       "url": "https://aws-mcp.us-east-1.api.aws/mcp"
