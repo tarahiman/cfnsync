@@ -52,7 +52,7 @@ CI パイプラインはこれらの終了コードに依存して分岐して�
 
 cfnsync の変更系操作は、以下の多層防御を前提に設計されています。挙動を説明・提案するときにこれらを弱めて言い換えないでください。
 
-- **fail-closed が全体方針**: `allowedAccounts`/`allowedRegions` が設定にない、STS `GetCallerIdentity` の結果と一致しない、接続先や対象リージョンを解決できない、といった状況では変更系操作(change set 作成・実行・スタック削除)を一切行わずエラー終了する。警告を出して続行することはない。
+- **fail-closed が全体方針**: `allowedAccounts`/`allowedRegions` が設定にない、STS `GetCallerIdentity` の結果と一致しない、接続先や対象リージョンを解決できない、といった状況では変更系操作(change set 作成・実行・スタック削除)を一切行わずエラー終了する。警告を出して続行することはない。加えて、ステートは初回の変更系実行時(ロック取得後)に接続先アカウント ID を `accountId` として記録し、以後の実行で STS の解決結果と不一致であれば(アカウント切り替え・ステートファイルの誤用等)一切の書き込みを行わず拒否する。これは `allowedAccounts` という設定レベルの許可リストとは別個の、ステート自体に紐づくガードである。
 - **ステートバックエンド**は Terraform ライクな設計で、既定は `local`(単一プロセス想定)、CI 向けに `s3` がある。世代/ETag による compare-and-swap、S3 の条件付き書き込みによるロック、原子的なファイル置換で正本の一貫性を守る。各副作用の直前に所有権を再確認する fencing は**ベストエフォート**であり(CloudFormation 自体が fencing token を提供しないため競合窓を完全には排除できない)、厳密な保証は CAS とスタック単位の `*_IN_PROGRESS` ガードが担う。fencing を「厳密な排他制御」と説明しないこと。
 - **change set の所有権管理**: change set 名は `cfnsync-<stateID>-<runID>-<timestamp>` の形式でエンコードされ、自分の stateID を持つ change set のみ自動的に回収(削除)してよい。他ツール・他人・他 state が作成した change set が存在する場合は実行をブロックする(fail-closed)。`ExecuteChangeSet` は同一スタック上の他の change set を暗黙的に削除する破壊的操作のため、実行直前に対象 change set を再確認する。
 - **`REVIEW_IN_PROGRESS` 状態のスタックを `DeleteStack` してはならない**。この状態では、代わりに CREATE 型の change set を作り直して処理する。
