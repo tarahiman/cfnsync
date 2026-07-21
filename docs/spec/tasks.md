@@ -28,7 +28,7 @@
 
 ### T-01 プロジェクト初期化
 
-成果物: `package.json`(Node.js 20+, npm)、`tsconfig.json`、vitest 設定、design.md §10 のディレクトリ骨格、プレースホルダテスト。
+成果物: `package.json`(Node.js 24+, npm)、`tsconfig.json`、vitest 設定、design.md §10 のディレクトリ骨格、プレースホルダテスト。
 
 - 依存パッケージ: `commander` / `yaml` / `zod` / `@aws-sdk/client-cloudformation` / `@aws-sdk/client-sts` / `@aws-sdk/client-s3`、dev: `vitest` / `aws-sdk-client-mock` / `typescript`。
 - 完了条件: `vitest run` が green。`npm run build`(tsc)が通る。
@@ -329,7 +329,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 
 ### T-21 npm パッケージング
 
-- `package.json` の `bin`(`cfnsync`)・`files`・`engines`(node >= 20)整備、`npx cfnsync --help` の動作確認。
+- `package.json` の `bin`(`cfnsync`)・`files`・`engines`(node >= 24)整備、`npx cfnsync --help` の動作確認。
 - 将来の GitHub Action 化(§2)を妨げない構成であることを確認(ビルド成果物が単一ディレクトリに収まる)。
 
 ## 9. テスト対象外(ドキュメント・構造で満たす)受け入れ基準の一覧
