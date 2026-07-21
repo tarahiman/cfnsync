@@ -271,6 +271,38 @@ describe('deploy — T-14 integration', () => {
     expect(fake.callsOf('describeStack')).toHaveLength(1);
   });
 
+  it('回帰(実 AWS 疎通で判明): 真の新規 CREATE(スタック不存在)は ListChangeSets より先に CreateChangeSet へ進む', async () => {
+    // 実 AWS では、CloudFormation が一度も認識していないスタック名に対する
+    // ListChangeSets は ValidationError("Stack [...] does not exist") を返す。
+    // strictStackExistence でこの実挙動を模し、prepareStack が「不存在」と
+    // 「REVIEW_IN_PROGRESS 以外で実在」を混同して reclaimStaleChangeSets(→ListChangeSets)
+    // を CreateChangeSet より先に呼んでしまう回帰を検出する
+    // (修正前は本テストが ValidationError 相当で reject していた)。
+    // CREATE 型 CreateChangeSet 成功後は実 AWS 同様スタックが REVIEW_IN_PROGRESS で
+    // 生成されるため、実行直前再検査(FR-2-11)による ListChangeSets 呼び出し自体は
+    // CreateChangeSet の**後**であれば正しく成功する。
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+    const fake = gatewayFor(s);
+    fake.strictStackExistence = true;
+    // 意図的に fake.stacks へ 'A' を登録しない = CloudFormation にスタックが一切存在しない。
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    const sequence = fake.methodSequence();
+    const createIdx = sequence.indexOf('createChangeSet');
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    // CreateChangeSet より前に ListChangeSets(=不存在スタックへの ListChangeSets)が
+    // 呼ばれていないこと。修正前は reclaimStaleChangeSets 経由でここに listChangeSets が
+    // 入り込み、スタック不存在エラーで中断していた。
+    expect(sequence.slice(0, createIdx)).not.toContain('listChangeSets');
+    expect(
+      (fake.callsOf('createChangeSet')[0].args[0] as { changeSetType: string })
+        .changeSetType,
+    ).toBe('CREATE');
+  });
+
   it('FR-5-1 / FR-5-2: 変更検知から実行まで依存順に非対話で一括実行する', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A' },
