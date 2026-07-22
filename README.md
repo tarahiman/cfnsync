@@ -135,6 +135,17 @@ cfnsync ships a [Claude Code](https://claude.com/claude-code) plugin — a skill
 
 Then ask Claude to work with cfnsync in a repo that has a `cfnsync.yaml`. The plugin manifest is [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json) and the skill lives in [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md).
 
+## Codex plugin
+
+cfnsync also ships a [Codex CLI](https://developers.openai.com/codex/) plugin backed by the same skill. Install it from this repository's marketplace:
+
+```
+codex plugin marketplace add tarahiman/cfnsync
+codex plugin add cfnsync@cfnsync
+```
+
+Then ask Codex to work with cfnsync in a repo that has a `cfnsync.yaml`. The plugin manifest is [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json), the marketplace manifest is [`.agents/plugins/marketplace.json`](./.agents/plugins/marketplace.json), and it points at the same skill: [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md).
+
 ## Safety model
 
 Several invariants come out of adversarial review and are load-bearing; do not weaken them:

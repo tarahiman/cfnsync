@@ -135,6 +135,17 @@ cfnsync は [Claude Code](https://claude.com/claude-code) プラグイン（skil
 
 その後、`cfnsync.yaml` のあるリポジトリで cfnsync の操作を Claude に依頼してください。プラグインマニフェストは [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)、skill 本体は [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md) です。
 
+## Codex プラグイン
+
+cfnsync は同じ skill を使った [Codex CLI](https://developers.openai.com/codex/) プラグインも同梱しています。本リポジトリの marketplace からインストールします。
+
+```
+codex plugin marketplace add tarahiman/cfnsync
+codex plugin add cfnsync@cfnsync
+```
+
+その後、`cfnsync.yaml` のあるリポジトリで cfnsync の操作を Codex に依頼してください。プラグインマニフェストは [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json)、marketplace マニフェストは [`.agents/plugins/marketplace.json`](./.agents/plugins/marketplace.json) で、同じ skill を参照しています: [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md)。
+
 ## 安全性モデル
 
 いくつかの不変条件は反復的な敵対的レビューから導かれた load-bearing なもので、弱めないでください。
