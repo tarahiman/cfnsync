@@ -80,11 +80,11 @@ function invoke(
 
 function addCommonOptions(program: Command): void {
   program
-    .option('--config <path>', '設定ファイル', './cfnsync.yaml')
+    .option('--config <path>', 'Path to the config file', './cfnsync.yaml')
     .option('--profile <name>', 'AWS profile')
-    .option('--region <region>', '既定リージョンを上書き')
+    .option('--region <region>', 'Override the default region')
     .addOption(
-      new Option('--output <format>', '出力形式')
+      new Option('--output <format>', 'Output format')
         .choices(['text', 'json'])
         .default('text'),
     );
@@ -107,7 +107,7 @@ export function createCliProgram(
   const program = new Command()
     .name('cfnsync')
     .description('CloudFormation template synchronization CLI')
-    .version(readPackageVersion(), '-v, --version', 'バージョンを表示')
+    .version(readPackageVersion(), '-v, --version', 'Show version')
     .configureHelp({ showGlobalOptions: true })
     .showHelpAfterError()
     .exitOverride();
@@ -115,14 +115,14 @@ export function createCliProgram(
 
   program
     .command('status')
-    .description('ローカルの変更検知結果を表示')
+    .description('Show locally detected changes')
     .action((_opts, command) =>
       invoke(runtime, () => runStatus(runtime, commonOptions(command)))(),
     );
 
   program
     .command('plan')
-    .description('変更セットを作成して差分を表示')
+    .description('Create change sets and show the diff')
     .action((_opts, command) =>
       invoke(runtime, () =>
         runDeployment(runtime, { ...commonOptions(command), dryRun: true }),
@@ -131,15 +131,15 @@ export function createCliProgram(
 
   program
     .command('deploy')
-    .description('変更をデプロイ')
-    .option('--dry-run', '変更セットの作成と差分表示のみ')
-    .option('--allow-delete', '削除を許可')
+    .description('Deploy changes')
+    .option('--dry-run', 'Only create change sets and show the diff')
+    .option('--allow-delete', 'Allow deletion of stacks')
     .addOption(
-      new Option('--on-failure <mode>', '失敗時の動作')
+      new Option('--on-failure <mode>', 'Behavior on failure')
         .choices(['stop', 'continue'])
         .default('stop'),
     )
-    .option('--confirm', 'TTY で実行前に確認')
+    .option('--confirm', 'Prompt for confirmation before running (TTY only)')
     .action(
       (
         local: {
@@ -154,9 +154,9 @@ export function createCliProgram(
           if (
             local.confirm === true &&
             runtime.isTTY &&
-            !(await runtime.prompt('デプロイを実行しますか?'))
+            !(await runtime.prompt('Proceed with the deployment?'))
           ) {
-            runtime.io.stderr('デプロイをキャンセルしました。\n');
+            runtime.io.stderr('Deployment cancelled.\n');
             return 0;
           }
           return runDeployment(runtime, {
@@ -168,21 +168,21 @@ export function createCliProgram(
 
   program
     .command('graph')
-    .description('依存関係グラフを表示')
+    .description('Show the dependency graph')
     .action((_opts, command) =>
       invoke(runtime, () => runGraph(runtime, commonOptions(command)))(),
     );
 
   program
     .command('import')
-    .description('既存スタックをインポート')
+    .description('Import existing stacks')
     .addOption(
-      new Option('--reconcile <source>', 'テンプレート差分の解決元').choices([
-        'remote',
-        'local',
-      ]),
+      new Option(
+        '--reconcile <source>',
+        'Source to resolve template diffs from',
+      ).choices(['remote', 'local']),
     )
-    .option('--write-template', '存在しないローカルテンプレートを書き出す')
+    .option('--write-template', 'Write out local templates that do not exist')
     .action(
       (
         local: { reconcile?: 'remote' | 'local'; writeTemplate?: boolean },
@@ -195,7 +195,7 @@ export function createCliProgram(
 
   program
     .command('force-unlock <runId>')
-    .description('残存ステートロックを手動解除')
+    .description('Manually release a stale state lock')
     .action((runId: string, _local: unknown, command: Command) =>
       invoke(runtime, () =>
         runForceUnlock(runtime, commonOptions(command), runId),

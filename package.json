@@ -4,12 +4,34 @@
   "packageManager": "pnpm@11.2.2",
   "description": "Sync a directory of raw CloudFormation templates to stacks (detect changes, create/diff/execute change sets, manage stacks in dependency order).",
   "type": "module",
+  "license": "MIT",
+  "author": "tarahiman",
+  "homepage": "https://github.com/tarahiman/cfnsync#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tarahiman/cfnsync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tarahiman/cfnsync/issues"
+  },
+  "keywords": [
+    "cloudformation",
+    "aws",
+    "cfn",
+    "iac",
+    "change-set",
+    "deploy",
+    "cli",
+    "ci"
+  ],
   "bin": {
     "cfnsync": "dist/cli/main.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "README.ja.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=24"

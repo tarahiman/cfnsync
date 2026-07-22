@@ -1,0 +1,14 @@
+{
+  "name": "cfnsync",
+  "owner": {
+    "name": "tarahiman",
+    "url": "https://github.com/tarahiman"
+  },
+  "plugins": [
+    {
+      "name": "cfnsync",
+      "source": "./",
+      "description": "Skill for driving and interpreting the cfnsync CLI (sync raw CloudFormation templates to stacks) safely from Claude Code."
+    }
+  ]
+}

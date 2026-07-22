@@ -245,7 +245,7 @@ export async function runImporter(
       ? JSON.stringify(result.report, null, 2)
       : result.report.stacks
           .map((stack) => `${stack.status}: ${stack.stackKey}`)
-          .join('\n') || 'import 対象はありません。',
+          .join('\n') || 'No stacks to import.',
   );
   return result.exitCode;
 }
