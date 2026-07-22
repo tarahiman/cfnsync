@@ -1,71 +1,71 @@
 ---
 name: using-cfnsync
-description: cfnsync CLI(生の CloudFormation テンプレートのディレクトリをスタックへ同期するツール)を操作・調査するときに使う。status/plan/deploy/graph/import/force-unlock の使い分け、終了コード(0/1/2)の解釈、deploy 前後の安全確認、fail-closed・ロック・change set 所有権まわりのトラブル対応が必要な場面や、cfnsync.yaml の設定作業を支援する場面で有効。
+description: Use when operating or investigating the cfnsync CLI (a tool that syncs a directory of raw CloudFormation templates to stacks). Helpful for choosing between status/plan/deploy/graph/import/force-unlock, interpreting exit codes (0/1/2), performing safety checks around deploy, troubleshooting fail-closed / locking / change-set-ownership situations, and assisting with cfnsync.yaml configuration.
 ---
 
-# cfnsync の使い方
+# Using cfnsync
 
-`cfnsync` は、ディレクトリ内の生の CloudFormation テンプレート(YAML/JSON)と AWS スタックを同期する CLI です。テンプレートの追加・変更・削除を検知し、change set の作成・差分表示・実行、スタックの作成・更新・削除を依存関係の順序で行います。CI(GitHub Actions)での非対話実行が主眼で、CDK のようなテンプレート生成・抽象化レイヤーは持ちません。
+`cfnsync` is a CLI that syncs a directory of raw CloudFormation templates (YAML/JSON) with AWS stacks. It detects added/modified/deleted templates, creates/diffs/executes change sets, and creates/updates/deletes stacks in dependency order. It targets non-interactive execution in CI (GitHub Actions) and has no template-generation or abstraction layer like CDK.
 
-このスキルは、cfnsync のサブコマンドを Claude Code から適切に選択・実行し、出力(終了コード・diff・エラー)を正しく解釈するためのガイドです。
+This skill is a guide for selecting and running cfnsync subcommands appropriately from Claude Code and interpreting their output (exit codes, diffs, errors) correctly.
 
-## 設定ファイルの書き方
+## Writing the config file
 
-`cfnsync.yaml` のパラメータ一覧とサンプルは、このリポジトリの以下のドキュメントを正とします(本スキル内では重複説明しません。設定ファイルを読み書きするときは必ず参照してください):
+The parameter list and samples for `cfnsync.yaml` are canonically defined in the following documents in this repository (this skill does not duplicate them — always refer to these when reading or writing the config file):
 
-- パラメータリファレンス: [`../../docs/config-reference.md`](../../docs/config-reference.md)
-- コメント付きサンプル: [`../../docs/examples/cfnsync.sample.yaml`](../../docs/examples/cfnsync.sample.yaml)
+- Parameter reference: [`../../docs/config-reference.md`](../../docs/config-reference.md)
+- Commented sample: [`../../docs/examples/cfnsync.sample.yaml`](../../docs/examples/cfnsync.sample.yaml)
 
-## サブコマンドの使い分け
+## Choosing a subcommand
 
-すべてのサブコマンドは `--config <path>`(既定 `./cfnsync.yaml`)、`--profile`、`--region`、`--output <text|json>` を共通で受け付けます。機械可読な出力が欲しい場合は `--output json` を使ってください。
+Every subcommand accepts the common options `--config <path>` (default `./cfnsync.yaml`), `--profile`, `--region`, and `--output <text|json>`. Use `--output json` when you want machine-readable output.
 
-| コマンド | 用途 | AWS への副作用 |
+| Command | Purpose | Side effects on AWS |
 |---|---|---|
-| `status` | ステートと現在のテンプレートを比較し、`added`/`modified`/`deleted`/`unchanged` を表示する | なし(読み取りのみ) |
-| `plan` | change set を作成して差分を表示し、実行せずに終了する | change set の作成のみ(実行はしない) |
-| `deploy` | 変更検知・依存順序解決・change set 作成・差分表示・実行を非対話で行う | あり。`--dry-run` で作成と差分表示のみに抑制できる |
-| `graph` | テンプレートの Export/`Fn::ImportValue` と `dependsOn` から依存グラフを表示する | なし(読み取りのみ) |
-| `import` | 既存スタックの設定・テンプレート・ステートを取り込む | AWS へは読み取りのみ。ローカルの設定・テンプレート・ステートは書き換わりうる |
-| `force-unlock <runId>` | S3 ステートに残存したロックを、指定した実行 ID が一致する場合だけ条件付きで解除する | ロック解除のみ(条件不一致なら何もしない) |
+| `status` | Compare state with the current templates and show `added`/`modified`/`deleted`/`unchanged` | None (read-only) |
+| `plan` | Create change sets, show the diff, and exit without executing | Creates change sets only (does not execute) |
+| `deploy` | Detect changes, resolve dependency order, create/diff/execute change sets non-interactively | Yes. `--dry-run` limits it to creation and diff only |
+| `graph` | Show the dependency graph derived from Export/`Fn::ImportValue` and `dependsOn` | None (read-only) |
+| `import` | Adopt an existing stack's config, template, and state | Read-only against AWS. Local config/template/state may be modified |
+| `force-unlock <runId>` | Conditionally release a stale lock in S3 state, only when the given run ID matches | Releases the lock only (does nothing if it does not match) |
 
-上記の共通オプションおよび `import` の `--reconcile`/`--write-template` などは主要なものの要約であり、完全な一覧ではありません。各コマンドの正確なオプション・使い方(フラグの有無・既定値など)を確認したい場合は、`cfnsync --help` や `cfnsync <subcommand> --help`(例: `cfnsync deploy --help`)を実行して確認してください。これが正本であり、特に不明な点があるときは推測でオプションを組み立てず、まず `--help` で確認することを推奨します。
+The common options above and `import`'s `--reconcile`/`--write-template` are a summary of the main ones, not a complete list. To confirm the exact options and usage of each command (which flags exist, their defaults, etc.), run `cfnsync --help` or `cfnsync <subcommand> --help` (e.g. `cfnsync deploy --help`). That is the source of truth; when in doubt, check `--help` first rather than assembling options by guesswork.
 
-### 典型ワークフロー
+### Typical workflow
 
-1. **状況確認**: `cfnsync status --output json` でテンプレートとステートの差分種別を確認する。
-2. **事前確認**: `cfnsync plan` で change set の Add/Modify/Remove、置換(replacement)警告を確認する。破壊的変更(置換・削除)がないか必ず見る。
-3. **実行**: 問題なければ `cfnsync deploy`(必要に応じ `--allow-delete`)を実行する。CI では通常フラグ操作は行わず、リポジトリ側で固定したコマンドを実行させる。
-4. **依存関係の把握**: 複数テンプレート間の依存やデプロイ順序が疑わしい場合は `cfnsync graph --output json` で確認する。
-5. **既存スタックの取り込み**: 手動作成済み・他ツール管理のスタックを cfnsync 管理下に置きたい場合は `cfnsync import` を使う(`--reconcile remote|local` でテンプレート差分の解決方向を指定、`--write-template` でローカルにテンプレートを書き出す)。
-6. **ロック残存への対応**: `deploy`/`import` が異常終了しロックが残った場合、**ロックを保持していた旧実行(CI ジョブを含む)が完全に終了していることを確認してから**、表示された実行 ID を使い `cfnsync force-unlock <runId>` を実行し、その後で再実行する。稼働中の実行に対して解除してはならない。
+1. **Check the situation**: run `cfnsync status --output json` to see the diff category between templates and state.
+2. **Pre-flight check**: run `cfnsync plan` to review the change set's Add/Modify/Remove and any replacement warnings. Always look for destructive changes (replacement, deletion).
+3. **Execute**: if it looks fine, run `cfnsync deploy` (with `--allow-delete` when needed). In CI, generally do not fiddle with flags — run the command fixed on the repository side.
+4. **Understand dependencies**: if inter-template dependencies or deploy order are unclear, check with `cfnsync graph --output json`.
+5. **Adopt existing stacks**: to bring a manually-created or externally-managed stack under cfnsync, use `cfnsync import` (`--reconcile remote|local` picks the direction to resolve template diffs; `--write-template` writes the template out locally).
+6. **Handle a stale lock**: if `deploy`/`import` aborted and left a lock, **first confirm that the previous run that held the lock (including a CI job) has fully terminated**, then run `cfnsync force-unlock <runId>` with the displayed run ID and re-run. Never release a lock held by a running execution.
 
-## 終了コードの意味
+## Meaning of exit codes
 
-| 終了コード | 意味 |
+| Exit code | Meaning |
 |---|---|
-| `0` | 成功(変更なし=diff なしを含む) |
-| `1` | エラー(設定検証・fail-closed ガード・AWS 操作の失敗など) |
-| `2` | 差分あり(`plan`、および `deploy --dry-run` 時のみ。実際の変更は行われていない) |
+| `0` | Success (including "no changes" = no diff) |
+| `1` | Error (config validation, fail-closed guard, AWS operation failure, etc.) |
+| `2` | Diff exists (`plan`, and `deploy --dry-run` only; no actual changes were made) |
 
-CI パイプラインはこれらの終了コードに依存して分岐しているため、`plan` が `2` を返すのは「異常」ではなく「差分がある」ことを表す正常系である点に注意してください。
+CI pipelines branch on these exit codes, so note that `plan` returning `2` is not an "error" — it is the normal case indicating that a diff exists.
 
-## 安全性不変条件(要約)
+## Safety invariants (summary)
 
-cfnsync の変更系操作は、以下の多層防御を前提に設計されています。挙動を説明・提案するときにこれらを弱めて言い換えないでください。
+cfnsync's mutating operations are designed around the following defense-in-depth layers. Do not weaken or paraphrase these away when explaining or proposing behavior.
 
-- **fail-closed が全体方針**: `allowedAccounts`/`allowedRegions` が設定にない、STS `GetCallerIdentity` の結果と一致しない、接続先や対象リージョンを解決できない、といった状況では変更系操作(change set 作成・実行・スタック削除)を一切行わずエラー終了する。警告を出して続行することはない。加えて、ステートは初回の変更系実行時(ロック取得後)に接続先アカウント ID を `accountId` として記録し、以後の実行で STS の解決結果と不一致であれば(アカウント切り替え・ステートファイルの誤用等)一切の書き込みを行わず拒否する。これは `allowedAccounts` という設定レベルの許可リストとは別個の、ステート自体に紐づくガードである。
-- **ステートバックエンド**は Terraform ライクな設計で、既定は `local`(単一プロセス想定)、CI 向けに `s3` がある。世代/ETag による compare-and-swap、S3 の条件付き書き込みによるロック、原子的なファイル置換で正本の一貫性を守る。各副作用の直前に所有権を再確認する fencing は**ベストエフォート**であり(CloudFormation 自体が fencing token を提供しないため競合窓を完全には排除できない)、厳密な保証は CAS とスタック単位の `*_IN_PROGRESS` ガードが担う。fencing を「厳密な排他制御」と説明しないこと。
-- **change set の所有権管理**: change set 名は `cfnsync-<stateID>-<runID>-<timestamp>` の形式でエンコードされ、自分の stateID を持つ change set のみ自動的に回収(削除)してよい。他ツール・他人・他 state が作成した change set が存在する場合は実行をブロックする(fail-closed)。`ExecuteChangeSet` は同一スタック上の他の change set を暗黙的に削除する破壊的操作のため、実行直前に対象 change set を再確認する。
-- **`REVIEW_IN_PROGRESS` 状態のスタックを `DeleteStack` してはならない**。この状態では、代わりに CREATE 型の change set を作り直して処理する。
-- **管理タグ** `cfnsync:state-id=<stateID>` が全スタックに自動付与され、CREATE 系の回復処理(`added` 判定だがスタックが既に存在する場合)における provenance(所有権)確認に使われる。
-- **スタック削除**は `--allow-delete` を明示指定した場合のみ実行され、新旧設定をマージした依存グラフの逆順(依存されている側を後に)で行われる。依存情報を state から復元できない場合は削除を拒否する。
+- **Fail-closed is the overall policy**: when `allowedAccounts`/`allowedRegions` are absent from config, do not match the STS `GetCallerIdentity` result, or the target account/regions cannot be resolved, mutating operations (change-set creation/execution, stack deletion) are not performed at all and the command exits with an error. It never warns and continues. In addition, state records the connected account ID as `accountId` on the first mutating run (after acquiring the lock), and on subsequent runs it refuses all writes if the STS-resolved result does not match (account switch, misused state file, etc.). This is a guard bound to the state itself, separate from the config-level `allowedAccounts` allow-list.
+- **The state backend** follows a Terraform-like design: the default is `local` (single-process), with `s3` for CI. It protects the consistency of the source of truth via generation/ETag compare-and-swap, conditional-write locking on S3, and atomic file replacement. The fencing that re-checks ownership immediately before each side effect is **best-effort** (CloudFormation itself provides no fencing token, so the race window cannot be fully eliminated); strict guarantees come from CAS and per-stack `*_IN_PROGRESS` guards. Do not describe fencing as "strict mutual exclusion".
+- **Change-set ownership management**: change-set names are encoded as `cfnsync-<stateID>-<runID>-<timestamp>`, and only change sets with your own stateID may be reclaimed (deleted) automatically. If a change set created by another tool, person, or state exists, execution is blocked (fail-closed). Because `ExecuteChangeSet` is a destructive operation that implicitly deletes other change sets on the same stack, re-check the target change set immediately before executing.
+- **Never `DeleteStack` a stack in the `REVIEW_IN_PROGRESS` state.** In that state, recreate a CREATE-type change set instead.
+- **The management tag** `cfnsync:state-id=<stateID>` is auto-applied to every stack and is used for the provenance (ownership) check in CREATE recovery (when a stack is judged `added` but already exists).
+- **Stack deletion** is performed only when `--allow-delete` is explicitly specified, in reverse order of the dependency graph merged from old and new config (dependencies deleted last). If dependency info cannot be reconstructed from state, deletion is refused.
 
-## トラブルシューティングの手がかり
+## Troubleshooting hints
 
-- `plan`/`deploy` が `1` で終了し「allowedAccounts」「allowedRegions」に言及するエラー: 設定不足または接続先アカウント/リージョンの不一致。fail-closed の正常な拒否なので、設定を直すか正しい `--profile`/`--region` で再実行する(値を緩めて回避しない)。
-- 「他の change set が存在する」系のエラー: 手動または他ツールが対象スタックに change set を作成している。実行前に AWS 側でその change set の内容を確認し、実行または削除してから cfnsync を再実行する。
-- ロック取得失敗: 通常は正しい動作(並行実行の防止)。旧実行が本当に終了しているか確認せずに `force-unlock` しない。
-- `deploy` の途中失敗: 同じ設定で再実行してよい。成功済みスタックは変更なしとして自動的にスキップされる。
+- `plan`/`deploy` exits `1` with an error mentioning "allowedAccounts" / "allowedRegions": missing config, or a mismatch of the connected account/region. This is a normal fail-closed refusal, so fix the config or re-run with the correct `--profile`/`--region` (do not work around it by loosening values).
+- Errors about "another change set exists": a manual action or another tool created a change set on the target stack. Inspect that change set on the AWS side before executing, execute or delete it, then re-run cfnsync.
+- Lock acquisition failure: usually correct behavior (preventing concurrent runs). Do not `force-unlock` without confirming the previous run has truly terminated.
+- A `deploy` that fails partway: you may re-run with the same config. Already-succeeded stacks are automatically skipped as unchanged.
 
-より詳しいコマンドオプション・GitHub Actions での使い方・手動検証手順はリポジトリの [`README.md`](../../README.md) を参照してください。
+For more detailed command options, GitHub Actions usage, and manual verification steps, see the repository's [`README.md`](../../README.md).

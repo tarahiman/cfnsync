@@ -1,7 +1,7 @@
 {
   "name": "cfnsync",
   "version": "0.1.0",
-  "description": "cfnsync (CloudFormation テンプレートをスタックへ同期する CLI) を Claude Code から安全に操作・解釈するためのスキルを提供します。",
+  "description": "Skill for driving and interpreting the cfnsync CLI (sync raw CloudFormation templates to stacks) safely from Claude Code.",
   "author": {
     "name": "tarahiman"
   },
