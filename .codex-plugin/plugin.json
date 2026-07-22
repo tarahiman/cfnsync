@@ -1,0 +1,21 @@
+{
+  "name": "cfnsync",
+  "version": "0.1.0",
+  "description": "Skill for driving and interpreting the cfnsync CLI (sync raw CloudFormation templates to stacks) safely from Codex.",
+  "author": {
+    "name": "tarahiman"
+  },
+  "homepage": "https://github.com/tarahiman/cfnsync",
+  "license": "MIT",
+  "keywords": [
+    "cloudformation",
+    "aws",
+    "cfn",
+    "iac",
+    "change-set",
+    "deploy",
+    "cli",
+    "ci"
+  ],
+  "skills": "./skills/"
+}
