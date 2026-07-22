@@ -450,6 +450,38 @@ describe('T-19 cli', () => {
     expect(out.stdout()).toBe('');
   });
 
+  it.each([
+    'status',
+    'plan',
+    'deploy',
+    'graph',
+    'import',
+    'force-unlock',
+  ] as const)('FR-12-5: %s の --help に共通オプションを表示する', async (name) => {
+    const out = capture();
+    expect(
+      await runCli([name, '--help'], { deps: dependencies(), io: out.io }),
+    ).toBe(0);
+    expect(out.stdout()).toContain('Global Options:');
+    expect(out.stdout()).toContain('--config');
+    expect(out.stdout()).toContain('--profile');
+    expect(out.stdout()).toContain('--region');
+    expect(out.stdout()).toContain('--output');
+  });
+
+  it('FR-12-5: ルートの --help は従来どおり Options: の下に共通オプションを表示する', async () => {
+    const out = capture();
+    expect(await runCli(['--help'], { deps: dependencies(), io: out.io })).toBe(
+      0,
+    );
+    expect(out.stdout()).toContain('Options:');
+    expect(out.stdout()).not.toContain('Global Options:');
+    expect(out.stdout()).toContain('--config');
+    expect(out.stdout()).toContain('--profile');
+    expect(out.stdout()).toContain('--region');
+    expect(out.stdout()).toContain('--output');
+  });
+
   it('NFR-1: 結果は stdout、進捗イベントは stderr に分離する', async () => {
     const deps = dependencies({
       deploy: vi.fn(async (input) => {
@@ -469,5 +501,70 @@ describe('T-19 cli', () => {
     expect(JSON.parse(out.stdout()).connection.accountId).toBe('123456789012');
     expect(out.stderr()).toContain('CREATE_IN_PROGRESS');
     expect(out.stdout()).not.toContain('CREATE_IN_PROGRESS');
+  });
+
+  it('FR-5-4: 進捗は標準エラーへ出力され --output json の標準出力を汚さない', async () => {
+    const deps = dependencies({
+      deploy: vi.fn(async (input) => {
+        input.deps.onProgress?.({
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+          phase: 'changeset-create-start',
+          message: '変更セットを作成しています',
+        });
+        input.deps.onProgress?.({
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+          phase: 'execute-start',
+          message: '変更セットを実行しています',
+        });
+        input.deps.onProgress?.({
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+          phase: 'done',
+          message: 'デプロイが完了しました',
+        });
+        return { exitCode: 0 as const, report, hasDiff: false };
+      }),
+    });
+    const out = capture();
+    await runCli(['deploy', '--output', 'json'], { deps, io: out.io });
+    // stdout は最終 report の JSON のみ(進捗が混入しない)。
+    expect(() => JSON.parse(out.stdout())).not.toThrow();
+    expect(JSON.parse(out.stdout()).connection.accountId).toBe('123456789012');
+    expect(out.stdout()).not.toContain('変更セットを作成しています');
+    // 進捗は stderr に `[stackKey] message` 形式で出る。
+    expect(out.stderr()).toContain(
+      '[app.yaml@ap-northeast-1] 変更セットを作成しています',
+    );
+    expect(out.stderr()).toContain(
+      '[app.yaml@ap-northeast-1] デプロイが完了しました',
+    );
+  });
+
+  it('FR-5-4: plan(dry-run)でも進捗が標準エラーへ出力される', async () => {
+    const deps = dependencies({
+      deploy: vi.fn(async (input) => {
+        input.deps.onProgress?.({
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+          phase: 'diff-ready',
+          message: '差分を確定しました(リソース 1 件)',
+        });
+        return { exitCode: 0 as const, report, hasDiff: false };
+      }),
+    });
+    const out = capture();
+    await runCli(['plan', '--output', 'json'], { deps, io: out.io });
+    expect(deps.deploy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ dryRun: true }),
+      }),
+    );
+    expect(() => JSON.parse(out.stdout())).not.toThrow();
+    expect(out.stderr()).toContain(
+      '[app.yaml@ap-northeast-1] 差分を確定しました(リソース 1 件)',
+    );
+    expect(out.stdout()).not.toContain('差分を確定しました');
   });
 });

@@ -14,8 +14,7 @@
  * 出力には現れない、多層防御)。
  */
 
-import type { RegionGraph } from '../core/graph.js';
-import type { StackKey } from '../core/types.js';
+import { computeLevels, type RegionGraph } from '../core/graph.js';
 import type { ChangeSetDetail, ResourceChange } from '../ports/index.js';
 
 // ===========================================================================
@@ -60,6 +59,26 @@ export interface StackEventLine {
   resourceType: string;
   resourceStatus: string;
   resourceStatusReason?: string;
+}
+
+/** FR-5-4: スタック単位の進捗マイルストーンの段階。 */
+export type ProgressPhase =
+  | 'changeset-create-start'
+  | 'diff-ready'
+  | 'no-change'
+  | 'execute-start'
+  | 'delete-start'
+  | 'done'
+  | 'skipped'
+  | 'failed';
+
+/** FR-5-4: スタック単位の進捗マイルストーン。CFN リソースイベント(StackEventLine)とは独立したチャネル。
+ *  DeployReport には含めない — onProgress でのみ配送する(JSON 出力契約を変えないため)。 */
+export interface ProgressEvent {
+  stackKey: string;
+  region: string;
+  phase: ProgressPhase;
+  message: string;
 }
 
 /** スタック単位の最終結果(FR-1-3 / FR-4-2 / FR-4-3)。 */
@@ -400,35 +419,24 @@ export function renderJson(report: DeployReport): string {
 // renderGraphText / renderGraphJson(FR-8-3)
 // ===========================================================================
 
-/** `edge.to` → 依存先(`edge.from`)一覧の索引を作る。 */
-function buildDependencyIndex(graph: RegionGraph): Map<StackKey, StackKey[]> {
-  const index = new Map<StackKey, StackKey[]>();
-  for (const edge of graph.edges) {
-    const list = index.get(edge.to);
-    if (list) {
-      list.push(edge.from);
-    } else {
-      index.set(edge.to, [edge.from]);
-    }
-  }
-  return index;
-}
-
 /**
- * リージョンごとの依存グラフをテキストツリーとして出力する(FR-8-3)。各ノードの
- * 直下に「依存先」(そのノードが依存するスタック)を列挙する。
+ * リージョンごとの依存グラフをトポロジカル順序に基づく階層(レベル)としてテキスト
+ * 出力する(FR-8-3 / FR-8-6)。同一レベル内のスタックは並列デプロイ可能であることを
+ * 表し、diamond 依存でも依存関係の記述を重複させない。循環がある場合は
+ * `computeLevels`(内部の `topologicalOrder`)がそのまま `DependencyCycleError` を
+ * 投げる(FR-8-4。フェイルクローズド — 部分的なレベル表示は行わない)。
  */
 export function renderGraphText(graphs: Map<string, RegionGraph>): string {
   const lines: string[] = [];
   for (const [region, graph] of graphs) {
     lines.push(`region: ${region}`);
-    const dependencyIndex = buildDependencyIndex(graph);
-    for (const node of graph.nodes) {
-      lines.push(`  ${node}`);
-      for (const dependency of dependencyIndex.get(node) ?? []) {
-        lines.push(`    depends on: ${dependency}`);
+    const levels = computeLevels(graph);
+    levels.forEach((nodes, index) => {
+      lines.push(`  Lv${index}:`);
+      for (const node of nodes) {
+        lines.push(`    ${node}`);
       }
-    }
+    });
     lines.push('');
   }
   return lines.join('\n').replace(/\n+$/, '\n');

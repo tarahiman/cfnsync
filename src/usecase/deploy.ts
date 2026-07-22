@@ -68,6 +68,8 @@ import {
   buildStackDiff,
   type ConnectionInfo,
   type DeployReport,
+  type ProgressEvent,
+  type ProgressPhase,
   redactReportMessages,
   type StackEventLine,
   type StackResult,
@@ -111,6 +113,9 @@ export interface DeployDeps {
   runId?: () => string;
   /** FR-4-1: 待機中イベントの逐次出力先。 */
   onEvent?: (event: StackEventLine) => void;
+  /** FR-5-4: スタック単位の進捗マイルストーンの逐次出力先(標準エラー想定)。
+   *  最終 report(標準出力)には一切含めない独立チャネル。 */
+  onProgress?: (event: ProgressEvent) => void;
 }
 
 export interface DeployOptions {
@@ -335,12 +340,26 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       }),
     );
     results.push(stackResult(entry.target, 'no-change'));
+    emitProgress(
+      ctx.deps,
+      entry.stackKey,
+      entry.target.region,
+      'no-change',
+      '変更なし(検知済み)',
+    );
   }
 
   for (const regionPlan of prepared.plan.regions) {
     for (const operation of regionPlan.operations) {
       if (skipped.has(operation.stackKey)) {
         results.push(resultForOperation(operation, 'skipped'));
+        emitProgress(
+          ctx.deps,
+          operation.stackKey,
+          operation.region,
+          'skipped',
+          '依存関係の失敗によりスキップしました',
+        );
         continue;
       }
 
@@ -371,12 +390,20 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         }
       } catch (error) {
         hasError = true;
-        results.push(
-          failedOperationResult(
-            operation,
-            error,
-            prepared.redactors.get(operation.stackKey),
-          ),
+        // NFR-4: failedOperationResult が構成した redactor 適用済み errorMessage を
+        // そのまま progress へ再利用する(独立に redact し直さない = 単一の redaction 経路)。
+        const failure = failedOperationResult(
+          operation,
+          error,
+          prepared.redactors.get(operation.stackKey),
+        );
+        results.push(failure);
+        emitProgress(
+          ctx.deps,
+          operation.stackKey,
+          operation.region,
+          'failed',
+          failure.errorMessage ?? '失敗しました',
         );
 
         // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
@@ -591,6 +618,13 @@ async function processCreateOrUpdate(
     await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
   }
 
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'changeset-create-start',
+    '変更セットを作成しています',
+  );
   const created = await createManagedChangeSet(executor, {
     target,
     templateBody: source,
@@ -608,6 +642,13 @@ async function processCreateOrUpdate(
     diff.warnings.push(...analysis.warnings);
     report.diffs.push(diff);
     report.result?.stacks.push(stackResult(target, 'no-change'));
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'no-change',
+      '変更セットが空のため変更なしとして扱います',
+    );
     const stackId =
       prepared.kind === 'update'
         ? (
@@ -638,17 +679,38 @@ async function processCreateOrUpdate(
   });
   diff.warnings.push(...analysis.warnings);
   report.diffs.push(diff);
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'diff-ready',
+    `差分を確定しました(リソース ${diff.resources.length} 件)`,
+  );
 
   if (ctx.options.dryRun) {
     // design §5.2: DescribeChangeSet 済みの変更セットを後始末する。proxy が直前 fencing を担う。
     await cfn.deleteChangeSet(target.stackName, created.id);
     report.result?.stacks.push(stackResult(target, 'skipped'));
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'skipped',
+      'dry-run のため実行しません',
+    );
     return { hasDiff: true };
   }
 
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
   let latestFailure: StackEventLine | undefined;
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'execute-start',
+    '変更セットを実行しています',
+  );
   await executeWithReinspection(
     executor,
     target.stackName,
@@ -728,6 +790,13 @@ async function processCreateOrUpdate(
     final.stackId,
   );
   report.result?.stacks.push(stackResult(target, 'succeeded'));
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'done',
+    'デプロイが完了しました',
+  );
   return { hasDiff: true };
 }
 
@@ -771,6 +840,13 @@ async function processDeleted(
       outcome: 'failed',
       errorMessage: diff.warnings[diff.warnings.length - 1],
     });
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'failed',
+      diff.warnings[diff.warnings.length - 1],
+    );
     return { hasDiff: true, failed: true };
   }
   const cfn = ctx.deps.cfnFactory(operation.region);
@@ -782,6 +858,13 @@ async function processDeleted(
     noEchoParams: [],
   });
   report.diffs.push(diff);
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'delete-start',
+    'スタックを削除しています',
+  );
 
   const existing = await cfn.describeStack(stateEntry.stackName);
   if (!existing || existing.status === 'DELETE_COMPLETE') {
@@ -798,6 +881,13 @@ async function processDeleted(
       stackName: stateEntry.stackName,
       outcome: 'succeeded',
     });
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'done',
+      'スタックは既に存在しないため削除済みとして同期しました',
+    );
     return { hasDiff: true };
   }
 
@@ -813,6 +903,13 @@ async function processDeleted(
       stackName: stateEntry.stackName,
       outcome: 'skipped',
     });
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'skipped',
+      diff.warnings[diff.warnings.length - 1],
+    );
     return { hasDiff: true };
   }
 
@@ -843,6 +940,13 @@ async function processDeleted(
       outcome: 'failed',
       errorMessage: deleted.errorMessage,
     });
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'failed',
+      deleted.errorMessage ?? '安全装置により削除を拒否しました',
+    );
     return { hasDiff: true, failed: true };
   }
 
@@ -854,6 +958,13 @@ async function processDeleted(
     stackName: stateEntry.stackName,
     outcome: 'succeeded',
   });
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'done',
+    'スタックを削除しました',
+  );
   return { hasDiff: true };
 }
 
@@ -951,6 +1062,13 @@ async function recoverExistingCreate(
   };
   await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
   report.result?.stacks.push(stackResult(target, 'no-change'));
+  emitProgress(
+    ctx.deps,
+    target.stackKey,
+    target.region,
+    'no-change',
+    'CREATE 復旧により変更なしとして再同期しました',
+  );
 }
 
 async function saveSuccessfulEntry(
@@ -1139,6 +1257,22 @@ function recordsEqual(
 
 function arraysEqual(a: string[], b: string[]): boolean {
   return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+}
+
+/**
+ * FR-5-4: 進捗マイルストーンを onProgress へ fire-and-forget で通知する。
+ * 純粋に観測用であり、exitCode / hasDiff / スキップ判定など制御フローには一切影響しない。
+ * message は cfnsync 由来の静的文字列か、'failed' 段階に限り report の errorMessage に
+ * 格納するのと同一の redactor 適用済み文字列(NFR-4)であること。
+ */
+function emitProgress(
+  deps: DeployDeps,
+  stackKey: string,
+  region: string,
+  phase: ProgressPhase,
+  message: string,
+): void {
+  deps.onProgress?.({ stackKey, region, phase, message });
 }
 
 function stackResult(
