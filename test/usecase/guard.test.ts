@@ -39,6 +39,7 @@ function baseConfig(overrides: Partial<CfnSyncConfig> = {}): CfnSyncConfig {
     allowedAccounts: [ACCOUNT],
     allowedRegions: [REGION],
     defaultRegion: REGION,
+    defaultTags: {},
     state: { backend: 'local' },
     stacks: {},
     ...overrides,

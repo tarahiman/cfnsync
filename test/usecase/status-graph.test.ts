@@ -8,6 +8,7 @@ import { FakeStateBackend } from './fakes.js';
 const config: CfnSyncConfig = {
   version: 1,
   defaultRegion: 'ap-northeast-1',
+  defaultTags: {},
   state: { backend: 'local' },
   stacks: {
     'network.yaml': {

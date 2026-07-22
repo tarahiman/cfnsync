@@ -590,7 +590,11 @@ async function buildImportPlan(args: {
         localTemplates.set(target.templatePath, local);
       }
       if (parsedTemplatesEquivalent(local.parsed, deployedParsed)) {
-        // FR-10-3: 一致 → ローカル(= デプロイ済みと同値)を基準に記録。次回 plan は unchanged。
+        // FR-10-3: テンプレート内容が一致 → ローカル(= デプロイ済みと同値)を基準に記録。
+        // テンプレート・パラメータ・タグ・Capabilities・dependsOn がすべて実スタックの
+        // 記録値と一致する限り次回 plan は unchanged になるが、design.md §4.2 の通り
+        // defaultTags が実スタックに未付与のキーを追加する場合はタグが一致しないため
+        // 対象外(その場合は次回 modified として検知され、意図した挙動)。
         comparison = 'match';
         baselineHash = local.hash;
       } else if (options.reconcile === 'remote') {

@@ -305,6 +305,84 @@ describe('T-18 recovery', () => {
     expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
   });
 
+  it('FR-11-8: defaultTags は target.tags 経由で CREATE 復旧の由来比較(design.md §8.4)にも反映される', async () => {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: REGION,
+      allowedAccounts: [ACCOUNT],
+      allowedRegions: [REGION],
+      defaultTags: { ManagedBy: 'cfnsync' },
+      stacks: {
+        'stack.yaml': {
+          stackName: 'ManagedStack',
+          parameters: { Environment: 'dev' },
+          tags: { Team: 'platform' },
+          capabilities: ['CAPABILITY_IAM'],
+        },
+      },
+    });
+    const templates = new Map([['stack.yaml', TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    // 実スタックのタグは defaultTags(ManagedBy)+ スタック固有 tags(Team)+ 管理タグの合成。
+    installExisting(s.cfn, {
+      tags: {
+        Team: 'platform',
+        ManagedBy: 'cfnsync',
+        [MANAGEMENT_TAG_KEY]: STATE_ID,
+      },
+    });
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toMatchObject({
+      lastAction: 'SYNC',
+      inputsHash: desiredInputsHash(config, templates),
+    });
+  });
+
+  it('FR-11-8: defaultTags のキーが実スタックにない場合、CREATE 復旧の由来比較は不一致で fail-closed になる', async () => {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: REGION,
+      allowedAccounts: [ACCOUNT],
+      allowedRegions: [REGION],
+      defaultTags: { ManagedBy: 'cfnsync' },
+      stacks: {
+        'stack.yaml': {
+          stackName: 'ManagedStack',
+          parameters: { Environment: 'dev' },
+          tags: { Team: 'platform' },
+          capabilities: ['CAPABILITY_IAM'],
+        },
+      },
+    });
+    const templates = new Map([['stack.yaml', TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    // 実スタックは ManagedBy(defaultTags 由来)を持たない → 完全一致しない。
+    installExisting(s.cfn, {
+      tags: { Team: 'platform', [MANAGEMENT_TAG_KEY]: STATE_ID },
+    });
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(reportErrors(result)).toContain('cfnsync import');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+  });
+
   it('FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す', async () => {
     const config = validateConfig({
       version: 1,
