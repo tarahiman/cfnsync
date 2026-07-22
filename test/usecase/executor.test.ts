@@ -12,7 +12,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { ResolvedStackTarget } from '../../src/core/config.js';
+import {
+  type ResolvedStackTarget,
+  resolveTargets,
+  validateConfig,
+} from '../../src/core/config.js';
 import { StackStateError } from '../../src/core/errors.js';
 import { makeStackKey } from '../../src/core/types.js';
 import {
@@ -444,6 +448,37 @@ describe('createManagedChangeSet', () => {
     expect(input.tags).toEqual({
       Team: 'platform',
       Env: 'prod',
+      [MANAGEMENT_TAG_KEY]: STATE_ID,
+    });
+  });
+
+  it('FR-11-8/FR-2-9: config の defaultTags が resolveTargets を経由して変更セットの Tags まで届く', async () => {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: 'ap-northeast-1',
+      defaultTags: { ManagedBy: 'cfnsync' },
+      stacks: {
+        'network.yaml': {
+          stackName: STACK,
+          tags: { Team: 'platform' },
+        },
+      },
+    });
+    const [target] = resolveTargets(config);
+
+    const fake = new FakeCloudFormationGateway();
+    await createManagedChangeSet(makeCtx(fake), {
+      target,
+      templateBody: 'TEMPLATE',
+      kind: 'create',
+    });
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      tags: Record<string, string>;
+    };
+    // defaultTags(ManagedBy)+ スタック固有 tags(Team)+ 管理タグが共存する。
+    expect(input.tags).toEqual({
+      ManagedBy: 'cfnsync',
+      Team: 'platform',
       [MANAGEMENT_TAG_KEY]: STATE_ID,
     });
   });

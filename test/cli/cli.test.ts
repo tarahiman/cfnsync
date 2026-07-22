@@ -28,6 +28,7 @@ import { getStatus } from '../../src/usecase/status.js';
 const config: CfnSyncConfig = {
   version: 1,
   defaultRegion: 'ap-northeast-1',
+  defaultTags: {},
   state: { backend: 'local' },
   stacks: {
     'app.yaml': {

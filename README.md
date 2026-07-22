@@ -32,6 +32,9 @@ allowedRegions: [ap-northeast-1, us-east-1]
 defaultRegion: ap-northeast-1
 stackNamePrefix: legacy-app-
 
+defaultTags:
+  ManagedBy: cfnsync
+
 state:
   backend: s3
   s3:
@@ -56,7 +59,7 @@ stacks:
           VpcCidr: 10.1.0.0/16
 ```
 
-`allowedAccounts` と `allowedRegions` は変更系操作の fail-closed ガードです。`regions` を省略すると `defaultRegion` が使われ、`stackName` を省略すると `stackNamePrefix` とテンプレートのファイル名から導出されます。`regionOverrides` のパラメータとタグは共通値へ浅くマージされます。`NoEcho` パラメータの `__REQUIRED__` は実値に置き換えるまで deploy が拒否されます。
+`allowedAccounts` と `allowedRegions` は変更系操作の fail-closed ガードです。`regions` を省略すると `defaultRegion` が使われ、`stackName` を省略すると `stackNamePrefix` とテンプレートのファイル名から導出されます。`regionOverrides` のパラメータとタグは共通値へ浅くマージされます。`defaultTags` はすべての管理対象スタックへ既定で付与するタグで、実効タグは `defaultTags` < `tags` < `regionOverrides.<region>.tags` の順に浅くマージされます(後勝ち。同名キーの重複はエラーにはならず、より狭いスコープが優先されます)。`NoEcho` パラメータの `__REQUIRED__` は実値に置き換えるまで deploy が拒否されます。
 
 設定ファイルの全パラメータのリファレンスは [`docs/config-reference.md`](./docs/config-reference.md)、コメント付きのサンプル設定ファイルは [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml) を参照してください。
 

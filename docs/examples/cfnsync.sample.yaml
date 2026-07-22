@@ -25,6 +25,15 @@ defaultRegion: ap-northeast-1
 # (実際のスタック名は stackNamePrefix + テンプレートのファイル名(拡張子除去))。
 stackNamePrefix: legacy-app-
 
+# すべての管理対象スタックへ既定で付与するタグ。
+# 実効タグへのマージ順は defaultTags < stacks.<templatePath>.tags <
+# regionOverrides.<region>.tags(後勝ち)。同名キーの重複はエラーにはならず、
+# より狭いスコープの値が優先されます(スタック側やリージョン別上書きで
+# 同名キーを指定すれば defaultTags の値を上書きできます)。
+defaultTags:
+  ManagedBy: cfnsync
+  Environment: prod
+
 # ステートバックエンド。省略時は local(./cfnsync.state.json)になりますが、
 # CI など複数の実行環境から共有する場合は s3 を使い、S3 バケットの
 # バージョニングを有効化しておくことを推奨します。

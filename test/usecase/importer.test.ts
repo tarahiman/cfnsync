@@ -399,6 +399,81 @@ describe('FR-10-3: テンプレートのパース後同値比較', () => {
 });
 
 // ===========================================================================
+// design.md §4.2: import と defaultTags の相互作用(FR-10-3 / FR-11-8)
+//
+// import は実スタックのタグ(管理タグ除く)をそのまま stacks.<path>.tags へ書き戻し、
+// 記録する inputsHash もその実タグ値から計算する(defaultTags は畳み込まない)。
+// 一方 detectChanges は resolveTargets 経由で defaultTags をマージした実効タグを見る。
+// そのため (a) 実スタックが defaultTags と同名キーを持つ場合は書き戻された tags の値が
+// 優先され実効値が一致して unchanged のまま、(b) 実スタックが持たない defaultTags の
+// キーは次回 modified として検知される(実環境とローカルの差異を隠蔽しない、FR-10)。
+// ===========================================================================
+
+describe('design.md §4.2: import と defaultTags の相互作用', () => {
+  const configWithDefaultTags = (tagsBlock: string) => `version: 1
+defaultRegion: ${REGION}
+defaultTags:
+${tagsBlock}
+stacks:
+  network.yaml:
+    stackName: prod-network
+`;
+
+  it('defaultTags と同名キーが実スタックに存在する場合、書き戻された tags の値が優先され、次回 detect は unchanged になる', async () => {
+    const s = setup({
+      configText: configWithDefaultTags('  Project: legacy-app'),
+    });
+    // makeSummary の既定タグは { Project: legacy-app, MANAGEMENT_TAG_KEY: ... }
+    // であり、defaultTags と同名キー Project を実スタックが持つケースに一致する。
+    deployNetwork(s, NETWORK_TEMPLATE);
+
+    const result = await run(s);
+    expect(result.exitCode).toBe(0);
+
+    const written = configFromWritten(s.fs);
+    expect(written.defaultTags).toEqual({ Project: 'legacy-app' });
+    // 実スタックのタグがそのまま書き戻される(defaultTags と同値のため区別できない)。
+    expect(written.stacks['network.yaml'].tags).toEqual({
+      Project: 'legacy-app',
+    });
+
+    const detection = detectChanges({
+      targets: resolveTargets(written),
+      templates: new Map([['network.yaml', NETWORK_TEMPLATE]]),
+      state: s.backend.stored!.state,
+    });
+    const entry = detection.entries.find((e) => e.stackKey === NET_KEY);
+    expect(entry?.changeType).toBe('unchanged');
+  });
+
+  it('defaultTags が実スタックに未付与のキーを追加する場合、次回 detect は modified になる(実環境との差異を隠蔽しない)', async () => {
+    const s = setup({
+      configText: configWithDefaultTags('  ManagedBy: cfnsync'),
+    });
+    // 実スタックは ManagedBy を持たない(Project のみ)。
+    deployNetwork(s, NETWORK_TEMPLATE);
+
+    const result = await run(s);
+    expect(result.exitCode).toBe(0);
+
+    const written = configFromWritten(s.fs);
+    expect(written.defaultTags).toEqual({ ManagedBy: 'cfnsync' });
+    // 実スタックにない ManagedBy は書き戻されない(実スタックのタグのみを反映)。
+    expect(written.stacks['network.yaml'].tags).toEqual({
+      Project: 'legacy-app',
+    });
+
+    const detection = detectChanges({
+      targets: resolveTargets(written),
+      templates: new Map([['network.yaml', NETWORK_TEMPLATE]]),
+      state: s.backend.stored!.state,
+    });
+    const entry = detection.entries.find((e) => e.stackKey === NET_KEY);
+    expect(entry?.changeType).toBe('modified');
+  });
+});
+
+// ===========================================================================
 // FR-10-4: 差分はデフォルトエラー。--reconcile remote / --reconcile local
 // ===========================================================================
 
