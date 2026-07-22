@@ -1,0 +1,140 @@
+name: Bug report
+description: Report incorrect or unexpected cfnsync behavior (wrong result, crash, safety-guard misfire, etc.)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report for **cfnsync**.
+
+        Before you start, please:
+        - Search [existing issues](https://github.com/tarahiman/cfnsync/issues) to avoid duplicates.
+        - **Redact all secrets.** Never paste AWS credentials, account IDs you consider sensitive, or `NoEcho` parameter values. cfnsync masks known secrets in its own output, but pasted config/logs are your responsibility.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear, one- or two-sentence description of the bug.
+      placeholder: "`cfnsync deploy` deleted a stack that was only `modified`, not `deleted`."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen? Reference a requirement/spec (e.g. FR-6, NFR-4) if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include the observed exit code.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, in order, that trigger the bug.
+      placeholder: |
+        1. `cfnsync status --output json`
+        2. `cfnsync plan`
+        3. `cfnsync deploy --allow-delete`
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: command
+    attributes:
+      label: Affected subcommand(s)
+      multiple: true
+      options:
+        - status
+        - plan
+        - deploy
+        - graph
+        - import
+        - force-unlock
+        - other / not command-specific
+    validations:
+      required: true
+
+  - type: input
+    id: exit_code
+    attributes:
+      label: Observed exit code
+      description: "0 = success/no-change, 1 = error, 2 = diff exists (plan / deploy --dry-run)."
+      placeholder: "1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: cfnsync.yaml (redacted)
+      description: The relevant portion of your config. Redact account IDs / secrets as needed.
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Command output / logs (redacted)
+      description: Relevant stdout/stderr. Include the full error and, if possible, the surrounding context.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: State backend
+      options:
+        - local
+        - s3
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: cfnsync version
+      description: Output of `cfnsync --version`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node_version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version` (cfnsync requires Node 24+).
+      placeholder: "v24.18.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / environment
+      description: e.g. macOS 15.5, Ubuntu 24.04, GitHub Actions ubuntu-latest.
+      placeholder: "macOS 15.5"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else — CloudFormation resource types involved, multi-region setup, whether it is reproducible, a minimal template, etc.
+    validations:
+      required: false
