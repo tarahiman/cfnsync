@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   analyzeTemplate,
+  extractParameterDefaults,
   parseCfnTemplate,
   templatesEquivalent,
 } from '../../src/core/template.js';
@@ -248,5 +249,47 @@ Resources:
     const a = `Values: [a, b]`;
     const b = `Values: [b, a]`;
     expect(templatesEquivalent(a, b)).toBe(false);
+  });
+});
+
+describe('extractParameterDefaults', () => {
+  it('FR-1-11(a)準備: Parameters Default を文字列化して抽出し Default なしは含めない', () => {
+    const parsed = parseCfnTemplate(`
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  DesiredCount:
+    Type: Number
+    Default: 3
+  Enabled:
+    Type: String
+    Default: true
+  Required:
+    Type: String
+Resources: {}
+`);
+
+    expect(extractParameterDefaults(parsed)).toEqual({
+      Environment: 'dev',
+      DesiredCount: '3',
+      Enabled: 'true',
+    });
+  });
+
+  it('FR-1-11(a) fail-closed: 非 scalar Default を実効値として推測しない', () => {
+    for (const defaultValue of [
+      { Ref: 'OtherParameter' },
+      ['a', 'b'],
+      { nested: 'value' },
+    ]) {
+      expect(() =>
+        extractParameterDefaults({
+          Parameters: {
+            Unsupported: { Type: 'String', Default: defaultValue },
+          },
+        }),
+      ).toThrow(/Unsupported.*Default|Default.*Unsupported/);
+    }
   });
 });

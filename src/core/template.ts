@@ -187,6 +187,47 @@ export function parsedTemplatesEquivalent(a: unknown, b: unknown): boolean {
   return deepEqual(a, b);
 }
 
+/**
+ * CREATE 復旧比較に用いる Parameter Default を文字列値へ正規化する。
+ * CloudFormation が実効値として返す scalar だけを扱い、構造値・intrinsic は
+ * 推測せず例外にして呼び出し側を fail-closed にする(FR-1-11(a))。
+ */
+export function extractParameterDefaults(
+  parsedTemplate: unknown,
+): Record<string, string> {
+  if (!isRecord(parsedTemplate)) return {};
+  const parameters = parsedTemplate.Parameters;
+  if (parameters === undefined) return {};
+  if (!isRecord(parameters)) {
+    throw new TemplateParseError(
+      'テンプレートの Parameters が object ではないため Default を比較できません',
+    );
+  }
+
+  const defaults: Record<string, string> = {};
+  for (const [name, definition] of Object.entries(parameters)) {
+    if (!isRecord(definition)) {
+      throw new TemplateParseError(
+        `Parameter '${name}' の定義が object ではないため Default を比較できません`,
+      );
+    }
+    if (!Object.hasOwn(definition, 'Default')) continue;
+
+    const value = definition.Default;
+    if (
+      typeof value !== 'string' &&
+      typeof value !== 'number' &&
+      typeof value !== 'boolean'
+    ) {
+      throw new TemplateParseError(
+        `Parameter '${name}' の Default は scalar ではないため比較できません`,
+      );
+    }
+    defaults[name] = String(value);
+  }
+  return defaults;
+}
+
 // ---------------------------------------------------------------------------
 // Export / Import / NoEcho の抽出(design.md §6, NFR-4)
 // ---------------------------------------------------------------------------

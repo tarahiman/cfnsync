@@ -269,6 +269,50 @@ function mutationOrder(fake: FakeCloudFormationGateway): string[] {
 }
 
 describe('deploy — T-14 integration', () => {
+  it('FR-7-8: STS 解決後の allowedAccounts 不一致でも report.connection は解決済み accountId', async () => {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: REGION,
+      allowedAccounts: ['999999999999'],
+      allowedRegions: [REGION],
+      stacks: { 'a.yaml': { stackName: 'A' } },
+    });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.connection.accountId).toBe(ACCOUNT);
+    expect(s.backend.calls).toHaveLength(0);
+    expect(s.gateways.size).toBe(0);
+  });
+
+  it('FR-7-8: STS 解決失敗時だけ connection.accountId は (unresolved)', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const backend = new FakeStateBackend([], undefined, STATE_ID);
+    const cfn = new FakeCloudFormationGateway();
+
+    const result = await deploy({
+      config,
+      templates: templatesOf({ 'a.yaml': TEMPLATE_A }),
+      deps: {
+        cfnFactory: () => cfn,
+        sts: {
+          async getCallerIdentity() {
+            throw new Error('STS unavailable');
+          },
+        },
+        backend,
+      },
+      options: {},
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.connection.accountId).toBe('(unresolved)');
+    expect(backend.calls).toHaveLength(0);
+    expect(cfn.calls).toHaveLength(0);
+  });
+
   it('NFR-5: added スタックの復旧判定で取得した DescribeStacks 結果を状態ガードへ引き渡す', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
@@ -445,6 +489,73 @@ describe('deploy — T-14 integration', () => {
     expect(
       s.backend.stored?.state.stacks['b.yaml@ap-northeast-1'].inputsHash,
     ).toBe(oldBHash);
+  });
+
+  it('FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        status: 'ROLLBACK_COMPLETE',
+      }),
+    );
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('A', [
+      {
+        eventId: 'failed-with-text',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'BucketA',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason:
+          'ROLLBACK is mentioned only as troubleshooting guidance',
+      },
+    ]);
+    fake.waitResults.set('A', [
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_FAILED',
+        statusReason: 'ROLLBACK was not observed',
+      }),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
   });
 
   it('NFR-4: ResourceStatusReason と最終 errorMessage の NoEcho 実値を text/JSON 格納前にマスクする', async () => {

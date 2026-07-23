@@ -71,6 +71,17 @@ Resources:
     Type: AWS::S3::Bucket
 `;
 
+const DEFAULT_TEMPLATE = `
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`;
+
 function configOf(stack: Record<string, unknown> | undefined): CfnSyncConfig {
   return validateConfig({
     version: 1,
@@ -233,6 +244,60 @@ afterEach(() => {
 });
 
 describe('T-18 recovery', () => {
+  it('FR-1-11(a): 設定省略パラメータをテンプレート Default で補完し CREATE 復旧に成功する', async () => {
+    const config = configOf({
+      stackName: 'ManagedStack',
+      tags: { Team: 'platform' },
+      capabilities: ['CAPABILITY_IAM'],
+    });
+    const templates = new Map([['stack.yaml', DEFAULT_TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    installExisting(s.cfn, {}, DEFAULT_TEMPLATE);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toMatchObject({
+      lastAction: 'SYNC',
+      inputsHash: desiredInputsHash(config, templates),
+    });
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-1-11(a) fail-closed: Default 補完後の実効値が実 stack と不一致なら再同期しない', async () => {
+    const config = configOf({
+      stackName: 'ManagedStack',
+      tags: { Team: 'platform' },
+      capabilities: ['CAPABILITY_IAM'],
+    });
+    const templates = new Map([['stack.yaml', DEFAULT_TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    installExisting(
+      s.cfn,
+      { parameters: { Environment: 'prod' } },
+      DEFAULT_TEMPLATE,
+    );
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(reportErrors(result)).toContain('cfnsync import');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
   it('FR-1-11(a): CREATE 成功+保存失敗後、全入力と管理タグが一致すれば再同期して state に記録する', async () => {
     const config = createConfig();
     const templates = new Map([['stack.yaml', TEMPLATE]]);
