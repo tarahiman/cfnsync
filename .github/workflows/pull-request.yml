@@ -1,0 +1,76 @@
+name: Pull request checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Install pinned Gitleaks
+        run: sh scripts/install-gitleaks.sh
+      - name: Scan commits introduced by the pull request
+        run: >-
+          .tools/bin/gitleaks git
+          --log-opts="${BASE_SHA}..${HEAD_SHA}"
+          --no-banner
+          --redact
+          .
+
+  quality:
+    name: Code quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Detect code-related changes
+        id: changes
+        run: |
+          code_changed=$(node scripts/has-code-changes.mjs --range "${BASE_SHA}...${HEAD_SHA}")
+          echo "code=$code_changed" >> "$GITHUB_OUTPUT"
+          if [ "$code_changed" = 'true' ]; then
+            echo 'Code-related changes detected.'
+          else
+            echo 'No code-related changes detected; quality commands will be skipped.'
+          fi
+      - name: Enable pnpm 11.2.2
+        if: steps.changes.outputs.code == 'true'
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.2.2 --activate
+      - name: Install dependencies
+        if: steps.changes.outputs.code == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Check formatting, lint, test, and build
+        if: steps.changes.outputs.code == 'true'
+        run: pnpm run quality:check

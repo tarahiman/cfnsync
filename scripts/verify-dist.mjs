@@ -24,5 +24,7 @@ const stale = filesUnder(dist)
   .map((path) => relative(root, path));
 
 if (stale.length > 0) {
-  throw new Error(`source のない stale dist ファイルを検出しました:\n${stale.join('\n')}`);
+  throw new Error(
+    `source のない stale dist ファイルを検出しました:\n${stale.join('\n')}`,
+  );
 }

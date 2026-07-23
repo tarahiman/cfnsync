@@ -1,0 +1,29 @@
+#!/bin/sh
+
+set -eu
+
+repository_root=$(git rev-parse --show-toplevel)
+cd "$repository_root"
+
+if [ -n "${GITLEAKS_BIN:-}" ]; then
+  gitleaks_binary=$GITLEAKS_BIN
+elif [ -x '.tools/bin/gitleaks' ]; then
+  gitleaks_binary='.tools/bin/gitleaks'
+elif command -v gitleaks >/dev/null 2>&1; then
+  gitleaks_binary=$(command -v gitleaks)
+else
+  echo 'Gitleaks is required by the pre-commit hook.' >&2
+  echo 'Run "pnpm run gitleaks:install" and retry the commit.' >&2
+  exit 1
+fi
+
+echo 'Running Gitleaks against the staged patch...'
+"$gitleaks_binary" git --pre-commit --staged --redact --no-banner
+
+has_code_changes=$(node scripts/has-code-changes.mjs --staged)
+if [ "$has_code_changes" = 'true' ]; then
+  echo 'Code-related changes detected; checking the staged snapshot...'
+  sh scripts/run-staged-quality-checks.sh
+else
+  echo 'No code-related changes detected; skipping code quality checks.'
+fi

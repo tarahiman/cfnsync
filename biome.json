@@ -4,6 +4,7 @@
     "includes": [
       "src/**",
       "test/**",
+      "scripts/**",
       ".mcp.json",
       "package.json",
       "tsconfig.json",
