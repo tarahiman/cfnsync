@@ -782,6 +782,8 @@ describe('FR-10-9: ステートロックの取得', () => {
     expect(acquireJson).toContain('別の実行がロックを保持しています');
     expect(acquireJson).not.toContain(causeMarker);
     expect(acquireJson).not.toContain('(cause:');
+    expect(acquireResult.textDiagnostics?.join('\n')).toContain(causeMarker);
+    expect(acquireResult.textDiagnostics?.join('\n')).toContain('(cause:');
 
     const release = setup();
     deployNetwork(release, NETWORK_TEMPLATE);
@@ -798,6 +800,8 @@ describe('FR-10-9: ステートロックの取得', () => {
     expect(releaseJson).toContain('条件付きロック解放に失敗しました');
     expect(releaseJson).not.toContain(causeMarker);
     expect(releaseJson).not.toContain('(cause:');
+    expect(releaseResult.textDiagnostics?.join('\n')).toContain(causeMarker);
+    expect(releaseResult.textDiagnostics?.join('\n')).toContain('(cause:');
   });
 
   it('NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する', async () => {

@@ -322,6 +322,70 @@ describe('T-19 cli', () => {
     expect(deps.readTemplates).not.toHaveBeenCalled();
   });
 
+  it('FR-12(import JSON診断): ロック warning の内部 cause を出力しない', async () => {
+    const cause = 'AccessDenied: request id import diagnostic';
+    const deps = dependencies({
+      runImport: vi.fn(async () => ({
+        exitCode: 1 as const,
+        report: {
+          connection: report.connection,
+          stacks: [],
+          configWritten: false,
+          stateSaved: false,
+          accountStateInitialized: false,
+          importEntriesSaved: false,
+          aborted: 'lock-unavailable' as const,
+          warnings: [
+            'ステートロックを取得できませんでした: ロック取得に失敗しました',
+          ],
+        },
+        textDiagnostics: [
+          `ステートロックを取得できませんでした: ロック取得に失敗しました (cause: ${cause})`,
+        ],
+      })),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['import', '--output', 'json'], { deps, io: out.io }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout()).warnings).toEqual([
+      'ステートロックを取得できませんでした: ロック取得に失敗しました',
+    ]);
+    expect(out.stdout()).not.toContain(cause);
+    expect(out.stderr()).not.toContain(cause);
+    expect(out.stderr()).toContain('ロック取得に失敗しました');
+  });
+
+  it('FR-12(import text診断): ロック warning の装飾済み cause を出力する', async () => {
+    const cause = 'AccessDenied: request id import diagnostic';
+    const deps = dependencies({
+      runImport: vi.fn(async () => ({
+        exitCode: 1 as const,
+        report: {
+          connection: report.connection,
+          stacks: [],
+          configWritten: false,
+          stateSaved: false,
+          accountStateInitialized: false,
+          importEntriesSaved: false,
+          aborted: 'lock-unavailable' as const,
+          warnings: [
+            'ステートロックを取得できませんでした: ロック取得に失敗しました',
+          ],
+        },
+        textDiagnostics: [
+          `ステートロックを取得できませんでした: ロック取得に失敗しました (cause: ${cause})`,
+        ],
+      })),
+    });
+    const out = capture();
+
+    expect(await runCli(['import'], { deps, io: out.io })).toBe(1);
+    expect(out.stderr()).toContain(`(cause: ${cause})`);
+    expect(out.stdout()).not.toContain(cause);
+  });
+
   it('FR-10-5(統合): import --write-template は既定 loader で不存在テンプレートへ到達して作成する', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cfnsync-import-'));
     const configPath = join(dir, 'cfnsync.yaml');

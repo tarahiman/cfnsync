@@ -5,7 +5,7 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: `FR-X-n` は requirements.md の各受け入れ基準に記載した明示 ID を参照する。箇条書きの挿入・並べ替えによって既存 ID の意味を変更しない。
+- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-4 と FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -276,7 +276,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-10-10 | スタックが存在しないテンプレートは `added` 扱い | 対応スタックなし → ステートに記録されず、次回 detect で `added` |
 | FR-10-11 | 依存辺の記録 | インポート成功時に exports / imports がステートに記録される(FR-8-5) |
 | FR-13-9 | リージョンごとにインポートできる | 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる |
-| NFR-4(import warning) | import のコマンド固有 warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使う | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
+| NFR-4(import warning) | import report の warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使い、text 専用診断とは分離する | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
 
 ### T-17 usecase/force-unlock
 
@@ -324,6 +324,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
 | FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
 | FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
+| FR-12-6a / FR-12-6b(import診断) | import の JSON warning は安全な本文、text warning は `CfnSyncError.message` の装飾済み診断を使う | `FR-12(import JSON診断): ロック warning の内部 cause を出力しない` / `FR-12(import text診断): ロック warning の装飾済み cause を出力する` |
 | FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
 | FR-12-6c(JSONキャンセル) | TTY の deploy 確認拒否は専用キャンセル result を stdout へ 1 個出し exit 0 | `FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0` |
 | FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12(JSON選択): --output json と --output=json の両記法を認識する` |

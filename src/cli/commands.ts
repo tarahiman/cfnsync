@@ -237,7 +237,11 @@ export async function runImporter(
       writeTemplate: options.writeTemplate === true,
     },
   });
-  for (const warning of result.report.warnings)
+  const warnings =
+    options.output === 'json'
+      ? result.report.warnings
+      : (result.textDiagnostics ?? result.report.warnings);
+  for (const warning of warnings)
     writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
