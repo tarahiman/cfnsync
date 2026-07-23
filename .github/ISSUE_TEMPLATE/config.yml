@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/tarahiman/cfnsync/discussions
+    about: For "how do I …" questions and general usage help, please start a discussion instead of opening a bug.
+  - name: Documentation
+    url: https://github.com/tarahiman/cfnsync#readme
+    about: README, configuration reference, and exit-code contract.
