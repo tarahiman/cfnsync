@@ -193,6 +193,9 @@ AWS への認証は標準的な方法で行えること。
   `--help` を表示した場合、ツールは当該サブコマンド固有のオプションに加え、共通オプション(`--config` /
   `--profile` / `--region` / `--output`)を一覧として表示しなければならない。
 - WHEN 有効な `--output json` を指定したサブコマンドを実行した場合、成功・失敗、usecase 到達前・到達後を問わず、ツールは標準出力へちょうど 1 個の JSON document を出力しなければならない。コマンド固有 result を生成できた場合(deploy の fail-closed report と `ForceUnlockResult` を含む)は既存 JSON schema を維持し、設定読込・設定検証、Commander 引数検証、未知 subcommand、依存循環等の result 生成前の例外だけは共通エラー schema(設計書 §9)を使用する。JSON 本体は失敗時も標準エラーへ移してはならず、進捗・警告・人間向け診断は標準エラーへ分離しなければならない。`--help` / `--version` は従来どおり text・終了コード 0 とし、有効な JSON 選択が成立しない `--output` 自体の不正値は本契約の対象外とする。
+- 有効な JSON 選択は `--output json` と `--output=json` の両記法を、サブコマンドの前後どちらでも認識しなければならない。複数指定時は最後の `--output` を採用し、`--config` 等の値付きオプションの値として消費された文字列 `--output=json` を JSON 選択として扱ってはならない。
+- WHEN TTY 上の `deploy --confirm` で利用者が拒否し、かつ有効な JSON 選択がある場合、ツールは標準出力へ次のキャンセル result をちょうど 1 個出力し、終了コード 0 としなければならない: `{ "exitCode": 0, "cancelled": true, "message": "Deployment cancelled." }`。text 選択時は従来どおり標準エラーへ `Deployment cancelled.` を出し、終了コード 0 とする。
+- WHEN `--help` または `--version` を指定した場合、`--output json` が同時に現れても JSON 契約の対象外とし、従来どおり text を出力して終了コード 0 としなければならない。
 
 ### FR-13: マルチリージョンデプロイ
 
@@ -214,7 +217,7 @@ AWS への認証は標準的な方法で行えること。
 
 - 非対話で完結し、進捗・結果を標準出力/標準エラーに構造的に出力すること。
 - GitHub Actions からの利用を想定し、差分の JSON 出力・終了コードによる判定・ログの見やすさを備えること。
-- 有効な `--output json` の結果は成功・失敗を問わず標準出力上の単一 JSON document とし、機械処理を妨げる診断・進捗を混入させないこと。result 生成前の共通エラー JSON は `cause`、stack trace、zod issue 配列、credential を含めてはならない。
+- 有効な `--output json` の結果は成功・失敗・利用者によるキャンセルを問わず標準出力上の単一 JSON document とし、機械処理を妨げる診断・進捗を混入させないこと。result 生成前の共通エラー JSON は未装飾の公開用 message のみを使用し、`cause`、stack trace、zod issue 配列、credential、および message 内の stackKey / region / cause 装飾を含めてはならない。
 
 ### NFR-2: テスト容易性(TDD 前提)
 

@@ -315,12 +315,18 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-3 | TTY なしで動作 | 非 TTY 環境でプロンプトなしに完走する |
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
 | FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
-| FR-12-6(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返す | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` |
-| FR-12-6(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
+| FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
+| FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
+| FR-12-6c(JSONキャンセル) | TTY の deploy 確認拒否は専用キャンセル result を stdout へ 1 個出し exit 0 | `FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0` |
+| FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12(JSON選択): --output json と --output=json の両記法を認識する` |
+| FR-12-6e(JSON配置) | `--output` はサブコマンドの前後どちらでも有効 | `FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効` |
+| FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12(JSON選択): 複数指定は最後の --output を採用する` |
+| FR-12-6g(JSON誤検出防止) | 他の値付きオプションの値として消費された `--output=json` は JSON 選択ではない | `FR-12(JSON選択): 他オプションの値 --output=json を JSON 指定として扱わない` |
+| FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12(JSON契約外): --help と --version は text を出して exit 0` |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-5-2(オプション) | ローカル向け確認プロンプトはオプトイン | 確認オプション指定時のみプロンプト(既定は非対話) |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |
-| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗とも単一 JSON document とし、共通エラーには cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` |
+| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / `FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0` |
 
 ## 8. M5: ドキュメント・パッケージング
 

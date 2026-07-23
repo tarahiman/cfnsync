@@ -8,6 +8,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { toAwsError } from '../../src/aws/errors.js';
 import { defaultCliDependencies } from '../../src/cli/dependencies.js';
 import {
   type CliDependencies,
@@ -413,6 +414,193 @@ describe('T-19 cli', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない', async () => {
+    const secretCause =
+      'credential=AKIAEXAMPLE NoEchoActualValue=super-secret-value';
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw toAwsError(
+          'CloudFormation DescribeStacks',
+          new Error(secretCause),
+          {
+            stackKey: 'app.yaml@ap-northeast-1',
+            region: 'ap-northeast-1',
+          },
+        );
+      }),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['status', '--output', 'json'], { deps, io: out.io }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout())).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: {
+        type: 'AwsError',
+        message: 'CloudFormation DescribeStacks に失敗しました',
+        stackKey: 'app.yaml@ap-northeast-1',
+        region: 'ap-northeast-1',
+      },
+    });
+    expect(out.stdout()).not.toContain(secretCause);
+    expect(out.stdout()).not.toContain('(stackKey:');
+    expect(out.stdout()).not.toContain('(region:');
+    expect(out.stdout()).not.toContain('(cause:');
+  });
+
+  it('FR-12(text診断): AwsError は SDK cause を従来どおり stderr の診断に含める', async () => {
+    const cause = 'AccessDenied: request id diagnostic';
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw toAwsError('CloudFormation DescribeStacks', new Error(cause), {
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+        });
+      }),
+    });
+    const out = capture();
+
+    expect(await runCli(['status'], { deps, io: out.io })).toBe(1);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).toContain(
+      'error: CloudFormation DescribeStacks に失敗しました',
+    );
+    expect(out.stderr()).toContain('(stackKey: app.yaml@ap-northeast-1)');
+    expect(out.stderr()).toContain('(region: ap-northeast-1)');
+    expect(out.stderr()).toContain(`(cause: ${cause})`);
+  });
+
+  it('FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0', async () => {
+    const deps = dependencies();
+    const prompt = vi.fn(async () => false);
+    const out = capture();
+
+    expect(
+      await runCli(['deploy', '--confirm', '--output', 'json'], {
+        deps,
+        io: out.io,
+        isTTY: true,
+        prompt,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(out.stdout())).toEqual({
+      exitCode: 0,
+      cancelled: true,
+      message: 'Deployment cancelled.',
+    });
+    expect(out.stderr()).toBe('');
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(deps.deploy).not.toHaveBeenCalled();
+  });
+
+  it('FR-12(textキャンセル): deploy --confirm の拒否は stderr に診断を出して exit 0', async () => {
+    const deps = dependencies();
+    const prompt = vi.fn(async () => false);
+    const out = capture();
+
+    expect(
+      await runCli(['deploy', '--confirm'], {
+        deps,
+        io: out.io,
+        isTTY: true,
+        prompt,
+      }),
+    ).toBe(0);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).toBe('Deployment cancelled.\n');
+    expect(deps.deploy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['分離記法', ['status', '--output', 'json']],
+    ['equals 記法', ['status', '--output=json']],
+  ] as const)('FR-12(JSON選択): --output json と --output=json の両記法を認識する（%s）', async (_label, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('JSON selection error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+  });
+
+  it.each([
+    ['サブコマンド前', ['--output', 'json', 'status']],
+    ['サブコマンド後', ['status', '--output', 'json']],
+  ] as const)('FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効（%s）', async (_label, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('JSON placement error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+  });
+
+  it.each([
+    ['最後が text', ['status', '--output', 'json', '--output', 'text'], false],
+    ['最後が json', ['status', '--output', 'text', '--output=json'], true],
+  ] as const)('FR-12(JSON選択): 複数指定は最後の --output を採用する（%s）', async (_label, args, jsonExpected) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('last output wins');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    if (jsonExpected) {
+      expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+      expect(out.stderr()).toBe('');
+    } else {
+      expect(out.stdout()).toBe('');
+      expect(out.stderr()).toContain('last output wins');
+    }
+  });
+
+  it.each([
+    ['--config', ['status', '--config', '--output=json']],
+    ['--profile', ['status', '--profile', '--output=json']],
+    ['--region', ['status', '--region', '--output=json']],
+    ['--output', ['status', '--output', '--output=json']],
+    ['--on-failure', ['deploy', '--on-failure', '--output=json']],
+    ['--reconcile', ['import', '--reconcile', '--output=json']],
+  ] as const)('FR-12(JSON選択): 他オプション %s の値 --output=json を JSON 指定として扱わない', async (_option, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('text selection error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).not.toBe('');
+  });
+
+  it.each([
+    ['--help', ['status', '--output', 'json', '--help'], 'Usage:'],
+    ['--version', ['--output=json', '--version'], undefined],
+  ] as const)('FR-12(JSON契約外): %s は text を出して exit 0', async (_option, args, expectedText) => {
+    const out = capture();
+
+    expect(await runCli([...args], { deps: dependencies(), io: out.io })).toBe(
+      0,
+    );
+    expect(out.stdout()).not.toBe('');
+    if (expectedText !== undefined) {
+      expect(out.stdout()).toContain(expectedText);
+    }
+    expect(() => JSON.parse(out.stdout())).toThrow();
+    expect(out.stderr()).toBe('');
   });
 
   it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {

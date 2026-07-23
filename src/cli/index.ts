@@ -67,15 +67,31 @@ function commonOptions(command: Command): CommonOptions {
 }
 
 function detectJsonOutput(argv: string[]): boolean {
+  const valueOptions = new Set([
+    '--config',
+    '--profile',
+    '--region',
+    '--output',
+    '--on-failure',
+    '--reconcile',
+  ]);
   let jsonRequested = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--') break;
-    if (arg === '--output') {
-      jsonRequested = argv[index + 1] === 'json';
+    if (valueOptions.has(arg)) {
+      if (arg === '--output') {
+        jsonRequested = argv[index + 1] === 'json';
+      }
       index += 1;
-    } else if (arg.startsWith('--output=')) {
-      jsonRequested = arg.slice('--output='.length) === 'json';
+      continue;
+    }
+    const equals = arg.indexOf('=');
+    if (equals === -1) continue;
+    const option = arg.slice(0, equals);
+    if (!valueOptions.has(option)) continue;
+    if (option === '--output') {
+      jsonRequested = arg.slice(equals + 1) === 'json';
     }
   }
   return jsonRequested;
@@ -194,7 +210,18 @@ export function createCliProgram(
             runtime.isTTY &&
             !(await runtime.prompt('Proceed with the deployment?'))
           ) {
-            runtime.io.stderr('Deployment cancelled.\n');
+            const message = 'Deployment cancelled.';
+            if (runtime.jsonRequested) {
+              runtime.io.stdout(
+                `${JSON.stringify(
+                  { exitCode: 0, cancelled: true, message },
+                  null,
+                  2,
+                )}\n`,
+              );
+            } else {
+              runtime.io.stderr(`${message}\n`);
+            }
             return 0;
           }
           return runDeployment(runtime, {

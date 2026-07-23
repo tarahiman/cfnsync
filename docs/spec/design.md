@@ -68,7 +68,7 @@ graph TD
 cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、各サブコマンドの `--help` に
 共通オプション(`--config` / `--profile` / `--region` / `--output`)を「Global Options」として表示する
 (FR-12-5)。
-CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
+CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。事前 parser は Commander と同じく値を取るグローバル／サブコマンドオプション(`--config` / `--profile` / `--region` / `--output` / `--on-failure` / `--reconcile`)の arity を解釈し、他オプションの値として消費された `--output=json` を選択と誤認しない。サブコマンド前後のグローバルオプションを同様に扱う。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
 
 ## 4. データ設計
 
@@ -314,8 +314,8 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 | 1 | エラー(検証・ガード・AWS 操作の失敗) |
 | 2 | 差分あり(plan / dry-run 時のみ) |
 
-- エラーは型で分類する: `ConfigError` / `GuardError` / `StateConflictError` / `DependencyCycleError` / `StackStateError` / `AwsError`。`CfnSyncError` はスタックキー・リージョン・原因を保持できる既存契約を維持する。ただし同じ情報を message inline と `context.cause` の双方へ重複投入してはならない。特に zod 検証失敗から作る `ConfigError` は対象キーと先頭 issue の安全な本文を message に一度だけ含め、zod issue 配列を cause に保持しない。CLI filesystem adapter は既存の `ConfigError` を再ラップせずそのまま送出する。設定ファイル自体の読込失敗では OS error の cause を内部保持してよい。
-- 有効な `--output json` でコマンド固有 result を生成する前に例外が発生した場合、CLI は次の共通エラー schema を stdout へちょうど 1 回出力する。`stackKey` / `region` は既知の場合だけ含める。`cause`、stack trace、zod issue 配列、credential は含めない。
+- エラーは型で分類する: `ConfigError` / `GuardError` / `StateConflictError` / `DependencyCycleError` / `StackStateError` / `AwsError`。`CfnSyncError` はコンストラクタへ渡された未装飾の公開本文(`publicMessage`)を読み取り専用で保持し、既存の `message` にはスタックキー・リージョン・原因を装飾して text 診断に使用し、`Error.cause` も保持する。ただし同じ情報を公開本文 inline と `context.cause` の双方へ重複投入してはならない。AWS adapter が SDK 例外を変換する場合も操作失敗の公開本文と `context.cause` を分離する。特に zod 検証失敗から作る `ConfigError` は対象キーと先頭 issue の安全な本文を公開本文に一度だけ含め、zod issue 配列を cause に保持しない。CLI filesystem adapter は既存の `ConfigError` を再ラップせずそのまま送出する。設定ファイル自体の読込失敗では OS error の cause を内部保持してよい。
+- 有効な `--output json` でコマンド固有 result を生成する前に例外が発生した場合、CLI は次の共通エラー schema を stdout へちょうど 1 回出力する。`message` は `CfnSyncError.publicMessage` のみを使用し、`stackKey` / `region` は既知の場合だけ構造化フィールドへ含める。`message` に `(stackKey: ...)` / `(region: ...)` / `(cause: ...)` を含めず、`cause`、stack trace、zod issue 配列、credential も含めない。
 
 ```json
 {
@@ -333,6 +333,16 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - 共通エラーの `type` は外部契約として許可した cfnsync エラー分類だけを使用する。Commander の引数・subcommand エラーは `CliUsageError`、分類不能な例外は固定値 `Error` とし、任意の `constructor.name` を無制限に公開しない。
 - text 出力時のエラー診断は従来どおり stderr とする。Commander の usage / help-after-error も stderr に出してよい。JSON 本体を stderr へ移さず、action catch と Commander catch は同じ renderer を共有して二重 JSON を防ぐ。
 - 成功 JSON、および deploy/import/force-unlock が生成した既存 result JSON は `{ok,data}` で包み直さず、その schema と終了コードを維持する。`--help` / `--version` は従来の text 出力、exit 0 とする。`--output bogus` は有効な JSON 選択が成立しないため共通 JSON エラー契約の対象外とする。
+- TTY 上の `deploy --confirm` を拒否した場合、text 選択では stderr の `Deployment cancelled.` と exit 0 を維持する。有効な JSON 選択では stdout に次の専用 result を 1 個出力し、同じく exit 0 とする。
+
+```json
+{
+  "exitCode": 0,
+  "cancelled": true,
+  "message": "Deployment cancelled."
+}
+```
+
 - AWS API のスロットリングは SDK v3 の adaptive retry mode + 指数バックオフで吸収(NFR-3)。
 - デプロイ失敗時は失敗リソースの `ResourceStatusReason` をスタックイベントから抽出して表示し、ロールバックの発生と結果を報告する(FR-4)。
 

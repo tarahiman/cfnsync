@@ -68,22 +68,6 @@ function cliErrorType(error: unknown): CliErrorType {
   return 'Error';
 }
 
-function causeMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-/**
- * CfnSyncError は text 診断用 message に cause を保持する既存契約を持つ。
- * 機械可読な共通エラーでは末尾の cause 表現だけを除外し、cause 自体も serialize しない。
- */
-function safeCfnSyncMessage(error: CfnSyncError): string {
-  if (error.cause === undefined) return error.message;
-  const suffix = ` (cause: ${causeMessage(error.cause)})`;
-  return error.message.endsWith(suffix)
-    ? error.message.slice(0, -suffix.length)
-    : error.message;
-}
-
 export function createCliErrorPayload(
   error: unknown,
   typeOverride?: 'CliUsageError',
@@ -94,7 +78,7 @@ export function createCliErrorPayload(
       ? error.message
       : String(error)
     : error instanceof CfnSyncError
-      ? safeCfnSyncMessage(error)
+      ? error.publicMessage
       : '予期しないエラーが発生しました';
   const context =
     error instanceof CfnSyncError
