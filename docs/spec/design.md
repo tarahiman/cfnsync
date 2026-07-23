@@ -60,13 +60,15 @@ graph TD
 | `ports` | `CloudFormationGateway` / `StsGateway` / `StateBackend` インターフェース定義 | NFR-2, FR-1 |
 | `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド | NFR-3, FR-1 |
 | `backend` | `StateBackend` の `local` 実装(原子的ファイル置換・`.bak` 保持) | FR-1 |
-| `report` | 人間可読テキスト / JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4) | FR-3, NFR-4 |
+| `report` | 人間可読テキスト / コマンド固有 JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4)。成功時および usecase が result を生成した失敗時の既存 JSON schema を維持する | FR-3, NFR-4 |
+| `cli` | Commander 定義、終了コード、stdout/stderr 境界。result 生成前の例外を §9 の共通エラー JSON へ変換し、有効な `--output json` では単一 JSON document を stdout へ出す | FR-12, NFR-1 |
 
 依存方向: `cli → usecase → core / ports / report`。`aws` / `backend` は `ports` を実装する。`core` はどこにも依存しない。
 
 cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、各サブコマンドの `--help` に
 共通オプション(`--config` / `--profile` / `--region` / `--output`)を「Global Options」として表示する
 (FR-12-5)。
+CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
 
 ## 4. データ設計
 
@@ -189,6 +191,7 @@ stacks:
 ### 5.1 `cfnsync status`
 
 config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。CloudFormation / STS は呼び出さない(NFR-5)。S3 state backend を選択した場合のステート読み取りは除く。終了コード 0。
+成功 JSON は既存の status schema を維持する。config 読込・検証等で status result を生成できない場合だけ §9 の共通エラー JSON を stdout へ出力する。
 
 ### 5.2 `cfnsync plan`(dry-run)
 
@@ -200,6 +203,7 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 6. 終了コード: 差分あり 2 / なし 0 / エラー 1
 
 各スタックの変更セット作成開始・差分確定・スキップ(dry-run 停止)は `DeployDeps.onProgress`(FR-5-4)を通じてスタックキー付きで標準エラーへ逐次通知する。CFN リソースイベント(`onEvent`、FR-4-1)とは独立したチャネルであり、差分・結果の最終 report(標準出力)には一切含まれない。
+plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用する。
 
 ### 5.3 `cfnsync deploy`
 
@@ -216,6 +220,8 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 4. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)
 5. `--dry-run` は plan と同一動作(FR-5)
 
+deploy report を生成できた場合は、fail-closed の失敗 report を含めて既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用し、成功・失敗 report を `{ok,data}` で包み直さない。
+
 ### 5.4 `cfnsync import`
 
 1. STS で接続先アカウントを解決 → ステートロックを取得(§4.5)。import は AWS へは読み取り専用だが、ステート・設定ファイルを書き込むため変更系と同じ排他制御に従う
@@ -228,15 +234,21 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
    - ローカルファイルなし → `--write-template` でデプロイ済みテンプレートを書き出し
 6. 対応するスタックが存在しないテンプレートはそのまま(次回 `added` 扱い)
 
+import result を生成できた場合は exit 0 / 1 とも既存 report JSON を stdout へ出力する。result 生成前の例外だけ §9 の共通エラー JSON を使用する。
+
 ### 5.5 `cfnsync graph`
 
 テンプレート解析のみで依存グラフをリージョンごとに構築する。人間可読なテキストは Kahn 法トポロジカル順序から算出したレベル(`Lv0`, `Lv1`, ...)へグループ化して出力し、同一レベル内は並列デプロイ可能であることを表す(diamond 依存でも記述は重複しない。FR-8-6)。JSON 出力はノード・辺の構造のみを保持し、レベル分割の影響を受けない。循環はレベル計算より前に(`topologicalOrder` が)`DependencyCycleError` として検出しエラー終了する(FR-8-4。この場合レベル表示は行わない — フェイルクローズドを維持する)。
+
+正常時の graph JSON schema は維持する。循環等で graph result を生成できない場合は §9 の共通エラー JSON を stdout へ出力する。
 
 ### 5.6 `cfnsync force-unlock`
 
 異常終了で残存したステートロック(`s3` バックエンド)を手動で解放する。ロックに記録された実行 ID の指定を必須とし、現在のロックの実行 ID が指定値と一致する場合のみ `If-Match` 条件付き削除で解放する(読み取りから削除までの間の所有者交代による誤解放を防ぐ。FR-1)。
 
 保持していた実行(CI ジョブ・プロセス)が終了していることを利用者が確認した場合にのみ使用してよい操作であり、コマンドはロックの内容(実行 ID・開始時刻・実行者)と警告を表示する。解除後の最初の実行では、進行中だった可能性のある操作は `*_IN_PROGRESS` ガード(§7)で検出され、完了済みの操作は実スタックとの突合による復旧分岐(§7)および空変更セットによる再同期で吸収される(復旧手順は §11)。
+
+`ForceUnlockResult` を生成できた場合、JSON 指定時は exit 0 / 1 のいずれでも既存 result JSON を stdout へ出力する。result 生成前の例外だけ §9 の共通エラー JSON を使用する。
 
 ## 6. 依存関係解析(core/template + core/graph)
 
@@ -277,7 +289,7 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 
 ### 8.2 NoEcho マスク(NFR-4)
 
-テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。usecase は対象スタックの設定上の実効パラメータ値から共通 redactor を構成し、生値に加えて `JSON.stringify` のエスケープ表現と `encodeURIComponent` 表現も置換対象にする。イベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、AWS 例外メッセージ、最終 `errorMessage` を逐次通知・report 格納の前に通す。report は格納済みのイベント・エラー文字列にも同じ redactor を適用して多層防御とする。空文字および 4 文字未満の値は誤マスクを避けるため置換しない。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックを計画上の失敗として AWS 副作用前に依存下流を skipped とし、独立スタックだけを `--on-failure` に従わせる。
+テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。usecase は対象スタックの設定上の実効パラメータ値から共通 redactor を構成し、生値に加えて `JSON.stringify` のエスケープ表現と `encodeURIComponent` 表現も置換対象にする。イベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、AWS 例外メッセージ、最終 `errorMessage` を逐次通知・report 格納の前に通す。report は格納済みのイベント・エラー文字列にも同じ redactor を適用して多層防御とする。空文字および 4 文字未満の値は誤マスクを避けるため置換しない。NoEcho 実効値が予約済み `REQUIRED_PLACEHOLDER`(`__REQUIRED__`)と完全一致する場合は既知の非秘匿 sentinel なので raw value の段階で置換候補から除外し、JSON escaped / URI encoded variant も生成しない。したがって必須値不足の診断は literal `__REQUIRED__` と対象名を表示する。部分一致する値と他の NoEcho 実値は従来どおりマスクする。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックを計画上の失敗として AWS 副作用前に依存下流を skipped とし、独立スタックだけを `--on-failure` に従わせる。
 
 ### 8.3 削除(FR-6)
 
@@ -302,7 +314,25 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 | 1 | エラー(検証・ガード・AWS 操作の失敗) |
 | 2 | 差分あり(plan / dry-run 時のみ) |
 
-- エラーは型で分類する: `ConfigError` / `GuardError` / `StateConflictError` / `DependencyCycleError` / `StackStateError` / `AwsError`。すべてスタックキー・リージョン・原因を含むメッセージを持つ。
+- エラーは型で分類する: `ConfigError` / `GuardError` / `StateConflictError` / `DependencyCycleError` / `StackStateError` / `AwsError`。`CfnSyncError` はスタックキー・リージョン・原因を保持できる既存契約を維持する。ただし同じ情報を message inline と `context.cause` の双方へ重複投入してはならない。特に zod 検証失敗から作る `ConfigError` は対象キーと先頭 issue の安全な本文を message に一度だけ含め、zod issue 配列を cause に保持しない。CLI filesystem adapter は既存の `ConfigError` を再ラップせずそのまま送出する。設定ファイル自体の読込失敗では OS error の cause を内部保持してよい。
+- 有効な `--output json` でコマンド固有 result を生成する前に例外が発生した場合、CLI は次の共通エラー schema を stdout へちょうど 1 回出力する。`stackKey` / `region` は既知の場合だけ含める。`cause`、stack trace、zod issue 配列、credential は含めない。
+
+```json
+{
+  "ok": false,
+  "exitCode": 1,
+  "error": {
+    "type": "ConfigError",
+    "message": "人間向けの安全なメッセージ",
+    "stackKey": "app.yaml@ap-northeast-1",
+    "region": "ap-northeast-1"
+  }
+}
+```
+
+- 共通エラーの `type` は外部契約として許可した cfnsync エラー分類だけを使用する。Commander の引数・subcommand エラーは `CliUsageError`、分類不能な例外は固定値 `Error` とし、任意の `constructor.name` を無制限に公開しない。
+- text 出力時のエラー診断は従来どおり stderr とする。Commander の usage / help-after-error も stderr に出してよい。JSON 本体を stderr へ移さず、action catch と Commander catch は同じ renderer を共有して二重 JSON を防ぐ。
+- 成功 JSON、および deploy/import/force-unlock が生成した既存 result JSON は `{ok,data}` で包み直さず、その schema と終了コードを維持する。`--help` / `--version` は従来の text 出力、exit 0 とする。`--output bogus` は有効な JSON 選択が成立しないため共通 JSON エラー契約の対象外とする。
 - AWS API のスロットリングは SDK v3 の adaptive retry mode + 指数バックオフで吸収(NFR-3)。
 - デプロイ失敗時は失敗リソースの `ResourceStatusReason` をスタックイベントから抽出して表示し、ロールバックの発生と結果を報告する(FR-4)。
 

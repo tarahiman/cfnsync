@@ -265,7 +265,9 @@ export async function runForceUnlock(
     runId,
   });
   writeLine(
-    result.exitCode === 0 ? ctx.io.stdout : ctx.io.stderr,
+    options.output === 'json' || result.exitCode === 0
+      ? ctx.io.stdout
+      : ctx.io.stderr,
     options.output === 'json'
       ? JSON.stringify(result, null, 2)
       : result.message,

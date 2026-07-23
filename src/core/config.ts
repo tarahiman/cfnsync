@@ -126,7 +126,6 @@ function toConfigError(error: z.ZodError): ConfigError {
     `設定ファイルの検証に失敗しました: ${keyPath}: ${issue.message}`,
     {
       stackKey,
-      cause: error,
     },
   );
 }

@@ -113,14 +113,7 @@ export function loadConfigFile(
     return config;
   } catch (cause) {
     if (cause instanceof ConfigError) {
-      throw new ConfigError(
-        `設定ファイルの検証に失敗しました: ${configPath}: ${cause.message}`,
-        {
-          stackKey: cause.stackKey,
-          region: cause.region,
-          cause,
-        },
-      );
+      throw cause;
     }
     throw cause;
   }

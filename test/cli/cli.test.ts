@@ -14,7 +14,8 @@ import {
   createCliProgram,
   runCli,
 } from '../../src/cli/index.js';
-import type { CfnSyncConfig } from '../../src/core/config.js';
+import { type CfnSyncConfig, validateConfig } from '../../src/core/config.js';
+import { ConfigError } from '../../src/core/errors.js';
 import { createInitialState } from '../../src/core/state.js';
 import type {
   CloudFormationGateway,
@@ -390,6 +391,30 @@ describe('T-19 cli', () => {
     }
   });
 
+  it('FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfnsync-config-'));
+    const configPath = join(dir, 'cfnsync.yaml');
+    writeFileSync(
+      configPath,
+      'version: 1\ndefaultRegion: ap-northeast-1\nstacks:\n  app.yaml:\n    regions: ap-northeast-1\n',
+    );
+    const out = capture();
+    try {
+      expect(
+        await runCli(['status', '--config', configPath], {
+          deps: defaultCliDependencies,
+          io: out.io,
+        }),
+      ).toBe(1);
+      expect(out.stderr().split('stacks.app.yaml.regions')).toHaveLength(2);
+      expect(out.stderr().split('(stackKey: app.yaml)')).toHaveLength(2);
+      expect(out.stderr()).not.toContain('"code"');
+      expect(out.stderr()).not.toContain('invalid_type');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {
     const deps = dependencies();
     const out = capture();
@@ -448,6 +473,143 @@ describe('T-19 cli', () => {
     expect(await runCli(['graph'], { deps, io: out.io })).toBe(1);
     expect(out.stderr()).toContain('a.yaml@ap-northeast-1');
     expect(out.stdout()).toBe('');
+  });
+
+  it('FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1', async () => {
+    const cyclic: CfnSyncConfig = {
+      ...config,
+      stacks: {
+        'a.yaml': {
+          ...config.stacks['app.yaml'],
+          stackName: 'a',
+          dependsOn: ['b.yaml'],
+        },
+        'b.yaml': {
+          ...config.stacks['app.yaml'],
+          stackName: 'b',
+          dependsOn: ['a.yaml'],
+        },
+      },
+    };
+    const scenarios: {
+      args: string[];
+      deps: CliDependencies;
+      type: string;
+      stackKey?: string;
+      region?: string;
+    }[] = [
+      {
+        args: ['status', '--output', 'json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() => {
+            throw new ConfigError('設定ファイルを読み込めません', {
+              cause: new Error('ENOENT credential-do-not-leak'),
+            });
+          }),
+        }),
+        type: 'ConfigError',
+      },
+      {
+        args: ['status', '--output=json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() =>
+            validateConfig({
+              version: 1,
+              defaultRegion: 'ap-northeast-1',
+              stacks: {
+                'app.yaml': { regions: 'ap-northeast-1' },
+              },
+            }),
+          ),
+        }),
+        type: 'ConfigError',
+        stackKey: 'app.yaml',
+      },
+      {
+        args: ['graph', '--output', 'json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() => cyclic),
+          readTemplates: vi.fn(
+            () =>
+              new Map([
+                ['a.yaml', 'Resources: {}'],
+                ['b.yaml', 'Resources: {}'],
+              ]),
+          ),
+        }),
+        type: 'DependencyCycleError',
+        region: 'ap-northeast-1',
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const out = capture();
+      expect(
+        await runCli(scenario.args, { deps: scenario.deps, io: out.io }),
+      ).toBe(1);
+      const payload = JSON.parse(out.stdout()) as {
+        ok: boolean;
+        exitCode: number;
+        error: Record<string, unknown>;
+      };
+      expect(payload).toEqual({
+        ok: false,
+        exitCode: 1,
+        error: {
+          type: scenario.type,
+          message: expect.any(String),
+          ...(scenario.stackKey === undefined
+            ? {}
+            : { stackKey: scenario.stackKey }),
+          ...(scenario.region === undefined ? {} : { region: scenario.region }),
+        },
+      });
+      expect(out.stdout()).not.toContain('credential-do-not-leak');
+      expect(out.stdout()).not.toContain('"code"');
+      expect(out.stdout()).not.toContain('invalid_type');
+      expect(out.stdout()).not.toContain('"cause"');
+      expect(out.stdout()).not.toContain('"stack"');
+    }
+  });
+
+  it('FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1', async () => {
+    for (const args of [
+      ['deploy', '--on-failure', 'bogus', '--output', 'json'],
+      ['unknown-command', '--output=json'],
+    ]) {
+      const out = capture();
+      expect(await runCli(args, { deps: dependencies(), io: out.io })).toBe(1);
+      expect(JSON.parse(out.stdout())).toEqual({
+        ok: false,
+        exitCode: 1,
+        error: {
+          type: 'CliUsageError',
+          message: expect.any(String),
+        },
+      });
+      expect(out.stderr()).toContain('error:');
+    }
+  });
+
+  it('FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す', async () => {
+    const result = {
+      exitCode: 1 as const,
+      released: false,
+      message: '指定した実行 ID は現在のロックと一致しません。',
+    };
+    const deps = dependencies({
+      forceUnlock: vi.fn(async () => result),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['force-unlock', 'run-123', '--output', 'json'], {
+        deps,
+        io: out.io,
+      }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout())).toEqual(result);
+    expect(out.stderr()).toBe('');
   });
 
   it.each([

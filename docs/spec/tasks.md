@@ -45,7 +45,7 @@
 | FR-11-2 | ステートバックエンド(`local` / `s3`)を設定できる | `state` 省略時は `local`、`backend: s3` 時は bucket/key/region が必須で欠落はエラー |
 | FR-11-3 | スタック名未設定時の導出規約 | `stackName` 省略時に `stackNamePrefix + ファイル名(拡張子除去)` が導出される |
 | FR-11-4 | コミット可能なテキスト形式 | (構造的に満足: YAML 採用。テスト対象外) |
-| FR-11-5 | 設定不備は実行前検証で具体的エラー | 存在しないテンプレートへの参照 / 必須項目欠落 / 不正な型 → 対象キーを含む `ConfigError` |
+| FR-11-5 | 設定不備は実行前検証で、対象キーを一度だけ含む単一の人間可読な `ConfigError` として具体的エラーを報告し、zod issue 配列を露出しない | 存在しないテンプレートへの参照 / 必須項目欠落 / 不正な型 → 対象キーを含む `ConfigError` / `FR-11-5: zod 検証失敗は対象キーを一度だけ含む人間向け ConfigError で issue JSON を露出しない` |
 | FR-11-8 | トップレベル `defaultTags` を設定でき、`defaultTags` < `tags` < `regionOverrides.<region>.tags` の順に浅くマージされる(キー重複はエラーにしない) | 独自 `tags` なしスタックへそのまま適用 / 別キーはマージ / 同名キーは `tags` が優先 / 同名キーは `regionOverrides.tags` が優先 / 三者混在の優先順位 / 数値・真偽値の文字列正規化 / 省略時は付与なし / 複数リージョンの全ターゲットへ適用 |
 | FR-13-1 | テンプレートごとに複数リージョンを指定できる。未指定は既定リージョン 1 つ | `regions` 指定が保持される / 省略時 `[defaultRegion]` になる |
 | FR-13-3 | パラメータ・タグの共通値+リージョン別上書き | `regionOverrides` の浅いマージで実効パラメータ・タグが決まる(上書きなしリージョンは共通値のみ) |
@@ -174,7 +174,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-3-1 | リソース単位の Add / Modify / Remove と変更プロパティを表示 | DescribeChangeSet の Changes から種別・プロパティ一覧が整形される |
 | FR-3-2 | Replacement は警告として強調 | `Replacement: True` のリソースが警告表示になる(テキスト・JSON 双方にフラグ) |
 | FR-3-3 | テキストに加え JSON を選択できる | `--output json` で機械可読 JSON(スキーマ検証)が出る |
-| NFR-4 | NoEcho 値をマスク | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) |
+| NFR-4 | NoEcho 値をマスクする。ただし予約済み `REQUIRED_PLACEHOLDER` との完全一致だけは非秘匿 sentinel として置換候補から除外する | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) / `NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない` |
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
 | FR-5-4(契約) | 進捗マイルストーンの型を定義する | `ProgressEvent`(stackKey・region・phase・message)/ `ProgressPhase` の union 型が report/index.ts で定義され、usecase が依存する出力契約に含まれる |
@@ -236,7 +236,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue` | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行 |
 | FR-1-7(統合) | ロックは正常・異常を問わず終了時に解放 | 成功時・途中エラー時の双方で解放される(所有権喪失時は解放試行が条件不成立で無害) |
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |
-| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否 | プレースホルダ残存 → 当該スタックは検証エラーで実行されない |
+| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` |
 
 ### T-15 usecase/delete — スタック削除
 
@@ -314,10 +314,13 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
 | FR-12-3 | TTY なしで動作 | 非 TTY 環境でプロンプトなしに完走する |
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
+| FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
+| FR-12-6(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返す | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` |
+| FR-12-6(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-5-2(オプション) | ローカル向け確認プロンプトはオプトイン | 確認オプション指定時のみプロンプト(既定は非対話) |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |
-| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力 | 結果は stdout、診断・進捗は stderr に分離される |
+| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗とも単一 JSON document とし、共通エラーには cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` |
 
 ## 8. M5: ドキュメント・パッケージング
 

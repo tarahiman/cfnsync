@@ -259,6 +259,29 @@ describe('core/config', () => {
       }
     });
 
+    it('FR-11-5: zod 検証失敗は対象キーを一度だけ含む人間向け ConfigError で issue JSON を露出しない', () => {
+      const raw = minimalRaw({
+        stacks: { 'network.yaml': { regions: 'ap-northeast-1' } },
+      });
+
+      try {
+        validateConfig(raw);
+        expect.unreachable('ConfigError が送出されるはず');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        const configError = err as ConfigError;
+        expect(
+          configError.message.split('stacks.network.yaml.regions'),
+        ).toHaveLength(2);
+        expect(
+          configError.message.split('(stackKey: network.yaml)'),
+        ).toHaveLength(2);
+        expect(configError.message).not.toContain('"code"');
+        expect(configError.message).not.toContain('invalid_type');
+        expect(configError.cause).toBeUndefined();
+      }
+    });
+
     it('FR-8-2: 存在しない dependsOn は対象スタックキー付き ConfigError で拒否する', () => {
       expect(() =>
         validateConfig(

@@ -808,7 +808,7 @@ describe('deploy — T-14 integration', () => {
     );
   });
 
-  it('§8.2: __REQUIRED__ 残存スタックだけを検証エラーで除外し、他スタックは実行する', async () => {
+  it('§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A', parameters: { Secret: '__REQUIRED__' } },
       'c.yaml': { stackName: 'C' },
@@ -829,16 +829,28 @@ describe('deploy — T-14 integration', () => {
     const created = fake
       .callsOf('createChangeSet')
       .map((call) => (call.args[0] as { stackName: string }).stackName);
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
 
     expect(result.exitCode).toBe(1);
     expect(created).toEqual(['C']);
-    expect(result.report.result?.stacks).toContainEqual(
-      expect.objectContaining({
-        stackName: 'A',
-        outcome: 'failed',
-        errorMessage: expect.stringContaining('Secret'),
-      }),
+    expect(failed).toEqual(
+      expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
     );
+    expect(failed?.errorMessage).toContain('__REQUIRED__');
+    expect(failed?.errorMessage).toContain('Secret');
+    expect(failed?.errorMessage).not.toContain('****');
+    expect(
+      fake
+        .callsOf('createChangeSet')
+        .filter(
+          (call) => (call.args[0] as { stackName: string }).stackName === 'A',
+        ),
+    ).toHaveLength(0);
+    expect(
+      fake.callsOf('executeChangeSet').filter((call) => call.args[0] === 'A'),
+    ).toHaveLength(0);
   });
 
   it('FR-9-2(__REQUIRED__再レビュー⑥): 必須値不足を計画失敗として AWS 前に依存下流を skipped にする', async () => {
