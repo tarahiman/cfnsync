@@ -5,7 +5,7 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: `FR-X-n` = requirements.md の FR-X 内の箇条書きの出現順 n 番目。requirements.md 側は変更しない(tasks.md がこの採番の正本)。
+- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-4 と FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -45,7 +45,7 @@
 | FR-11-2 | ステートバックエンド(`local` / `s3`)を設定できる | `state` 省略時は `local`、`backend: s3` 時は bucket/key/region が必須で欠落はエラー |
 | FR-11-3 | スタック名未設定時の導出規約 | `stackName` 省略時に `stackNamePrefix + ファイル名(拡張子除去)` が導出される |
 | FR-11-4 | コミット可能なテキスト形式 | (構造的に満足: YAML 採用。テスト対象外) |
-| FR-11-5 | 設定不備は実行前検証で具体的エラー | 存在しないテンプレートへの参照 / 必須項目欠落 / 不正な型 → 対象キーを含む `ConfigError` |
+| FR-11-5 | 設定不備は実行前検証で、対象キーを一度だけ含む単一の人間可読な `ConfigError` として具体的エラーを報告し、zod issue 配列を露出しない | 存在しないテンプレートへの参照 / 必須項目欠落 / 不正な型 → 対象キーを含む `ConfigError` / `FR-11-5: zod 検証失敗は対象キーを一度だけ含む人間向け ConfigError で issue JSON を露出しない` |
 | FR-11-8 | トップレベル `defaultTags` を設定でき、`defaultTags` < `tags` < `regionOverrides.<region>.tags` の順に浅くマージされる(キー重複はエラーにしない) | 独自 `tags` なしスタックへそのまま適用 / 別キーはマージ / 同名キーは `tags` が優先 / 同名キーは `regionOverrides.tags` が優先 / 三者混在の優先順位 / 数値・真偽値の文字列正規化 / 省略時は付与なし / 複数リージョンの全ターゲットへ適用 |
 | FR-13-1 | テンプレートごとに複数リージョンを指定できる。未指定は既定リージョン 1 つ | `regions` 指定が保持される / 省略時 `[defaultRegion]` になる |
 | FR-13-3 | パラメータ・タグの共通値+リージョン別上書き | `regionOverrides` の浅いマージで実効パラメータ・タグが決まる(上書きなしリージョンは共通値のみ) |
@@ -62,6 +62,8 @@
 | §6 | 静的 Export 名と解決可能な `Fn::Sub`(`${AWS::StackName}` 等)は解決して export とする | `!Sub "${AWS::StackName}-VpcId"` がスタック名で解決される |
 | §6 | 解決不能な動的合成は警告 | 動的パラメータを含む `Fn::Sub` の Export → export 扱いせず警告を返す |
 | NFR-4(準備) | NoEcho パラメータの抽出 | `Parameters` から `NoEcho: true` のキー一覧を抽出する(マスク適用は T-11) |
+| FR-1-11(a)準備 | scalar な Parameter Default を復旧比較用に文字列化して抽出し、Default なしは含めない | `FR-1-11(a)準備: Parameters Default を文字列化して抽出し Default なしは含めない` |
+| FR-1-11(a) fail-closed | object・array・intrinsic Default を実効値として推測または黙示無視しない | `FR-1-11(a) fail-closed: 非 scalar Default を実効値として推測しない` |
 
 ### T-04 core/state — ステートのスキーマと世代管理(純粋ロジック)
 
@@ -174,7 +176,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-3-1 | リソース単位の Add / Modify / Remove と変更プロパティを表示 | DescribeChangeSet の Changes から種別・プロパティ一覧が整形される |
 | FR-3-2 | Replacement は警告として強調 | `Replacement: True` のリソースが警告表示になる(テキスト・JSON 双方にフラグ) |
 | FR-3-3 | テキストに加え JSON を選択できる | `--output json` で機械可読 JSON(スキーマ検証)が出る |
-| NFR-4 | NoEcho 値をマスク | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) |
+| NFR-4 | NoEcho 値をマスクする。ただし予約済み `REQUIRED_PLACEHOLDER` との完全一致だけは非秘匿 sentinel として置換候補から除外する | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) / `NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない` / `NFR-4: 明示値は template Default より優先して redactor の実効値になる` |
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
 | FR-5-4(契約) | 進捗マイルストーンの型を定義する | `ProgressEvent`(stackKey・region・phase・message)/ `ProgressPhase` の union 型が report/index.ts で定義され、usecase が依存する出力契約に含まれる |
@@ -193,7 +195,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-1-13 | ステートのアカウント ID と接続先の一致を検証 | ロック取得後に再読込したステートの `accountId` 不一致 → 実行拒否 / 初回(未記録)→ 解決したアカウント ID が同一ロック区間の CAS 保存で記録される |
 | FR-13-8 | 対象リージョンは許可リージョンに含まれる | 計画中に `allowedRegions` 外のリージョン → fail-closed エラー |
 | FR-7-7 | 読み取り専用操作は許可設定なしで実行可。接続先を出力 | status / graph は許可設定なしで動作(AWS 呼び出し自体なし: NFR-5)/ import は許可設定なしで動作するがアカウント照合+ロックは必須(T-16) |
-| FR-7-8 | 解決した接続先をログ・JSON に含める(秘匿情報は含めない) | 出力の先頭にアカウント ID・リージョンが含まれ、クレデンシャル文字列が含まれない |
+| FR-7-8 | 解決した接続先をログ・JSON に含め、STS 後の guard 拒否でも解決値を保持する(秘匿情報は含めない) | 出力の先頭にアカウント ID・リージョンが含まれ、クレデンシャル文字列が含まれない / `FR-7-8: STS 解決後の allowedAccounts 不一致でも report.connection は解決済み accountId` / `FR-7-8: STS 解決失敗時だけ connection.accountId は (unresolved)` |
 
 ### T-13 usecase/executor — 変更セットライフサイクル
 
@@ -224,19 +226,21 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-5-3 | `--dry-run` は差分表示までで停止 | `ExecuteChangeSet` が呼ばれず、describe 後に変更セットが削除される(§5.2) |
 | FR-4-1 | 完了まで待機しイベントを逐次出力 | イベントポーリングの逐次出力と完了待機を検証 |
 | FR-4-2 | 失敗時は原因リソースとメッセージを出力し非ゼロ終了 | 失敗イベントから `ResourceStatusReason` が抽出され、終了コード 1 |
-| FR-4-3 | ロールバックの発生と結果を報告 | `UPDATE_ROLLBACK_COMPLETE` への遷移が報告に含まれる |
+| FR-4-3 | ExecuteChangeSet 後に観測した明示 rollback status だけでロールバックの発生と結果を報告 | `UPDATE_ROLLBACK_COMPLETE` への遷移が報告に含まれる / `FR-4-3: ROLLBACK_IN_PROGRESS 観測後に wait が例外終了しても rolledBack true を保持し state 未更新・lock 解放` / `FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false` / `FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false` / `FR-4-3(否定): allowlist 外の *_ROLLBACK_* 類似 status は rolledBack false` / `FR-4-3(JSON): failed StackResult の rolledBack true/false を boolean として保持する` |
+| FR-4-2 / NFR-4(公開本文) | deploy report / progress は未装飾の公開本文だけを使い、cause・NoEcho 実値・stackKey / region 装飾を本文へ昇格させない。分類不能例外は固定文言にする | `FR-4-2/NFR-4 / FR-4-3: ROLLBACK_IN_PROGRESS 観測後の wait 例外は公開本文だけを報告し cause・NoEcho 実値を秘匿する` / `FR-4-2(安全境界): 分類不能な wait 例外は固定の公開文言へ置換する` |
 | FR-1-3 | 成功したスタックのみステート更新 | スタック A 成功・B 失敗 → A のみステート更新、B は前回のまま |
 | **NFR-3(継続)** | **途中失敗後の再実行は成功済みをスキップし、失敗地点から継続** | A 成功・B 失敗の直後の状態からそのまま再実行 → A は `unchanged` となり **A への CreateChangeSet / ExecuteChangeSet が一切呼ばれない**、B から処理が再開して収束する。変種: B の失敗実行が残した変更セットが FR-2-7 の残存回収で処理されること |
 | **FR-13-4** | **テンプレート変更時、設定された全対象リージョンに変更セットを作成** | 2 リージョン設定のテンプレートを変更 → 各リージョンに CreateChangeSet が**ちょうど 1 回ずつ**、リージョン別の実効パラメータ・タグで呼ばれ、設定順に直列実行される |
 | FR-1-9 | 各副作用の直前に fencing 検証。喪失時は中断 | 副作用(変更セット作成・実行・削除、ステート保存)の直前ごとにロック検証が呼ばれる(呼び出し順序検証)/ 完了待機後・CAS 保存直前の検証で所有権喪失 → 保存せず中断 |
 | FR-5-4 | 一括実行の各段階で進捗をスタックキー付きで通知する | CREATE 成功シナリオで `onProgress` が ['changeset-create-start','diff-ready','execute-start','done'] の順に、対象スタックキー付きで呼ばれる / 空変更セットでは ['changeset-create-start','no-change'] で止まる / `--dry-run` では ['changeset-create-start','diff-ready','skipped'] で止まり execute-start/done は呼ばれない |
 | FR-5-4(失敗) | 失敗時の progress メッセージは report と同じ redactor 適用済み文字列を再利用する | NoEcho を含む StatusReason で失敗させた場合、`onProgress` の 'failed' メッセージに実値が含まれない(report.result の errorMessage と同一文字列であることを確認) |
+| NFR-4(Default) | 設定で省略した NoEcho の scalar template Default も redactor の実効値に含める。`inputsHash` は補完しない | `NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする` / `NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする` / `NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする` |
 | FR-5-4(スキップ) | 依存失敗によるスキップも通知する | A 失敗・B が A に依存 → B の `onProgress` に phase 'skipped' が呼ばれる |
 | NFR-1(進捗) | 進捗は標準エラーのみに出力し、`--output json` の標準出力を汚さない | CLI 統合テストで `--output json` 実行中に `onProgress` を複数回発火させても stdout が単一の有効な JSON のままであることを確認(cli.test.ts 側) |
 | FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue` | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行 |
 | FR-1-7(統合) | ロックは正常・異常を問わず終了時に解放 | 成功時・途中エラー時の双方で解放される(所有権喪失時は解放試行が条件不成立で無害) |
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |
-| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否 | プレースホルダ残存 → 当該スタックは検証エラーで実行されない |
+| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` |
 
 ### T-15 usecase/delete — スタック削除
 
@@ -272,6 +276,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-10-10 | スタックが存在しないテンプレートは `added` 扱い | 対応スタックなし → ステートに記録されず、次回 detect で `added` |
 | FR-10-11 | 依存辺の記録 | インポート成功時に exports / imports がステートに記録される(FR-8-5) |
 | FR-13-9 | リージョンごとにインポートできる | 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる |
+| NFR-4(import warning) | import report の warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使い、text 専用診断とは分離する | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
 
 ### T-17 usecase/force-unlock
 
@@ -290,6 +295,9 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | ID | 受け入れ基準(要約) | テストケース |
 |---|---|---|
 | FR-1-11(a) | CREATE 成功+ステート保存失敗 → 再実行で全一致なら再同期 | 保存直前で中断 → 再実行: テンプレート(パース後同値)・実効パラメータ・タグ・Capabilities・**管理タグ**がすべて一致 → デプロイ成功として再同期 |
+| FR-1-11(a) Default 補完 | 希望 template Default を明示設定値より低い優先度で復旧比較にだけ補完する | `FR-1-11(a): 設定省略パラメータをテンプレート Default で補完し CREATE 復旧に成功する` / `FR-1-11(a) 優先順: 明示的な空文字は template Default より優先し実 stack と不一致なら再同期しない` |
+| FR-1-11(a) Default 不一致 | Default 補完後の実効 parameters が実 stack と不一致なら再同期しない | `FR-1-11(a) fail-closed: Default 補完後の実効値が実 stack と不一致なら再同期しない` |
+| FR-1-11(a) Default 比較不能 | 非 scalar Default は deploy 統合経路でも例外を黙殺せず state を保存しない | `FR-1-11(a) fail-closed(統合): 非 scalar Default は再同期せず state を保存しない` |
 | FR-1-11(a) | 管理タグ由来確認は fail-closed | 他が全一致でも管理タグ欠如 → 再同期せずエラー / 別ステート ID の管理タグ → エラー。いずれもインポート案内つき |
 | FR-1-11(a) | 検証不能入力は一致条件から除外し希望値を記録 | dependsOn / NoEcho 実値は比較されず、ローカル希望値が `inputsHash` に記録され、除外項目が出力に明示される |
 | FR-1-11(a) | 不一致は命名衝突としてエラー+インポート案内 | 「タグのみ異なる同名管理外スタック」「Capabilities のみ異なる」「NoEcho 実値のみ異なる(管理タグなし)」の 3 変種 → いずれも再同期されず停止(§10) |
@@ -314,10 +322,20 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
 | FR-12-3 | TTY なしで動作 | 非 TTY 環境でプロンプトなしに完走する |
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
+| FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
+| FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
+| FR-12-6a / FR-12-6b(import診断) | import の JSON warning は安全な本文、text warning は `CfnSyncError.message` の装飾済み診断を使う | `FR-12(import JSON診断): ロック warning の内部 cause を出力しない` / `FR-12(import text診断): ロック warning の装飾済み cause を出力する` |
+| FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
+| FR-12-6c(JSONキャンセル) | TTY の deploy 確認拒否は専用キャンセル result を stdout へ 1 個出し exit 0 | `FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0` |
+| FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12(JSON選択): --output json と --output=json の両記法を認識する` |
+| FR-12-6e(JSON配置) | `--output` はサブコマンドの前後どちらでも有効 | `FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効` |
+| FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12(JSON選択): 複数指定は最後の --output を採用する` |
+| FR-12-6g(JSON誤検出防止) | 他の値付きオプションの値として消費された `--output=json` は JSON 選択ではない | `FR-12(JSON選択): 他オプションの値 --output=json を JSON 指定として扱わない` |
+| FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12(JSON契約外): --help と --version は text を出して exit 0` |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-5-2(オプション) | ローカル向け確認プロンプトはオプトイン | 確認オプション指定時のみプロンプト(既定は非対話) |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |
-| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力 | 結果は stdout、診断・進捗は stderr に分離される |
+| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / `FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0` |
 
 ## 8. M5: ドキュメント・パッケージング
 

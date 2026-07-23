@@ -645,3 +645,46 @@ describe('FR-7-8(出力): 接続先の先頭表示', () => {
     expect(renderJson(rep)).not.toContain('AKIAFAKEEXAMPLE');
   });
 });
+
+describe('FR-4-3: rollback 結果の JSON 表現', () => {
+  it('FR-4-3(JSON): failed StackResult の rolledBack true/false を boolean として保持する', () => {
+    const parsed = JSON.parse(
+      renderJson(
+        report([], {
+          result: {
+            stacks: [
+              {
+                stackKey: `a.yaml@${REGION}`,
+                region: REGION,
+                stackName: 'A',
+                outcome: 'failed',
+                errorMessage: 'rollback observed',
+                rolledBack: true,
+              },
+              {
+                stackKey: `b.yaml@${REGION}`,
+                region: REGION,
+                stackName: 'B',
+                outcome: 'failed',
+                errorMessage: 'failed before rollback',
+                rolledBack: false,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+
+    expect(
+      parsed.result.stacks.map(
+        (stack: { rolledBack: boolean }) => stack.rolledBack,
+      ),
+    ).toEqual([true, false]);
+    expect(
+      parsed.result.stacks.every(
+        (stack: { rolledBack: unknown }) =>
+          typeof stack.rolledBack === 'boolean',
+      ),
+    ).toBe(true);
+  });
+});

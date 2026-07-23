@@ -8,13 +8,15 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { toAwsError } from '../../src/aws/errors.js';
 import { defaultCliDependencies } from '../../src/cli/dependencies.js';
 import {
   type CliDependencies,
   createCliProgram,
   runCli,
 } from '../../src/cli/index.js';
-import type { CfnSyncConfig } from '../../src/core/config.js';
+import { type CfnSyncConfig, validateConfig } from '../../src/core/config.js';
+import { ConfigError } from '../../src/core/errors.js';
 import { createInitialState } from '../../src/core/state.js';
 import type {
   CloudFormationGateway,
@@ -320,6 +322,70 @@ describe('T-19 cli', () => {
     expect(deps.readTemplates).not.toHaveBeenCalled();
   });
 
+  it('FR-12(import JSON診断): ロック warning の内部 cause を出力しない', async () => {
+    const cause = 'AccessDenied: request id import diagnostic';
+    const deps = dependencies({
+      runImport: vi.fn(async () => ({
+        exitCode: 1 as const,
+        report: {
+          connection: report.connection,
+          stacks: [],
+          configWritten: false,
+          stateSaved: false,
+          accountStateInitialized: false,
+          importEntriesSaved: false,
+          aborted: 'lock-unavailable' as const,
+          warnings: [
+            'ステートロックを取得できませんでした: ロック取得に失敗しました',
+          ],
+        },
+        textDiagnostics: [
+          `ステートロックを取得できませんでした: ロック取得に失敗しました (cause: ${cause})`,
+        ],
+      })),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['import', '--output', 'json'], { deps, io: out.io }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout()).warnings).toEqual([
+      'ステートロックを取得できませんでした: ロック取得に失敗しました',
+    ]);
+    expect(out.stdout()).not.toContain(cause);
+    expect(out.stderr()).not.toContain(cause);
+    expect(out.stderr()).toContain('ロック取得に失敗しました');
+  });
+
+  it('FR-12(import text診断): ロック warning の装飾済み cause を出力する', async () => {
+    const cause = 'AccessDenied: request id import diagnostic';
+    const deps = dependencies({
+      runImport: vi.fn(async () => ({
+        exitCode: 1 as const,
+        report: {
+          connection: report.connection,
+          stacks: [],
+          configWritten: false,
+          stateSaved: false,
+          accountStateInitialized: false,
+          importEntriesSaved: false,
+          aborted: 'lock-unavailable' as const,
+          warnings: [
+            'ステートロックを取得できませんでした: ロック取得に失敗しました',
+          ],
+        },
+        textDiagnostics: [
+          `ステートロックを取得できませんでした: ロック取得に失敗しました (cause: ${cause})`,
+        ],
+      })),
+    });
+    const out = capture();
+
+    expect(await runCli(['import'], { deps, io: out.io })).toBe(1);
+    expect(out.stderr()).toContain(`(cause: ${cause})`);
+    expect(out.stdout()).not.toContain(cause);
+  });
+
   it('FR-10-5(統合): import --write-template は既定 loader で不存在テンプレートへ到達して作成する', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cfnsync-import-'));
     const configPath = join(dir, 'cfnsync.yaml');
@@ -390,6 +456,217 @@ describe('T-19 cli', () => {
     }
   });
 
+  it('FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfnsync-config-'));
+    const configPath = join(dir, 'cfnsync.yaml');
+    writeFileSync(
+      configPath,
+      'version: 1\ndefaultRegion: ap-northeast-1\nstacks:\n  app.yaml:\n    regions: ap-northeast-1\n',
+    );
+    const out = capture();
+    try {
+      expect(
+        await runCli(['status', '--config', configPath], {
+          deps: defaultCliDependencies,
+          io: out.io,
+        }),
+      ).toBe(1);
+      expect(out.stderr().split('stacks.app.yaml.regions')).toHaveLength(2);
+      expect(out.stderr().split('(stackKey: app.yaml)')).toHaveLength(2);
+      expect(out.stderr()).not.toContain('"code"');
+      expect(out.stderr()).not.toContain('invalid_type');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない', async () => {
+    const secretCause =
+      'credential=AKIAEXAMPLE NoEchoActualValue=super-secret-value';
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw toAwsError(
+          'CloudFormation DescribeStacks',
+          new Error(secretCause),
+          {
+            stackKey: 'app.yaml@ap-northeast-1',
+            region: 'ap-northeast-1',
+          },
+        );
+      }),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['status', '--output', 'json'], { deps, io: out.io }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout())).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: {
+        type: 'AwsError',
+        message: 'CloudFormation DescribeStacks に失敗しました',
+        stackKey: 'app.yaml@ap-northeast-1',
+        region: 'ap-northeast-1',
+      },
+    });
+    expect(out.stdout()).not.toContain(secretCause);
+    expect(out.stdout()).not.toContain('(stackKey:');
+    expect(out.stdout()).not.toContain('(region:');
+    expect(out.stdout()).not.toContain('(cause:');
+  });
+
+  it('FR-12(text診断): AwsError は SDK cause を従来どおり stderr の診断に含める', async () => {
+    const cause = 'AccessDenied: request id diagnostic';
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw toAwsError('CloudFormation DescribeStacks', new Error(cause), {
+          stackKey: 'app.yaml@ap-northeast-1',
+          region: 'ap-northeast-1',
+        });
+      }),
+    });
+    const out = capture();
+
+    expect(await runCli(['status'], { deps, io: out.io })).toBe(1);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).toContain(
+      'error: CloudFormation DescribeStacks に失敗しました',
+    );
+    expect(out.stderr()).toContain('(stackKey: app.yaml@ap-northeast-1)');
+    expect(out.stderr()).toContain('(region: ap-northeast-1)');
+    expect(out.stderr()).toContain(`(cause: ${cause})`);
+  });
+
+  it('FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0', async () => {
+    const deps = dependencies();
+    const prompt = vi.fn(async () => false);
+    const out = capture();
+
+    expect(
+      await runCli(['deploy', '--confirm', '--output', 'json'], {
+        deps,
+        io: out.io,
+        isTTY: true,
+        prompt,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(out.stdout())).toEqual({
+      exitCode: 0,
+      cancelled: true,
+      message: 'Deployment cancelled.',
+    });
+    expect(out.stderr()).toBe('');
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(deps.deploy).not.toHaveBeenCalled();
+  });
+
+  it('FR-12(textキャンセル): deploy --confirm の拒否は stderr に診断を出して exit 0', async () => {
+    const deps = dependencies();
+    const prompt = vi.fn(async () => false);
+    const out = capture();
+
+    expect(
+      await runCli(['deploy', '--confirm'], {
+        deps,
+        io: out.io,
+        isTTY: true,
+        prompt,
+      }),
+    ).toBe(0);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).toBe('Deployment cancelled.\n');
+    expect(deps.deploy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['分離記法', ['status', '--output', 'json']],
+    ['equals 記法', ['status', '--output=json']],
+  ] as const)('FR-12(JSON選択): --output json と --output=json の両記法を認識する（%s）', async (_label, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('JSON selection error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+  });
+
+  it.each([
+    ['サブコマンド前', ['--output', 'json', 'status']],
+    ['サブコマンド後', ['status', '--output', 'json']],
+  ] as const)('FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効（%s）', async (_label, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('JSON placement error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+  });
+
+  it.each([
+    ['最後が text', ['status', '--output', 'json', '--output', 'text'], false],
+    ['最後が json', ['status', '--output', 'text', '--output=json'], true],
+  ] as const)('FR-12(JSON選択): 複数指定は最後の --output を採用する（%s）', async (_label, args, jsonExpected) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('last output wins');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    if (jsonExpected) {
+      expect(JSON.parse(out.stdout()).error.type).toBe('ConfigError');
+      expect(out.stderr()).toBe('');
+    } else {
+      expect(out.stdout()).toBe('');
+      expect(out.stderr()).toContain('last output wins');
+    }
+  });
+
+  it.each([
+    ['--config', ['status', '--config', '--output=json']],
+    ['--profile', ['status', '--profile', '--output=json']],
+    ['--region', ['status', '--region', '--output=json']],
+    ['--output', ['status', '--output', '--output=json']],
+    ['--on-failure', ['deploy', '--on-failure', '--output=json']],
+    ['--reconcile', ['import', '--reconcile', '--output=json']],
+  ] as const)('FR-12(JSON選択): 他オプション %s の値 --output=json を JSON 指定として扱わない', async (_option, args) => {
+    const out = capture();
+    const deps = dependencies({
+      loadConfig: vi.fn(() => {
+        throw new ConfigError('text selection error');
+      }),
+    });
+
+    expect(await runCli([...args], { deps, io: out.io })).toBe(1);
+    expect(out.stdout()).toBe('');
+    expect(out.stderr()).not.toBe('');
+  });
+
+  it.each([
+    ['--help', ['status', '--output', 'json', '--help'], 'Usage:'],
+    ['--version', ['--output=json', '--version'], undefined],
+  ] as const)('FR-12(JSON契約外): %s は text を出して exit 0', async (_option, args, expectedText) => {
+    const out = capture();
+
+    expect(await runCli([...args], { deps: dependencies(), io: out.io })).toBe(
+      0,
+    );
+    expect(out.stdout()).not.toBe('');
+    if (expectedText !== undefined) {
+      expect(out.stdout()).toContain(expectedText);
+    }
+    expect(() => JSON.parse(out.stdout())).toThrow();
+    expect(out.stderr()).toBe('');
+  });
+
   it('NFR-5: status は state backend を読むが CloudFormation / STS factory を呼ばない', async () => {
     const deps = dependencies();
     const out = capture();
@@ -448,6 +725,143 @@ describe('T-19 cli', () => {
     expect(await runCli(['graph'], { deps, io: out.io })).toBe(1);
     expect(out.stderr()).toContain('a.yaml@ap-northeast-1');
     expect(out.stdout()).toBe('');
+  });
+
+  it('FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1', async () => {
+    const cyclic: CfnSyncConfig = {
+      ...config,
+      stacks: {
+        'a.yaml': {
+          ...config.stacks['app.yaml'],
+          stackName: 'a',
+          dependsOn: ['b.yaml'],
+        },
+        'b.yaml': {
+          ...config.stacks['app.yaml'],
+          stackName: 'b',
+          dependsOn: ['a.yaml'],
+        },
+      },
+    };
+    const scenarios: {
+      args: string[];
+      deps: CliDependencies;
+      type: string;
+      stackKey?: string;
+      region?: string;
+    }[] = [
+      {
+        args: ['status', '--output', 'json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() => {
+            throw new ConfigError('設定ファイルを読み込めません', {
+              cause: new Error('ENOENT credential-do-not-leak'),
+            });
+          }),
+        }),
+        type: 'ConfigError',
+      },
+      {
+        args: ['status', '--output=json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() =>
+            validateConfig({
+              version: 1,
+              defaultRegion: 'ap-northeast-1',
+              stacks: {
+                'app.yaml': { regions: 'ap-northeast-1' },
+              },
+            }),
+          ),
+        }),
+        type: 'ConfigError',
+        stackKey: 'app.yaml',
+      },
+      {
+        args: ['graph', '--output', 'json'],
+        deps: dependencies({
+          loadConfig: vi.fn(() => cyclic),
+          readTemplates: vi.fn(
+            () =>
+              new Map([
+                ['a.yaml', 'Resources: {}'],
+                ['b.yaml', 'Resources: {}'],
+              ]),
+          ),
+        }),
+        type: 'DependencyCycleError',
+        region: 'ap-northeast-1',
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const out = capture();
+      expect(
+        await runCli(scenario.args, { deps: scenario.deps, io: out.io }),
+      ).toBe(1);
+      const payload = JSON.parse(out.stdout()) as {
+        ok: boolean;
+        exitCode: number;
+        error: Record<string, unknown>;
+      };
+      expect(payload).toEqual({
+        ok: false,
+        exitCode: 1,
+        error: {
+          type: scenario.type,
+          message: expect.any(String),
+          ...(scenario.stackKey === undefined
+            ? {}
+            : { stackKey: scenario.stackKey }),
+          ...(scenario.region === undefined ? {} : { region: scenario.region }),
+        },
+      });
+      expect(out.stdout()).not.toContain('credential-do-not-leak');
+      expect(out.stdout()).not.toContain('"code"');
+      expect(out.stdout()).not.toContain('invalid_type');
+      expect(out.stdout()).not.toContain('"cause"');
+      expect(out.stdout()).not.toContain('"stack"');
+    }
+  });
+
+  it('FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1', async () => {
+    for (const args of [
+      ['deploy', '--on-failure', 'bogus', '--output', 'json'],
+      ['unknown-command', '--output=json'],
+    ]) {
+      const out = capture();
+      expect(await runCli(args, { deps: dependencies(), io: out.io })).toBe(1);
+      expect(JSON.parse(out.stdout())).toEqual({
+        ok: false,
+        exitCode: 1,
+        error: {
+          type: 'CliUsageError',
+          message: expect.any(String),
+        },
+      });
+      expect(out.stderr()).toContain('error:');
+    }
+  });
+
+  it('FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す', async () => {
+    const result = {
+      exitCode: 1 as const,
+      released: false,
+      message: '指定した実行 ID は現在のロックと一致しません。',
+    };
+    const deps = dependencies({
+      forceUnlock: vi.fn(async () => result),
+    });
+    const out = capture();
+
+    expect(
+      await runCli(['force-unlock', 'run-123', '--output', 'json'], {
+        deps,
+        io: out.io,
+      }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout())).toEqual(result);
+    expect(out.stderr()).toBe('');
   });
 
   it.each([

@@ -35,4 +35,31 @@ describe('NoEcho usecase redactor', () => {
       'raw=**** json=**** uri=****',
     );
   });
+
+  it('NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない', () => {
+    const sentinelRedactor = createNoEchoRedactor({ Secret: '__REQUIRED__' }, [
+      'Secret',
+    ]);
+    const partialMatchRedactor = createNoEchoRedactor(
+      { Secret: 'prefix__REQUIRED__suffix' },
+      ['Secret'],
+    );
+
+    expect(
+      sentinelRedactor('必須パラメータに __REQUIRED__ が残っています: Secret'),
+    ).toBe('必須パラメータに __REQUIRED__ が残っています: Secret');
+    expect(partialMatchRedactor('prefix__REQUIRED__suffix')).toBe('****');
+  });
+
+  it('NFR-4: 明示値は template Default より優先して redactor の実効値になる', () => {
+    const redact = createNoEchoRedactor(
+      { Secret: 'configured-secret' },
+      ['Secret'],
+      { Secret: 'default-secret' },
+    );
+
+    expect(redact('configured-secret / default-secret')).toBe(
+      '**** / default-secret',
+    );
+  });
 });

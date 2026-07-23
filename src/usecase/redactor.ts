@@ -5,6 +5,8 @@
  * 空文字・4 文字未満は一般的な断片まで過剰にマスクするため対象外とする。
  */
 
+import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
+
 export type TextRedactor = (text: string) => string;
 
 export const identityRedactor: TextRedactor = (text) => text;
@@ -12,13 +14,18 @@ export const identityRedactor: TextRedactor = (text) => text;
 export function createNoEchoRedactor(
   parameters: Record<string, string>,
   noEchoParams: string[],
+  templateDefaults: Record<string, string> = {},
 ): TextRedactor {
+  const effectiveParameters = { ...templateDefaults, ...parameters };
   const rawValues = [
     ...new Set(
       noEchoParams
-        .map((name) => parameters[name])
+        .map((name) => effectiveParameters[name])
         .filter(
-          (value): value is string => value !== undefined && value.length >= 4,
+          (value): value is string =>
+            value !== undefined &&
+            value.length >= 4 &&
+            value !== REQUIRED_PLACEHOLDER,
         ),
     ),
   ];

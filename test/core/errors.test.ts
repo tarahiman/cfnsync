@@ -13,6 +13,7 @@ describe('core/errors', () => {
     expect(error.message).toContain('stackKey: app.yaml@ap-northeast-1');
     expect(error.message).toContain('region: ap-northeast-1');
     expect(error.message).toContain('cause: sdk failure');
+    expect(error.publicMessage).toBe('AWS 操作失敗');
     expect(error.cause).toBe(cause);
   });
 

@@ -14,6 +14,7 @@ function causeMessage(cause: unknown): string {
 }
 
 export class CfnSyncError extends Error {
+  readonly publicMessage: string;
   readonly stackKey?: string;
   readonly region?: string;
 
@@ -29,6 +30,7 @@ export class CfnSyncError extends Error {
       context.cause !== undefined ? { cause: context.cause } : undefined,
     );
     this.name = new.target.name;
+    this.publicMessage = message;
     this.stackKey = context.stackKey;
     this.region = context.region;
   }

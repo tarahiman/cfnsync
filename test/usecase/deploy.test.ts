@@ -16,6 +16,7 @@ import {
   computeInputsHash,
   computeTemplateHash,
 } from '../../src/core/detect.js';
+import { AwsError } from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -80,6 +81,19 @@ Parameters:
   Secret:
     Type: String
     NoEcho: true
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`;
+
+const DEFAULT_SECRET = 'Default-NoEcho-Secret-Value';
+const TEMPLATE_SECRET_DEFAULT = `
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Secret:
+    Type: String
+    NoEcho: true
+    Default: ${DEFAULT_SECRET}
 Resources:
   Bucket:
     Type: AWS::S3::Bucket
@@ -269,6 +283,50 @@ function mutationOrder(fake: FakeCloudFormationGateway): string[] {
 }
 
 describe('deploy — T-14 integration', () => {
+  it('FR-7-8: STS 解決後の allowedAccounts 不一致でも report.connection は解決済み accountId', async () => {
+    const config = validateConfig({
+      version: 1,
+      defaultRegion: REGION,
+      allowedAccounts: ['999999999999'],
+      allowedRegions: [REGION],
+      stacks: { 'a.yaml': { stackName: 'A' } },
+    });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.connection.accountId).toBe(ACCOUNT);
+    expect(s.backend.calls).toHaveLength(0);
+    expect(s.gateways.size).toBe(0);
+  });
+
+  it('FR-7-8: STS 解決失敗時だけ connection.accountId は (unresolved)', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const backend = new FakeStateBackend([], undefined, STATE_ID);
+    const cfn = new FakeCloudFormationGateway();
+
+    const result = await deploy({
+      config,
+      templates: templatesOf({ 'a.yaml': TEMPLATE_A }),
+      deps: {
+        cfnFactory: () => cfn,
+        sts: {
+          async getCallerIdentity() {
+            throw new Error('STS unavailable');
+          },
+        },
+        backend,
+      },
+      options: {},
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.connection.accountId).toBe('(unresolved)');
+    expect(backend.calls).toHaveLength(0);
+    expect(cfn.calls).toHaveLength(0);
+  });
+
   it('NFR-5: added スタックの復旧判定で取得した DescribeStacks 結果を状態ガードへ引き渡す', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
@@ -447,6 +505,217 @@ describe('deploy — T-14 integration', () => {
     ).toBe(oldBHash);
   });
 
+  it('FR-4-2/NFR-4 / FR-4-3: ROLLBACK_IN_PROGRESS 観測後の wait 例外は公開本文だけを報告し cause・NoEcho 実値を秘匿する', async () => {
+    const secret = 'NoEcho-Actual-Value';
+    const causeMarker = 'INTERNAL_CAUSE_MARKER';
+    const config = configOf({
+      'secret.yaml': {
+        stackName: 'SecretStack',
+        parameters: { Secret: secret },
+      },
+    });
+    const templates = templatesOf({ 'secret.yaml': TEMPLATE_SECRET });
+    const initial = recordedState(config, templates, { modified: true });
+    const oldHash = initial.stacks[`secret.yaml@${REGION}`].inputsHash;
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'rollback-started',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'SecretStack',
+        resourceType: 'AWS::CloudFormation::Stack',
+        resourceStatus: 'ROLLBACK_IN_PROGRESS',
+        resourceStatusReason: 'rollback started',
+      },
+    ]);
+    const waitForStack = fake.waitForStack.bind(fake);
+    fake.waitForStack = async (stackName, options) => {
+      await waitForStack(stackName, options);
+      throw new AwsError('CloudFormation DescribeStackEvents に失敗しました', {
+        stackKey: `internal-secret.yaml@${REGION}`,
+        region: REGION,
+        cause: new Error(`${causeMarker}: credential=${secret}`),
+      });
+    };
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'SecretStack',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+    const failedProgress = s.progress.find(
+      (progress) =>
+        progress.stackKey === `secret.yaml@${REGION}` &&
+        progress.phase === 'failed',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      stackKey: `secret.yaml@${REGION}`,
+      region: REGION,
+      outcome: 'failed',
+      errorMessage: 'CloudFormation DescribeStackEvents に失敗しました',
+      rolledBack: true,
+    });
+    expect(failed?.errorMessage).not.toContain(causeMarker);
+    expect(failed?.errorMessage).not.toContain(secret);
+    expect(failed?.errorMessage).not.toContain('(stackKey:');
+    expect(failed?.errorMessage).not.toContain('(region:');
+    expect(json).not.toContain(causeMarker);
+    expect(json).not.toContain(secret);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(text).toContain(`secret.yaml@${REGION}`);
+    expect(text).toContain('CloudFormation DescribeStackEvents に失敗しました');
+    expect(text).toContain('ROLLBACK_IN_PROGRESS');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(
+      s.backend.stored?.state.stacks[`secret.yaml@${REGION}`].inputsHash,
+    ).toBe(oldHash);
+    expect(s.backend.releaseCalls).toBe(1);
+  });
+
+  it('FR-4-2(安全境界): 分類不能な wait 例外は固定の公開文言へ置換する', async () => {
+    const internalMarker = 'UNCLASSIFIED_INTERNAL_MARKER';
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const waitForStack = fake.waitForStack.bind(fake);
+    fake.waitForStack = async (stackName, options) => {
+      await waitForStack(stackName, options);
+      throw new Error(internalMarker);
+    };
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      outcome: 'failed',
+      errorMessage: 'CloudFormation スタックの完了待機に失敗しました',
+      rolledBack: false,
+    });
+    expect(failed?.errorMessage).not.toContain(internalMarker);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
+  it('FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        status: 'ROLLBACK_COMPLETE',
+      }),
+    );
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('A', [
+      {
+        eventId: 'failed-with-text',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'BucketA',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason:
+          'ROLLBACK is mentioned only as troubleshooting guidance',
+      },
+    ]);
+    fake.waitResults.set('A', [
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_FAILED',
+        statusReason: 'ROLLBACK was not observed',
+      }),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
+  });
+
+  it('FR-4-3(否定): allowlist 外の *_ROLLBACK_* 類似 status は rolledBack false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('A', [
+      {
+        eventId: 'unknown-rollback-like-status',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'A',
+        resourceType: 'AWS::CloudFormation::Stack',
+        resourceStatus: 'UPDATE_ROLLBACK_PAUSED',
+        resourceStatusReason: 'unknown status must not imply rollback',
+      },
+    ]);
+    fake.waitResults.set('A', [
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_FAILED',
+      }),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
+  });
+
   it('NFR-4: ResourceStatusReason と最終 errorMessage の NoEcho 実値を text/JSON 格納前にマスクする', async () => {
     const secret = 'S3cr3t-Value-From-Config';
     const config = configOf({
@@ -492,6 +761,137 @@ describe('deploy — T-14 integration', () => {
     expect(json).toContain('****');
     expect(s.emitted[0].resourceStatusReason).toContain('****');
     expect(s.emitted[0].resourceStatusReason).not.toContain(secret);
+  });
+
+  it('NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'default-secret-failure',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason: `event rejected ${DEFAULT_SECRET}`,
+      },
+    ]);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+      }),
+    ]);
+
+    const result = await s.run();
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(s.emitted[0].resourceStatusReason).toContain('****');
+    expect(s.emitted[0].resourceStatusReason).not.toContain(DEFAULT_SECRET);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
+    expect(fake.callsOf('createChangeSet')[0].args[0]).toMatchObject({
+      parameters: {},
+    });
+  });
+
+  it('NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason: `change set rejected ${DEFAULT_SECRET}`,
+      changes: [],
+    });
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failed?.errorMessage).not.toContain(DEFAULT_SECRET);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
+  });
+
+  it('NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+        statusReason: `final status rejected ${DEFAULT_SECRET}`,
+      }),
+    ]);
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failed?.errorMessage).not.toContain(DEFAULT_SECRET);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
   });
 
   it('NFR-3(継続): A 成功・B 失敗後の再実行は A を完全スキップし、B の自変更セットを回収して収束する', async () => {
@@ -808,7 +1208,7 @@ describe('deploy — T-14 integration', () => {
     );
   });
 
-  it('§8.2: __REQUIRED__ 残存スタックだけを検証エラーで除外し、他スタックは実行する', async () => {
+  it('§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A', parameters: { Secret: '__REQUIRED__' } },
       'c.yaml': { stackName: 'C' },
@@ -829,16 +1229,28 @@ describe('deploy — T-14 integration', () => {
     const created = fake
       .callsOf('createChangeSet')
       .map((call) => (call.args[0] as { stackName: string }).stackName);
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
 
     expect(result.exitCode).toBe(1);
     expect(created).toEqual(['C']);
-    expect(result.report.result?.stacks).toContainEqual(
-      expect.objectContaining({
-        stackName: 'A',
-        outcome: 'failed',
-        errorMessage: expect.stringContaining('Secret'),
-      }),
+    expect(failed).toEqual(
+      expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
     );
+    expect(failed?.errorMessage).toContain('__REQUIRED__');
+    expect(failed?.errorMessage).toContain('Secret');
+    expect(failed?.errorMessage).not.toContain('****');
+    expect(
+      fake
+        .callsOf('createChangeSet')
+        .filter(
+          (call) => (call.args[0] as { stackName: string }).stackName === 'A',
+        ),
+    ).toHaveLength(0);
+    expect(
+      fake.callsOf('executeChangeSet').filter((call) => call.args[0] === 'A'),
+    ).toHaveLength(0);
   });
 
   it('FR-9-2(__REQUIRED__再レビュー⑥): 必須値不足を計画失敗として AWS 前に依存下流を skipped にする', async () => {

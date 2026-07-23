@@ -23,6 +23,7 @@ import {
   detectChanges,
 } from '../core/detect.js';
 import {
+  CfnSyncError,
   ConfigError,
   InvariantError,
   LockError,
@@ -50,6 +51,8 @@ import {
 } from '../core/state.js';
 import {
   analyzeStaticTemplate,
+  extractParameterDefaults,
+  extractScalarParameterDefaults,
   parseCfnTemplate,
   parsedTemplatesEquivalent,
   resolveStaticTemplateAnalysis,
@@ -166,6 +169,17 @@ interface OperationResult {
   failed?: boolean;
 }
 
+/** ExecuteChangeSet 後に観測した構造化 rollback 情報を report 境界まで保持する。 */
+class StackExecutionFailure extends StackStateError {
+  constructor(
+    message: string,
+    readonly rolledBack: boolean,
+    context: { stackKey?: string; region?: string; cause?: unknown } = {},
+  ) {
+    super(message, context);
+  }
+}
+
 // ===========================================================================
 // deploy 公開入口
 // ===========================================================================
@@ -194,12 +208,12 @@ export async function deploy(input: {
   try {
     assertMutationAllowed(config);
     const resolved = await resolveConnection(deps.sts);
-    assertAccountAllowed(config, resolved.accountId);
-    assertRegionsAllowed(config, targetRegions);
     connection = connectionHeader({
       accountId: resolved.accountId,
       regions: targetRegions,
     });
+    assertAccountAllowed(config, resolved.accountId);
+    assertRegionsAllowed(config, targetRegions);
   } catch (error) {
     return failedBeforeLock(connection, required, targets, error);
   }
@@ -471,7 +485,11 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     analyses.set(target.stackKey, analysis);
     redactors.set(
       target.stackKey,
-      createNoEchoRedactor(target.parameters, analysis.noEchoParams),
+      createNoEchoRedactor(
+        target.parameters,
+        analysis.noEchoParams,
+        extractScalarParameterDefaults(parsed),
+      ),
     );
     currentNodes.push({
       stackKey: target.stackKey,
@@ -704,6 +722,7 @@ async function processCreateOrUpdate(
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
   let latestFailure: StackEventLine | undefined;
+  let rollbackObserved = false;
   emitProgress(
     ctx.deps,
     operation.stackKey,
@@ -727,26 +746,45 @@ async function processCreateOrUpdate(
         }
       : undefined,
   );
-  const final = await cfn.waitForStack(target.stackName, {
-    eventCursor,
-    onEvent: (event) => {
-      const line: StackEventLine = {
+  let final: Awaited<ReturnType<CloudFormationGateway['waitForStack']>>;
+  try {
+    final = await cfn.waitForStack(target.stackName, {
+      eventCursor,
+      onEvent: (event) => {
+        if (isRollbackStatus(event.resourceStatus)) rollbackObserved = true;
+        const line: StackEventLine = {
+          stackKey: operation.stackKey,
+          region: operation.region,
+          timestamp: event.timestamp,
+          logicalResourceId: event.logicalResourceId,
+          resourceType: event.resourceType,
+          resourceStatus: event.resourceStatus,
+          resourceStatusReason:
+            event.resourceStatusReason === undefined
+              ? undefined
+              : redact(event.resourceStatusReason),
+        };
+        if (event.resourceStatus.endsWith('_FAILED')) latestFailure = line;
+        report.events?.push(line);
+        ctx.deps.onEvent?.(line);
+      },
+    });
+  } catch (cause) {
+    throw new StackExecutionFailure(
+      redact(
+        publicErrorMessage(
+          cause,
+          'CloudFormation スタックの完了待機に失敗しました',
+        ),
+      ),
+      rollbackObserved,
+      {
         stackKey: operation.stackKey,
         region: operation.region,
-        timestamp: event.timestamp,
-        logicalResourceId: event.logicalResourceId,
-        resourceType: event.resourceType,
-        resourceStatus: event.resourceStatus,
-        resourceStatusReason:
-          event.resourceStatusReason === undefined
-            ? undefined
-            : redact(event.resourceStatusReason),
-      };
-      if (event.resourceStatus.endsWith('_FAILED')) latestFailure = line;
-      report.events?.push(line);
-      ctx.deps.onEvent?.(line);
-    },
-  });
+        cause,
+      },
+    );
+  }
 
   if (!isSuccessfulTerminal(final.status)) {
     const cause = latestFailure;
@@ -756,8 +794,9 @@ async function processCreateOrUpdate(
         ? final.status
         : redact(final.statusReason));
     const resource = cause ? `${cause.logicalResourceId}: ` : '';
-    throw new StackStateError(
+    throw new StackExecutionFailure(
       `${resource}${reason} (final status: ${final.status})`,
+      rollbackObserved || isRollbackStatus(final.status),
       {
         stackKey: operation.stackKey,
         region: operation.region,
@@ -839,6 +878,7 @@ async function processDeleted(
       stackName: stateEntry.stackName,
       outcome: 'failed',
       errorMessage: diff.warnings[diff.warnings.length - 1],
+      rolledBack: false,
     });
     emitProgress(
       ctx.deps,
@@ -939,6 +979,7 @@ async function processDeleted(
       stackName: stateEntry.stackName,
       outcome: 'failed',
       errorMessage: deleted.errorMessage,
+      rolledBack: false,
     });
     emitProgress(
       ctx.deps,
@@ -989,28 +1030,31 @@ async function recoverExistingCreate(
   const deployedTemplate = await cfn.getTemplate(target.stackName, 'Original');
   const stateId = ctx.deps.backend.stateId();
   const desiredTags = { ...target.tags, [MANAGEMENT_TAG_KEY]: stateId };
+
+  let templateMatches: boolean;
+  let templateDefaults: Record<string, string>;
+  try {
+    const parsedDesired = desiredParsed ?? parseCfnTemplate(source);
+    templateDefaults = extractParameterDefaults(parsedDesired);
+    templateMatches = parsedTemplatesEquivalent(
+      parsedDesired,
+      parseCfnTemplate(deployedTemplate),
+    );
+  } catch (cause) {
+    throw new StackStateError(
+      `同名スタック '${target.stackName}' のテンプレート同値性または Parameter Default を検証できません(fail-closed)。` +
+        `cfnsync import を実行してください`,
+      { stackKey: target.stackKey, region: target.region, cause },
+    );
+  }
   const verifiableDesiredParameters = omitKeys(
-    target.parameters,
+    { ...templateDefaults, ...target.parameters },
     analysis.noEchoParams,
   );
   const verifiableActualParameters = omitKeys(
     existing.parameters,
     analysis.noEchoParams,
   );
-
-  let templateMatches: boolean;
-  try {
-    templateMatches = parsedTemplatesEquivalent(
-      desiredParsed ?? parseCfnTemplate(source),
-      parseCfnTemplate(deployedTemplate),
-    );
-  } catch (cause) {
-    throw new StackStateError(
-      `同名スタック '${target.stackName}' のテンプレート同値性を検証できません(fail-closed)。` +
-        `cfnsync import を実行してください`,
-      { stackKey: target.stackKey, region: target.region, cause },
-    );
-  }
 
   const matches =
     existing.tags[MANAGEMENT_TAG_KEY] === stateId &&
@@ -1219,6 +1263,23 @@ function isSuccessfulTerminal(status: string): boolean {
   );
 }
 
+const ROLLBACK_STATUSES = new Set([
+  'ROLLBACK_IN_PROGRESS',
+  'ROLLBACK_COMPLETE',
+  'ROLLBACK_FAILED',
+  'UPDATE_ROLLBACK_IN_PROGRESS',
+  'UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS',
+  'UPDATE_ROLLBACK_COMPLETE',
+  'UPDATE_ROLLBACK_FAILED',
+  'IMPORT_ROLLBACK_IN_PROGRESS',
+  'IMPORT_ROLLBACK_COMPLETE',
+  'IMPORT_ROLLBACK_FAILED',
+]);
+
+function isRollbackStatus(status: string): boolean {
+  return ROLLBACK_STATUSES.has(status);
+}
+
 function now(deps: DeployDeps): Date {
   return (deps.now ?? (() => new Date()))();
 }
@@ -1307,8 +1368,9 @@ function failedOperationResult(
   redact: TextRedactor = identityRedactor,
 ): StackResult {
   const result = resultForOperation(operation, 'failed');
-  result.errorMessage = redact(errorMessage(error));
-  result.rolledBack = /ROLLBACK/i.test(result.errorMessage);
+  result.errorMessage = redact(publicErrorMessage(error));
+  result.rolledBack =
+    error instanceof StackExecutionFailure ? error.rolledBack : false;
   return result;
 }
 
@@ -1326,6 +1388,7 @@ function requiredResults(
       stackName: target?.stackName ?? stackKey,
       outcome: 'failed',
       errorMessage: `必須パラメータに __REQUIRED__ が残っています: ${names.join(', ')}`,
+      rolledBack: false,
     };
   });
 }
@@ -1359,7 +1422,8 @@ function failureResult(
             region: connection.regions[0] ?? '(none)',
             stackName: '(deploy)',
             outcome: 'failed',
-            errorMessage: errorMessage(error),
+            errorMessage: publicErrorMessage(error),
+            rolledBack: false,
           },
         ],
       },
@@ -1377,13 +1441,17 @@ function appendDeployFailure(
     region: result.report.connection.regions[0] ?? '(none)',
     stackName: '(deploy)',
     outcome: 'failed',
-    errorMessage: `ロック解放に失敗しました: ${errorMessage(error)}`,
+    errorMessage: `ロック解放に失敗しました: ${publicErrorMessage(error)}`,
+    rolledBack: false,
   });
   result.report.result = { stacks };
   result.exitCode = 1;
   return result;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function publicErrorMessage(
+  error: unknown,
+  fallback = '予期しないエラーが発生しました',
+): string {
+  return error instanceof CfnSyncError ? error.publicMessage : fallback;
 }

@@ -36,6 +36,7 @@ import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
 import { resolveDependsOnKey } from '../core/dependency.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import {
+  CfnSyncError,
   GuardError,
   InvariantError,
   LockError,
@@ -150,6 +151,11 @@ export interface ImportReport {
 export interface ImportResult {
   exitCode: 0 | 1;
   report: ImportReport;
+  /**
+   * text 出力専用の診断。JSON に直列化する report から内部 cause を分離する。
+   * 省略時は report.warnings をそのまま text warning として使用する。
+   */
+  textDiagnostics?: string[];
 }
 
 // ===========================================================================
@@ -199,13 +205,17 @@ export async function runImport(input: {
           if (err instanceof GuardError) {
             return {
               exitCode: 1,
-              report: emptyReport(header, 'account-mismatch', err.message),
+              report: emptyReport(
+                header,
+                'account-mismatch',
+                err.publicMessage,
+              ),
             };
           }
           if (err instanceof LockError) {
             return {
               exitCode: 1,
-              report: emptyReport(header, 'ownership-lost', err.message),
+              report: emptyReport(header, 'ownership-lost', err.publicMessage),
             };
           }
           throw err;
@@ -229,9 +239,13 @@ export async function runImport(input: {
           ...result.report,
           warnings: [
             ...result.report.warnings,
-            `ロック解放に失敗しました: ${error instanceof Error ? error.message : String(error)}`,
+            `ロック解放に失敗しました: ${publicWarningMessage(error)}`,
           ],
         },
+        textDiagnostics: [
+          ...(result.textDiagnostics ?? result.report.warnings),
+          `ロック解放に失敗しました: ${textDiagnosticMessage(error)}`,
+        ],
       }),
     });
   } catch (err) {
@@ -241,8 +255,11 @@ export async function runImport(input: {
         report: emptyReport(
           header,
           'lock-unavailable',
-          `ステートロックを取得できませんでした: ${err.message}`,
+          `ステートロックを取得できませんでした: ${err.publicMessage}`,
         ),
+        textDiagnostics: [
+          `ステートロックを取得できませんでした: ${err.message}`,
+        ],
       };
     }
     throw err;
@@ -820,4 +837,16 @@ function emptyReport(
     aborted,
     warnings: [message],
   };
+}
+
+function publicWarningMessage(error: unknown): string {
+  return error instanceof CfnSyncError
+    ? error.publicMessage
+    : '予期しないエラーが発生しました';
+}
+
+function textDiagnosticMessage(error: unknown): string {
+  return error instanceof CfnSyncError
+    ? error.message
+    : '予期しないエラーが発生しました';
 }

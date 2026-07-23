@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { Command, Option } from 'commander';
 
+import { renderCliError } from '../usecase/cliBoundary.js';
 import {
   type CliIo,
   type CommonOptions,
@@ -46,6 +47,8 @@ interface Runtime extends Required<Omit<RunCliOptions, 'deps' | 'env'>> {
   deps: CliDependencies;
   env: NodeJS.ProcessEnv;
   exitCode: ExitCode;
+  jsonRequested: boolean;
+  errorEmitted: boolean;
 }
 
 const defaultIo: CliIo = {
@@ -63,6 +66,56 @@ function commonOptions(command: Command): CommonOptions {
   return options;
 }
 
+function detectJsonOutput(argv: string[]): boolean {
+  const valueOptions = new Set([
+    '--config',
+    '--profile',
+    '--region',
+    '--output',
+    '--on-failure',
+    '--reconcile',
+  ]);
+  let jsonRequested = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--') break;
+    if (valueOptions.has(arg)) {
+      if (arg === '--output') {
+        jsonRequested = argv[index + 1] === 'json';
+      }
+      index += 1;
+      continue;
+    }
+    const equals = arg.indexOf('=');
+    if (equals === -1) continue;
+    const option = arg.slice(0, equals);
+    if (!valueOptions.has(option)) continue;
+    if (option === '--output') {
+      jsonRequested = arg.slice(equals + 1) === 'json';
+    }
+  }
+  return jsonRequested;
+}
+
+function writeError(
+  runtime: Runtime,
+  error: unknown,
+  usageError = false,
+): void {
+  if (runtime.errorEmitted) return;
+  runtime.errorEmitted = true;
+  if (runtime.jsonRequested) {
+    runtime.io.stdout(
+      `${renderCliError(error, usageError ? 'CliUsageError' : undefined)}\n`,
+    );
+    return;
+  }
+  if (!usageError) {
+    const message = error instanceof Error ? error.message : String(error);
+    runtime.io.stderr(`error: ${message}\n`);
+  }
+}
+
 function invoke(
   runtime: Runtime,
   action: () => Promise<ExitCode>,
@@ -72,8 +125,7 @@ function invoke(
       runtime.exitCode = await action();
     } catch (error) {
       runtime.exitCode = 1;
-      const message = error instanceof Error ? error.message : String(error);
-      runtime.io.stderr(`error: ${message}\n`);
+      writeError(runtime, error);
     }
   };
 }
@@ -103,6 +155,8 @@ export function createCliProgram(
       Boolean(process.stdin.isTTY && process.stderr.isTTY),
     prompt: runtimeOverrides.prompt ?? defaultConfirm,
     exitCode: 0,
+    jsonRequested: false,
+    errorEmitted: false,
   };
   const program = new Command()
     .name('cfnsync')
@@ -156,7 +210,18 @@ export function createCliProgram(
             runtime.isTTY &&
             !(await runtime.prompt('Proceed with the deployment?'))
           ) {
-            runtime.io.stderr('Deployment cancelled.\n');
+            const message = 'Deployment cancelled.';
+            if (runtime.jsonRequested) {
+              runtime.io.stdout(
+                `${JSON.stringify(
+                  { exitCode: 0, cancelled: true, message },
+                  null,
+                  2,
+                )}\n`,
+              );
+            } else {
+              runtime.io.stderr(`${message}\n`);
+            }
             return 0;
           }
           return runDeployment(runtime, {
@@ -216,6 +281,7 @@ export async function runCli(
   );
   const runtime = (program as Command & { __cfnsyncRuntime: Runtime })
     .__cfnsyncRuntime;
+  runtime.jsonRequested = detectJsonOutput(argv);
   program.configureOutput({
     writeOut: runtime.io.stdout,
     writeErr: runtime.io.stderr,
@@ -226,6 +292,7 @@ export async function runCli(
     const commanderError = error as { exitCode?: number; message?: string };
     if (commanderError.exitCode === 0) return 0;
     runtime.exitCode = 1;
+    writeError(runtime, error, true);
   }
   return runtime.exitCode;
 }

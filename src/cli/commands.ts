@@ -237,7 +237,11 @@ export async function runImporter(
       writeTemplate: options.writeTemplate === true,
     },
   });
-  for (const warning of result.report.warnings)
+  const warnings =
+    options.output === 'json'
+      ? result.report.warnings
+      : (result.textDiagnostics ?? result.report.warnings);
+  for (const warning of warnings)
     writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
@@ -265,7 +269,9 @@ export async function runForceUnlock(
     runId,
   });
   writeLine(
-    result.exitCode === 0 ? ctx.io.stdout : ctx.io.stderr,
+    options.output === 'json' || result.exitCode === 0
+      ? ctx.io.stdout
+      : ctx.io.stderr,
     options.output === 'json'
       ? JSON.stringify(result, null, 2)
       : result.message,

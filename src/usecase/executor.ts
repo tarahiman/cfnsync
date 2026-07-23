@@ -31,7 +31,7 @@ export const MANAGEMENT_TAG_KEY = 'cfnsync:state-id';
 /** ツール由来を示すプレフィックス(§7 命名規則)。 */
 const CHANGESET_PREFIX = 'cfnsync';
 
-/** AWS が空変更セットに返す既知の定型文。先頭一致のみ許可する(FR-2-3)。 */
+/** AWS が空変更セットに返す既知の定型文。trim 後の完全一致のみ許可する(FR-2-3)。 */
 const NO_CHANGE_REASONS = [
   "The submitted information didn't contain changes. Submit different information to create a change set.",
   'No updates are to be performed.',
@@ -265,7 +265,7 @@ export interface CreateManagedChangeSetResult {
 /**
  * 管理タグ付きで変更セットを作成し、完了まで待機して空変更セット判定を行う(FR-2)。
  * - 管理タグ `cfnsync:state-id=<stateId>` を Tags にマージ(ユーザータグと共存。FR-2-9)。
- * - `waitForChangeSet` の結果が `FAILED`、既知の「変更なし」定型文へ先頭一致、
+ * - `waitForChangeSet` の結果が `FAILED`、既知の「変更なし」定型文へ trim 後の完全一致、
  *   `changes.length === 0` の全条件を満たす場合だけ変更セットを削除し
  *   `noChanges: true` を返す(FR-2-3)。それ以外の `FAILED` は `StackStateError`。
  */
