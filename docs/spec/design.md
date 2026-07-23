@@ -216,7 +216,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
    - **成功のたびに fencing 検証(§4.5)の上でステートを更新・保存(CAS)**。失敗したスタックのステートは更新しない(FR-1)。これにより途中失敗後の再実行は成功済み分をスキップできる(NFR-3)
    - 失敗時: 依存する後続スタックを中止。独立スタックの扱いは `--on-failure stop|continue`(既定 `stop`)(FR-9)
 
-   各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの文字列を再利用し、NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
+   各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの公開本文を再利用する。`CfnSyncError` は `publicMessage` だけを入力とし、stackKey / region は stack entry の構造化フィールドへ分離する。内部 cause は保持しても report / progress / JSON へ昇格させず、分類不能な例外は固定の安全な文言に置換する。これにより NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
 4. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)
 5. `--dry-run` は plan と同一動作(FR-5)
 
@@ -309,7 +309,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 
 ## 9. エラー処理と終了コード
 
-デプロイ失敗 result の `rolledBack` は §7 の構造化 status 観測結果だけを写す。`ExecuteChangeSet` 前の拒否を含む通常の `StackStateError` / guard / config / lock error は `false` とし、エラーメッセージに `ROLLBACK` が含まれるかどうかでは判定しない。failed outcome は `rolledBack: true|false` を明示し、成功・skipped・no-change では省略してよい。
+デプロイ失敗 result の `rolledBack` は §7 の構造化 status 観測結果だけを写す。`ExecuteChangeSet` 前の拒否を含む通常の `StackStateError` / guard / config / lock error は `false` とし、エラーメッセージに `ROLLBACK` が含まれるかどうかでは判定しない。failed outcome は `rolledBack: true|false` を明示し、成功・skipped・no-change では省略してよい。`waitForStack` の例外を構造化失敗へラップする場合も、公開本文には元の `CfnSyncError.publicMessage` だけを使い、元例外は内部 cause として保持する。分類不能な元例外の公開本文は固定の安全な文言とする。
 
 | 終了コード | 意味 |
 |---|---|

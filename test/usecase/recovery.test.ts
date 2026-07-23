@@ -82,6 +82,18 @@ Resources:
     Type: AWS::S3::Bucket
 `;
 
+const NON_SCALAR_DEFAULT_TEMPLATE = `
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Environment:
+    Type: String
+    Default:
+      Ref: AWS::Region
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`;
+
 function configOf(stack: Record<string, unknown> | undefined): CfnSyncConfig {
   return validateConfig({
     version: 1,
@@ -288,6 +300,53 @@ describe('T-18 recovery', () => {
       { parameters: { Environment: 'prod' } },
       DEFAULT_TEMPLATE,
     );
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(reportErrors(result)).toContain('cfnsync import');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-1-11(a) 優先順: 明示的な空文字は template Default より優先し実 stack と不一致なら再同期しない', async () => {
+    const config = configOf({
+      stackName: 'ManagedStack',
+      parameters: { Environment: '' },
+      tags: { Team: 'platform' },
+      capabilities: ['CAPABILITY_IAM'],
+    });
+    const templates = new Map([['stack.yaml', DEFAULT_TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    installExisting(s.cfn, {}, DEFAULT_TEMPLATE);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(reportErrors(result)).toContain('cfnsync import');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-1-11(a) fail-closed(統合): 非 scalar Default は再同期せず state を保存しない', async () => {
+    const config = configOf({
+      stackName: 'ManagedStack',
+      tags: { Team: 'platform' },
+      capabilities: ['CAPABILITY_IAM'],
+    });
+    const templates = new Map([['stack.yaml', NON_SCALAR_DEFAULT_TEMPLATE]]);
+    const s = setup(
+      config,
+      templates,
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    installExisting(s.cfn, {}, NON_SCALAR_DEFAULT_TEMPLATE);
 
     const result = await s.run();
 

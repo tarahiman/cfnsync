@@ -23,6 +23,7 @@ import {
   detectChanges,
 } from '../core/detect.js';
 import {
+  CfnSyncError,
   ConfigError,
   InvariantError,
   LockError,
@@ -172,7 +173,7 @@ class StackExecutionFailure extends StackStateError {
   constructor(
     message: string,
     readonly rolledBack: boolean,
-    context: { stackKey?: string; region?: string } = {},
+    context: { stackKey?: string; region?: string; cause?: unknown } = {},
   ) {
     super(message, context);
   }
@@ -765,9 +766,18 @@ async function processCreateOrUpdate(
     });
   } catch (cause) {
     throw new StackExecutionFailure(
-      redact(errorMessage(cause)),
+      redact(
+        publicErrorMessage(
+          cause,
+          'CloudFormation スタックの完了待機に失敗しました',
+        ),
+      ),
       rollbackObserved,
-      { stackKey: operation.stackKey, region: operation.region },
+      {
+        stackKey: operation.stackKey,
+        region: operation.region,
+        cause,
+      },
     );
   }
 
@@ -1353,7 +1363,7 @@ function failedOperationResult(
   redact: TextRedactor = identityRedactor,
 ): StackResult {
   const result = resultForOperation(operation, 'failed');
-  result.errorMessage = redact(errorMessage(error));
+  result.errorMessage = redact(publicErrorMessage(error));
   result.rolledBack =
     error instanceof StackExecutionFailure ? error.rolledBack : false;
   return result;
@@ -1407,7 +1417,7 @@ function failureResult(
             region: connection.regions[0] ?? '(none)',
             stackName: '(deploy)',
             outcome: 'failed',
-            errorMessage: errorMessage(error),
+            errorMessage: publicErrorMessage(error),
             rolledBack: false,
           },
         ],
@@ -1426,7 +1436,7 @@ function appendDeployFailure(
     region: result.report.connection.regions[0] ?? '(none)',
     stackName: '(deploy)',
     outcome: 'failed',
-    errorMessage: `ロック解放に失敗しました: ${errorMessage(error)}`,
+    errorMessage: `ロック解放に失敗しました: ${publicErrorMessage(error)}`,
     rolledBack: false,
   });
   result.report.result = { stacks };
@@ -1434,6 +1444,9 @@ function appendDeployFailure(
   return result;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function publicErrorMessage(
+  error: unknown,
+  fallback = '予期しないエラーが発生しました',
+): string {
+  return error instanceof CfnSyncError ? error.publicMessage : fallback;
 }

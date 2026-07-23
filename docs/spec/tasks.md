@@ -226,7 +226,8 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-5-3 | `--dry-run` は差分表示までで停止 | `ExecuteChangeSet` が呼ばれず、describe 後に変更セットが削除される(§5.2) |
 | FR-4-1 | 完了まで待機しイベントを逐次出力 | イベントポーリングの逐次出力と完了待機を検証 |
 | FR-4-2 | 失敗時は原因リソースとメッセージを出力し非ゼロ終了 | 失敗イベントから `ResourceStatusReason` が抽出され、終了コード 1 |
-| FR-4-3 | ExecuteChangeSet 後に観測した明示 rollback status だけでロールバックの発生と結果を報告 | `UPDATE_ROLLBACK_COMPLETE` への遷移が報告に含まれる / `FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false` / `FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false` / `FR-4-3(JSON): failed StackResult の rolledBack true/false を boolean として保持する` |
+| FR-4-3 | ExecuteChangeSet 後に観測した明示 rollback status だけでロールバックの発生と結果を報告 | `UPDATE_ROLLBACK_COMPLETE` への遷移が報告に含まれる / `FR-4-3: ROLLBACK_IN_PROGRESS 観測後に wait が例外終了しても rolledBack true を保持し state 未更新・lock 解放` / `FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false` / `FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false` / `FR-4-3(否定): allowlist 外の *_ROLLBACK_* 類似 status は rolledBack false` / `FR-4-3(JSON): failed StackResult の rolledBack true/false を boolean として保持する` |
+| FR-4-2 / NFR-4(公開本文) | deploy report / progress は未装飾の公開本文だけを使い、cause・NoEcho 実値・stackKey / region 装飾を本文へ昇格させない。分類不能例外は固定文言にする | `FR-4-2/NFR-4 / FR-4-3: ROLLBACK_IN_PROGRESS 観測後の wait 例外は公開本文だけを報告し cause・NoEcho 実値を秘匿する` / `FR-4-2(安全境界): 分類不能な wait 例外は固定の公開文言へ置換する` |
 | FR-1-3 | 成功したスタックのみステート更新 | スタック A 成功・B 失敗 → A のみステート更新、B は前回のまま |
 | **NFR-3(継続)** | **途中失敗後の再実行は成功済みをスキップし、失敗地点から継続** | A 成功・B 失敗の直後の状態からそのまま再実行 → A は `unchanged` となり **A への CreateChangeSet / ExecuteChangeSet が一切呼ばれない**、B から処理が再開して収束する。変種: B の失敗実行が残した変更セットが FR-2-7 の残存回収で処理されること |
 | **FR-13-4** | **テンプレート変更時、設定された全対象リージョンに変更セットを作成** | 2 リージョン設定のテンプレートを変更 → 各リージョンに CreateChangeSet が**ちょうど 1 回ずつ**、リージョン別の実効パラメータ・タグで呼ばれ、設定順に直列実行される |
@@ -292,8 +293,9 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | ID | 受け入れ基準(要約) | テストケース |
 |---|---|---|
 | FR-1-11(a) | CREATE 成功+ステート保存失敗 → 再実行で全一致なら再同期 | 保存直前で中断 → 再実行: テンプレート(パース後同値)・実効パラメータ・タグ・Capabilities・**管理タグ**がすべて一致 → デプロイ成功として再同期 |
-| FR-1-11(a) Default 補完 | 希望 template Default を明示設定値より低い優先度で復旧比較にだけ補完する | `FR-1-11(a): 設定省略パラメータをテンプレート Default で補完し CREATE 復旧に成功する` |
+| FR-1-11(a) Default 補完 | 希望 template Default を明示設定値より低い優先度で復旧比較にだけ補完する | `FR-1-11(a): 設定省略パラメータをテンプレート Default で補完し CREATE 復旧に成功する` / `FR-1-11(a) 優先順: 明示的な空文字は template Default より優先し実 stack と不一致なら再同期しない` |
 | FR-1-11(a) Default 不一致 | Default 補完後の実効 parameters が実 stack と不一致なら再同期しない | `FR-1-11(a) fail-closed: Default 補完後の実効値が実 stack と不一致なら再同期しない` |
+| FR-1-11(a) Default 比較不能 | 非 scalar Default は deploy 統合経路でも例外を黙殺せず state を保存しない | `FR-1-11(a) fail-closed(統合): 非 scalar Default は再同期せず state を保存しない` |
 | FR-1-11(a) | 管理タグ由来確認は fail-closed | 他が全一致でも管理タグ欠如 → 再同期せずエラー / 別ステート ID の管理タグ → エラー。いずれもインポート案内つき |
 | FR-1-11(a) | 検証不能入力は一致条件から除外し希望値を記録 | dependsOn / NoEcho 実値は比較されず、ローカル希望値が `inputsHash` に記録され、除外項目が出力に明示される |
 | FR-1-11(a) | 不一致は命名衝突としてエラー+インポート案内 | 「タグのみ異なる同名管理外スタック」「Capabilities のみ異なる」「NoEcho 実値のみ異なる(管理タグなし)」の 3 変種 → いずれも再同期されず停止(§10) |

@@ -92,6 +92,7 @@ cfnsync は、ディレクトリ内の CloudFormation テンプレートファ�
 
 - WHEN 変更セットを実行した場合、ツールはスタック操作の完了(成功または失敗)まで待機し、スタックイベントを逐次出力しなければならない。
 - IF デプロイが失敗した場合、ツールは失敗の原因となったリソースとエラーメッセージを出力し、非ゼロの終了コードで終了しなければならない。
+- デプロイ失敗 report の `errorMessage` は `CfnSyncError` の未装飾な公開本文だけから生成し、stackKey / region は各 stack entry の構造化フィールドへ分離しなければならない。内部 cause は report / progress / JSON に昇格させず、分類不能な例外は固定の安全な文言へ置換しなければならない。NoEcho redactor はこの公開本文へ適用する。
 - IF デプロイ失敗によりロールバックが発生した場合、ツールはロールバックの発生と結果を報告しなければならない。`rolledBack` は当該 `ExecuteChangeSet` より後に観測した構造化 StackEvent の resource status、または `waitForStack` が返す最終 StackStatus が、明示した rollback status (`ROLLBACK_COMPLETE` / `ROLLBACK_FAILED` / `UPDATE_ROLLBACK_COMPLETE` / `UPDATE_ROLLBACK_FAILED` / `IMPORT_ROLLBACK_COMPLETE` / `IMPORT_ROLLBACK_FAILED` と対応する実行中 status)の場合だけ `true` としなければならない。実行前の guard・復旧・設定・fencing 拒否、および rollback status を観測しない失敗は `false` とし、エラーメッセージ等の文字列や未知 status の部分一致を判定入力にしてはならない。
 
 ### FR-5: 変更セット作成とデプロイの一括実行

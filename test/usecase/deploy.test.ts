@@ -16,6 +16,7 @@ import {
   computeInputsHash,
   computeTemplateHash,
 } from '../../src/core/detect.js';
+import { AwsError } from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -491,6 +492,110 @@ describe('deploy — T-14 integration', () => {
     ).toBe(oldBHash);
   });
 
+  it('FR-4-2/NFR-4 / FR-4-3: ROLLBACK_IN_PROGRESS 観測後の wait 例外は公開本文だけを報告し cause・NoEcho 実値を秘匿する', async () => {
+    const secret = 'NoEcho-Actual-Value';
+    const causeMarker = 'INTERNAL_CAUSE_MARKER';
+    const config = configOf({
+      'secret.yaml': {
+        stackName: 'SecretStack',
+        parameters: { Secret: secret },
+      },
+    });
+    const templates = templatesOf({ 'secret.yaml': TEMPLATE_SECRET });
+    const initial = recordedState(config, templates, { modified: true });
+    const oldHash = initial.stacks[`secret.yaml@${REGION}`].inputsHash;
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'rollback-started',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'SecretStack',
+        resourceType: 'AWS::CloudFormation::Stack',
+        resourceStatus: 'ROLLBACK_IN_PROGRESS',
+        resourceStatusReason: 'rollback started',
+      },
+    ]);
+    const waitForStack = fake.waitForStack.bind(fake);
+    fake.waitForStack = async (stackName, options) => {
+      await waitForStack(stackName, options);
+      throw new AwsError('CloudFormation DescribeStackEvents に失敗しました', {
+        stackKey: `internal-secret.yaml@${REGION}`,
+        region: REGION,
+        cause: new Error(`${causeMarker}: credential=${secret}`),
+      });
+    };
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'SecretStack',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+    const failedProgress = s.progress.find(
+      (progress) =>
+        progress.stackKey === `secret.yaml@${REGION}` &&
+        progress.phase === 'failed',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      stackKey: `secret.yaml@${REGION}`,
+      region: REGION,
+      outcome: 'failed',
+      errorMessage: 'CloudFormation DescribeStackEvents に失敗しました',
+      rolledBack: true,
+    });
+    expect(failed?.errorMessage).not.toContain(causeMarker);
+    expect(failed?.errorMessage).not.toContain(secret);
+    expect(failed?.errorMessage).not.toContain('(stackKey:');
+    expect(failed?.errorMessage).not.toContain('(region:');
+    expect(json).not.toContain(causeMarker);
+    expect(json).not.toContain(secret);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(text).toContain(`secret.yaml@${REGION}`);
+    expect(text).toContain('CloudFormation DescribeStackEvents に失敗しました');
+    expect(text).toContain('ROLLBACK_IN_PROGRESS');
+    expect(s.backend.saveCalls).toHaveLength(0);
+    expect(
+      s.backend.stored?.state.stacks[`secret.yaml@${REGION}`].inputsHash,
+    ).toBe(oldHash);
+    expect(s.backend.releaseCalls).toBe(1);
+  });
+
+  it('FR-4-2(安全境界): 分類不能な wait 例外は固定の公開文言へ置換する', async () => {
+    const internalMarker = 'UNCLASSIFIED_INTERNAL_MARKER';
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const waitForStack = fake.waitForStack.bind(fake);
+    fake.waitForStack = async (stackName, options) => {
+      await waitForStack(stackName, options);
+      throw new Error(internalMarker);
+    };
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      outcome: 'failed',
+      errorMessage: 'CloudFormation スタックの完了待機に失敗しました',
+      rolledBack: false,
+    });
+    expect(failed?.errorMessage).not.toContain(internalMarker);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
   it('FR-4-3(否定): ExecuteChangeSet 前の ROLLBACK_COMPLETE guard 拒否は rolledBack false', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
@@ -542,6 +647,46 @@ describe('deploy — T-14 integration', () => {
         stackName: 'A',
         status: 'UPDATE_FAILED',
         statusReason: 'ROLLBACK was not observed',
+      }),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        rolledBack: false,
+      }),
+    );
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
+  });
+
+  it('FR-4-3(否定): allowlist 外の *_ROLLBACK_* 類似 status は rolledBack false', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('A', [
+      {
+        eventId: 'unknown-rollback-like-status',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'A',
+        resourceType: 'AWS::CloudFormation::Stack',
+        resourceStatus: 'UPDATE_ROLLBACK_PAUSED',
+        resourceStatusReason: 'unknown status must not imply rollback',
+      },
+    ]);
+    fake.waitResults.set('A', [
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_FAILED',
       }),
     ]);
 
