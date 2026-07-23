@@ -50,4 +50,16 @@ describe('NoEcho usecase redactor', () => {
     ).toBe('必須パラメータに __REQUIRED__ が残っています: Secret');
     expect(partialMatchRedactor('prefix__REQUIRED__suffix')).toBe('****');
   });
+
+  it('NFR-4: 明示値は template Default より優先して redactor の実効値になる', () => {
+    const redact = createNoEchoRedactor(
+      { Secret: 'configured-secret' },
+      ['Secret'],
+      { Secret: 'default-secret' },
+    );
+
+    expect(redact('configured-secret / default-secret')).toBe(
+      '**** / default-secret',
+    );
+  });
 });

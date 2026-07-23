@@ -86,6 +86,19 @@ Resources:
     Type: AWS::S3::Bucket
 `;
 
+const DEFAULT_SECRET = 'Default-NoEcho-Secret-Value';
+const TEMPLATE_SECRET_DEFAULT = `
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Secret:
+    Type: String
+    NoEcho: true
+    Default: ${DEFAULT_SECRET}
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+`;
+
 function configOf(
   stacks: Record<string, unknown>,
   allowedRegions = [REGION],
@@ -748,6 +761,137 @@ describe('deploy — T-14 integration', () => {
     expect(json).toContain('****');
     expect(s.emitted[0].resourceStatusReason).toContain('****');
     expect(s.emitted[0].resourceStatusReason).not.toContain(secret);
+  });
+
+  it('NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitEvents.set('SecretStack', [
+      {
+        eventId: 'default-secret-failure',
+        timestamp: '2026-07-20T12:01:00.000Z',
+        logicalResourceId: 'Bucket',
+        resourceType: 'AWS::S3::Bucket',
+        resourceStatus: 'UPDATE_FAILED',
+        resourceStatusReason: `event rejected ${DEFAULT_SECRET}`,
+      },
+    ]);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+      }),
+    ]);
+
+    const result = await s.run();
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(s.emitted[0].resourceStatusReason).toContain('****');
+    expect(s.emitted[0].resourceStatusReason).not.toContain(DEFAULT_SECRET);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
+    expect(fake.callsOf('createChangeSet')[0].args[0]).toMatchObject({
+      parameters: {},
+    });
+  });
+
+  it('NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason: `change set rejected ${DEFAULT_SECRET}`,
+      changes: [],
+    });
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failed?.errorMessage).not.toContain(DEFAULT_SECRET);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
+  });
+
+  it('NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする', async () => {
+    const config = configOf({
+      'secret.yaml': { stackName: 'SecretStack' },
+    });
+    const templates = templatesOf({
+      'secret.yaml': TEMPLATE_SECRET_DEFAULT,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    fake.waitResults.set('SecretStack', [
+      makeStackSummary({
+        stackName: 'SecretStack',
+        status: 'UPDATE_ROLLBACK_COMPLETE',
+        statusReason: `final status rejected ${DEFAULT_SECRET}`,
+      }),
+    ]);
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.outcome === 'failed',
+    );
+    const failedProgress = s.progress.find(
+      (progress) => progress.phase === 'failed',
+    );
+    const json = renderJson(result.report);
+    const text = renderText(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(failed?.errorMessage).toContain('****');
+    expect(failed?.errorMessage).not.toContain(DEFAULT_SECRET);
+    expect(failedProgress?.message).toBe(failed?.errorMessage);
+    expect(json).not.toContain(DEFAULT_SECRET);
+    expect(text).not.toContain(DEFAULT_SECRET);
   });
 
   it('NFR-3(継続): A 成功・B 失敗後の再実行は A を完全スキップし、B の自変更セットを回収して収束する', async () => {

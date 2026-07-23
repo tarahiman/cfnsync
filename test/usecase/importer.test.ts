@@ -24,6 +24,7 @@ import {
   computeTemplateHash,
   detectChanges,
 } from '../../src/core/detect.js';
+import { LockError } from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -762,6 +763,59 @@ describe('FR-10-9: ステートロックの取得', () => {
     expect(s.backend.releaseCalls).toBe(0);
     // ステート読込にも進まない(ロック配下でのみ読む)。
     expect(s.timeline).not.toContain('backend.load');
+  });
+
+  it('NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない', async () => {
+    const causeMarker = 'INTERNAL_SDK_CAUSE_MARKER';
+    const acquire = setup();
+    acquire.backend.acquireLock = async () => {
+      throw new LockError('別の実行がロックを保持しています', {
+        cause: new Error(causeMarker),
+      });
+    };
+
+    const acquireResult = await run(acquire);
+    const acquireJson = JSON.stringify(acquireResult.report);
+
+    expect(acquireResult.exitCode).toBe(1);
+    expect(acquireResult.report.aborted).toBe('lock-unavailable');
+    expect(acquireJson).toContain('別の実行がロックを保持しています');
+    expect(acquireJson).not.toContain(causeMarker);
+    expect(acquireJson).not.toContain('(cause:');
+
+    const release = setup();
+    deployNetwork(release, NETWORK_TEMPLATE);
+    release.backend.releaseLock = async () => {
+      throw new LockError('条件付きロック解放に失敗しました', {
+        cause: new Error(causeMarker),
+      });
+    };
+
+    const releaseResult = await run(release);
+    const releaseJson = JSON.stringify(releaseResult.report);
+
+    expect(releaseResult.exitCode).toBe(1);
+    expect(releaseJson).toContain('条件付きロック解放に失敗しました');
+    expect(releaseJson).not.toContain(causeMarker);
+    expect(releaseJson).not.toContain('(cause:');
+  });
+
+  it('NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する', async () => {
+    const internalMarker = 'UNCLASSIFIED_RELEASE_MARKER';
+    const s = setup();
+    deployNetwork(s, NETWORK_TEMPLATE);
+    s.backend.releaseLock = async () => {
+      throw new Error(internalMarker);
+    };
+
+    const result = await run(s);
+    const json = JSON.stringify(result.report);
+
+    expect(result.exitCode).toBe(1);
+    expect(json).toContain(
+      'ロック解放に失敗しました: 予期しないエラーが発生しました',
+    );
+    expect(json).not.toContain(internalMarker);
   });
 });
 

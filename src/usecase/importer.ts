@@ -36,6 +36,7 @@ import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
 import { resolveDependsOnKey } from '../core/dependency.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
 import {
+  CfnSyncError,
   GuardError,
   InvariantError,
   LockError,
@@ -199,13 +200,17 @@ export async function runImport(input: {
           if (err instanceof GuardError) {
             return {
               exitCode: 1,
-              report: emptyReport(header, 'account-mismatch', err.message),
+              report: emptyReport(
+                header,
+                'account-mismatch',
+                err.publicMessage,
+              ),
             };
           }
           if (err instanceof LockError) {
             return {
               exitCode: 1,
-              report: emptyReport(header, 'ownership-lost', err.message),
+              report: emptyReport(header, 'ownership-lost', err.publicMessage),
             };
           }
           throw err;
@@ -229,7 +234,7 @@ export async function runImport(input: {
           ...result.report,
           warnings: [
             ...result.report.warnings,
-            `ロック解放に失敗しました: ${error instanceof Error ? error.message : String(error)}`,
+            `ロック解放に失敗しました: ${publicWarningMessage(error)}`,
           ],
         },
       }),
@@ -241,7 +246,7 @@ export async function runImport(input: {
         report: emptyReport(
           header,
           'lock-unavailable',
-          `ステートロックを取得できませんでした: ${err.message}`,
+          `ステートロックを取得できませんでした: ${err.publicMessage}`,
         ),
       };
     }
@@ -820,4 +825,10 @@ function emptyReport(
     aborted,
     warnings: [message],
   };
+}
+
+function publicWarningMessage(error: unknown): string {
+  return error instanceof CfnSyncError
+    ? error.publicMessage
+    : '予期しないエラーが発生しました';
 }

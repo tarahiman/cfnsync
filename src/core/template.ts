@@ -228,6 +228,37 @@ export function extractParameterDefaults(
   return defaults;
 }
 
+/**
+ * redaction 用に scalar な Parameter Default だけを文字列化して抽出する。
+ *
+ * 復旧比較用の extractParameterDefaults と異なり、非 scalar 値は比較判定に使わず
+ * 無視する。redactor は literal な実値だけを置換できるためであり、設定や
+ * inputsHash のパラメータ契約には影響させない(NFR-4)。
+ */
+export function extractScalarParameterDefaults(
+  parsedTemplate: unknown,
+): Record<string, string> {
+  if (!isRecord(parsedTemplate) || !isRecord(parsedTemplate.Parameters)) {
+    return {};
+  }
+
+  const defaults: Record<string, string> = {};
+  for (const [name, definition] of Object.entries(parsedTemplate.Parameters)) {
+    if (!isRecord(definition) || !Object.hasOwn(definition, 'Default')) {
+      continue;
+    }
+    const value = definition.Default;
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      defaults[name] = String(value);
+    }
+  }
+  return defaults;
+}
+
 // ---------------------------------------------------------------------------
 // Export / Import / NoEcho の抽出(design.md §6, NFR-4)
 // ---------------------------------------------------------------------------

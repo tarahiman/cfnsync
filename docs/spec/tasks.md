@@ -5,7 +5,7 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: `FR-X-n` = requirements.md の FR-X 内の箇条書きの出現順 n 番目。requirements.md 側は変更しない(tasks.md がこの採番の正本)。
+- **受け入れ基準 ID の規約**: `FR-X-n` は requirements.md の各受け入れ基準に記載した明示 ID を参照する。箇条書きの挿入・並べ替えによって既存 ID の意味を変更しない。
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -176,7 +176,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-3-1 | リソース単位の Add / Modify / Remove と変更プロパティを表示 | DescribeChangeSet の Changes から種別・プロパティ一覧が整形される |
 | FR-3-2 | Replacement は警告として強調 | `Replacement: True` のリソースが警告表示になる(テキスト・JSON 双方にフラグ) |
 | FR-3-3 | テキストに加え JSON を選択できる | `--output json` で機械可読 JSON(スキーマ検証)が出る |
-| NFR-4 | NoEcho 値をマスクする。ただし予約済み `REQUIRED_PLACEHOLDER` との完全一致だけは非秘匿 sentinel として置換候補から除外する | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) / `NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない` |
+| NFR-4 | NoEcho 値をマスクする。ただし予約済み `REQUIRED_PLACEHOLDER` との完全一致だけは非秘匿 sentinel として置換候補から除外する | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) / `NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない` / `NFR-4: 明示値は template Default より優先して redactor の実効値になる` |
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
 | FR-5-4(契約) | 進捗マイルストーンの型を定義する | `ProgressEvent`(stackKey・region・phase・message)/ `ProgressPhase` の union 型が report/index.ts で定義され、usecase が依存する出力契約に含まれる |
@@ -234,6 +234,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-1-9 | 各副作用の直前に fencing 検証。喪失時は中断 | 副作用(変更セット作成・実行・削除、ステート保存)の直前ごとにロック検証が呼ばれる(呼び出し順序検証)/ 完了待機後・CAS 保存直前の検証で所有権喪失 → 保存せず中断 |
 | FR-5-4 | 一括実行の各段階で進捗をスタックキー付きで通知する | CREATE 成功シナリオで `onProgress` が ['changeset-create-start','diff-ready','execute-start','done'] の順に、対象スタックキー付きで呼ばれる / 空変更セットでは ['changeset-create-start','no-change'] で止まる / `--dry-run` では ['changeset-create-start','diff-ready','skipped'] で止まり execute-start/done は呼ばれない |
 | FR-5-4(失敗) | 失敗時の progress メッセージは report と同じ redactor 適用済み文字列を再利用する | NoEcho を含む StatusReason で失敗させた場合、`onProgress` の 'failed' メッセージに実値が含まれない(report.result の errorMessage と同一文字列であることを確認) |
+| NFR-4(Default) | 設定で省略した NoEcho の scalar template Default も redactor の実効値に含める。`inputsHash` は補完しない | `NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする` / `NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする` / `NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする` |
 | FR-5-4(スキップ) | 依存失敗によるスキップも通知する | A 失敗・B が A に依存 → B の `onProgress` に phase 'skipped' が呼ばれる |
 | NFR-1(進捗) | 進捗は標準エラーのみに出力し、`--output json` の標準出力を汚さない | CLI 統合テストで `--output json` 実行中に `onProgress` を複数回発火させても stdout が単一の有効な JSON のままであることを確認(cli.test.ts 側) |
 | FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue` | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行 |
@@ -275,6 +276,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-10-10 | スタックが存在しないテンプレートは `added` 扱い | 対応スタックなし → ステートに記録されず、次回 detect で `added` |
 | FR-10-11 | 依存辺の記録 | インポート成功時に exports / imports がステートに記録される(FR-8-5) |
 | FR-13-9 | リージョンごとにインポートできる | 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる |
+| NFR-4(import warning) | import のコマンド固有 warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使う | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
 
 ### T-17 usecase/force-unlock
 

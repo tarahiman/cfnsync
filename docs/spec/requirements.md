@@ -90,10 +90,9 @@ cfnsync は、ディレクトリ内の CloudFormation テンプレートファ�
 
 作成済みの変更セットを実行し、デプロイを行えること。
 
-- WHEN 変更セットを実行した場合、ツールはスタック操作の完了(成功または失敗)まで待機し、スタックイベントを逐次出力しなければならない。
-- IF デプロイが失敗した場合、ツールは失敗の原因となったリソースとエラーメッセージを出力し、非ゼロの終了コードで終了しなければならない。
-- デプロイ失敗 report の `errorMessage` は `CfnSyncError` の未装飾な公開本文だけから生成し、stackKey / region は各 stack entry の構造化フィールドへ分離しなければならない。内部 cause は report / progress / JSON に昇格させず、分類不能な例外は固定の安全な文言へ置換しなければならない。NoEcho redactor はこの公開本文へ適用する。
-- IF デプロイ失敗によりロールバックが発生した場合、ツールはロールバックの発生と結果を報告しなければならない。`rolledBack` は当該 `ExecuteChangeSet` より後に観測した構造化 StackEvent の resource status、または `waitForStack` が返す最終 StackStatus が、明示した rollback status (`ROLLBACK_COMPLETE` / `ROLLBACK_FAILED` / `UPDATE_ROLLBACK_COMPLETE` / `UPDATE_ROLLBACK_FAILED` / `IMPORT_ROLLBACK_COMPLETE` / `IMPORT_ROLLBACK_FAILED` と対応する実行中 status)の場合だけ `true` としなければならない。実行前の guard・復旧・設定・fencing 拒否、および rollback status を観測しない失敗は `false` とし、エラーメッセージ等の文字列や未知 status の部分一致を判定入力にしてはならない。
+- **FR-4-1:** WHEN 変更セットを実行した場合、ツールはスタック操作の完了(成功または失敗)まで待機し、スタックイベントを逐次出力しなければならない。
+- **FR-4-2:** IF デプロイが失敗した場合、ツールは失敗の原因となったリソースとエラーメッセージを出力し、非ゼロの終了コードで終了しなければならない。デプロイ失敗 report の `errorMessage` は `CfnSyncError` の未装飾な公開本文だけから生成し、stackKey / region は各 stack entry の構造化フィールドへ分離しなければならない。内部 cause は report / progress / JSON に昇格させず、分類不能な例外は固定の安全な文言へ置換しなければならない。NoEcho redactor はこの公開本文へ適用する。
+- **FR-4-3:** IF デプロイ失敗によりロールバックが発生した場合、ツールはロールバックの発生と結果を報告しなければならない。`rolledBack` は当該 `ExecuteChangeSet` より後に観測した構造化 StackEvent の resource status、または `waitForStack` が返す最終 StackStatus が、明示した rollback status (`ROLLBACK_COMPLETE` / `ROLLBACK_FAILED` / `UPDATE_ROLLBACK_COMPLETE` / `UPDATE_ROLLBACK_FAILED` / `IMPORT_ROLLBACK_COMPLETE` / `IMPORT_ROLLBACK_FAILED` と対応する実行中 status)の場合だけ `true` としなければならない。実行前の guard・復旧・設定・fencing 拒否、および rollback status を観測しない失敗は `false` とし、エラーメッセージ等の文字列や未知 status の部分一致を判定入力にしてはならない。
 
 ### FR-5: 変更セット作成とデプロイの一括実行
 
@@ -181,22 +180,22 @@ AWS への認証は標準的な方法で行えること。
 
 ### FR-12: CLI インターフェース
 
-- ツールは少なくとも以下に相当するサブコマンドを提供しなければならない:
+- **FR-12-1:** ツールは少なくとも以下に相当するサブコマンドを提供しなければならない:
   - 変更検知結果の表示(status 相当)
   - 変更セット作成+差分表示(plan / diff 相当)
   - デプロイ実行(deploy / apply 相当)
   - 依存関係マッピング表示(graph 相当)
   - 既存スタックのインポート(import 相当)
-- ツールは自身のバージョン(`package.json` の version)を `--version`(短縮形 `-v`)で表示し、終了コード 0 で終了しなければならない。
-- 終了コードは CI で判定可能なように定義しなければならない(例: 0 = 成功/変更なし、1 = 実行エラー、2 = 差分あり(dry-run 時)等)。
-- すべてのコマンドは TTY なしの環境(CI)で動作しなければならない。
-- WHEN いずれかのサブコマンド(`status` / `plan` / `deploy` / `graph` / `import` / `force-unlock`)の
+- **FR-12-4:** ツールは自身のバージョン(`package.json` の version)を `--version`(短縮形 `-v`)で表示し、終了コード 0 で終了しなければならない。
+- **FR-12-2:** 終了コードは CI で判定可能なように定義しなければならない(例: 0 = 成功/変更なし、1 = 実行エラー、2 = 差分あり(dry-run 時)等)。
+- **FR-12-3:** すべてのコマンドは TTY なしの環境(CI)で動作しなければならない。
+- **FR-12-5:** WHEN いずれかのサブコマンド(`status` / `plan` / `deploy` / `graph` / `import` / `force-unlock`)の
   `--help` を表示した場合、ツールは当該サブコマンド固有のオプションに加え、共通オプション(`--config` /
   `--profile` / `--region` / `--output`)を一覧として表示しなければならない。
-- WHEN 有効な `--output json` を指定したサブコマンドを実行した場合、成功・失敗、usecase 到達前・到達後を問わず、ツールは標準出力へちょうど 1 個の JSON document を出力しなければならない。コマンド固有 result を生成できた場合(deploy の fail-closed report と `ForceUnlockResult` を含む)は既存 JSON schema を維持し、設定読込・設定検証、Commander 引数検証、未知 subcommand、依存循環等の result 生成前の例外だけは共通エラー schema(設計書 §9)を使用する。JSON 本体は失敗時も標準エラーへ移してはならず、進捗・警告・人間向け診断は標準エラーへ分離しなければならない。`--help` / `--version` は従来どおり text・終了コード 0 とし、有効な JSON 選択が成立しない `--output` 自体の不正値は本契約の対象外とする。
-- 有効な JSON 選択は `--output json` と `--output=json` の両記法を、サブコマンドの前後どちらでも認識しなければならない。複数指定時は最後の `--output` を採用し、`--config` 等の値付きオプションの値として消費された文字列 `--output=json` を JSON 選択として扱ってはならない。
-- WHEN TTY 上の `deploy --confirm` で利用者が拒否し、かつ有効な JSON 選択がある場合、ツールは標準出力へ次のキャンセル result をちょうど 1 個出力し、終了コード 0 としなければならない: `{ "exitCode": 0, "cancelled": true, "message": "Deployment cancelled." }`。text 選択時は従来どおり標準エラーへ `Deployment cancelled.` を出し、終了コード 0 とする。
-- WHEN `--help` または `--version` を指定した場合、`--output json` が同時に現れても JSON 契約の対象外とし、従来どおり text を出力して終了コード 0 としなければならない。
+- **FR-12-6a / FR-12-6b:** WHEN 有効な `--output json` を指定したサブコマンドを実行した場合、成功・失敗、usecase 到達前・到達後を問わず、ツールは標準出力へちょうど 1 個の JSON document を出力しなければならない。コマンド固有 result を生成できた場合(deploy の fail-closed report と `ForceUnlockResult` を含む)は既存 JSON schema を維持し、設定読込・設定検証、Commander 引数検証、未知 subcommand、依存循環等の result 生成前の例外だけは共通エラー schema(設計書 §9)を使用する。JSON 本体は失敗時も標準エラーへ移してはならず、進捗・警告・人間向け診断は標準エラーへ分離しなければならない。`--help` / `--version` は従来どおり text・終了コード 0 とし、有効な JSON 選択が成立しない `--output` 自体の不正値は本契約の対象外とする。
+- **FR-12-6d〜FR-12-6g:** 有効な JSON 選択は `--output json` と `--output=json` の両記法を、サブコマンドの前後どちらでも認識しなければならない。複数指定時は最後の `--output` を採用し、`--config` 等の値付きオプションの値として消費された文字列 `--output=json` を JSON 選択として扱ってはならない。
+- **FR-12-6c:** WHEN TTY 上の `deploy --confirm` で利用者が拒否し、かつ有効な JSON 選択がある場合、ツールは標準出力へ次のキャンセル result をちょうど 1 個出力し、終了コード 0 としなければならない: `{ "exitCode": 0, "cancelled": true, "message": "Deployment cancelled." }`。text 選択時は従来どおり標準エラーへ `Deployment cancelled.` を出し、終了コード 0 とする。
+- **FR-12-6h:** WHEN `--help` または `--version` を指定した場合、`--output json` が同時に現れても JSON 契約の対象外とし、従来どおり text を出力して終了コード 0 としなければならない。
 
 ### FR-13: マルチリージョンデプロイ
 
@@ -235,7 +234,7 @@ AWS への認証は標準的な方法で行えること。
 ### NFR-4: セキュリティ
 
 - クレデンシャルを保存・出力しないこと。
-- `NoEcho` パラメータ等の秘匿値をログ・差分出力・JSON にマスクして表示すること。対象スタックの設定上の実効パラメータから得た NoEcho 実値を usecase 境界の共通 redactor で `****` に置換し、スタックイベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、AWS 例外メッセージ、最終 `errorMessage` を report に格納または逐次通知する前に必ず通すこと。空文字および 4 文字未満の値は誤マスク防止のため置換対象外とする。NoEcho 実効値が予約済み `REQUIRED_PLACEHOLDER`(`__REQUIRED__`)と完全一致する場合は既知の非秘匿 sentinel として置換候補から除外し、必須値不足の診断では `__REQUIRED__` を表示する。部分一致する値や他の NoEcho 実値のマスクは緩和してはならない。
+- `NoEcho` パラメータ等の秘匿値をログ・差分出力・JSON にマスクして表示すること。対象スタックの NoEcho 実効値は、テンプレートの scalar な `Parameters.<name>.Default` を基底とし、設定の明示値で上書きして求め、usecase 境界の共通 redactor で `****` に置換する。この Default 補完は redaction 用の入力だけに適用し、設定オブジェクトおよび復旧比較専用の `inputsHash` 契約を変更してはならない。スタックイベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、AWS 例外メッセージ、最終 `errorMessage` を report に格納または逐次通知する前に必ず redactor を通すこと。空文字および 4 文字未満の値は誤マスク防止のため置換対象外とする。NoEcho 実効値が予約済み `REQUIRED_PLACEHOLDER`(`__REQUIRED__`)と完全一致する場合は既知の非秘匿 sentinel として置換候補から除外し、必須値不足の診断では `__REQUIRED__` を表示する。部分一致する値や他の NoEcho 実値のマスクは緩和してはならない。コマンド固有 result の warning に例外を変換する場合も、`CfnSyncError.publicMessage` だけを使用し、分類不能な例外は固定の安全な文言へ置換して内部 cause や SDK 生メッセージを含めてはならない。
 - ツールの実行に必要な最低限の IAM 権限をドキュメント化すること。
 
 ### NFR-5: パフォーマンス

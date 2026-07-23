@@ -86,37 +86,30 @@ export function loadConfigFile(
   }
 
   const configDir = dirname(absolute);
-  try {
-    const config = parseConfig(content);
-    if (options.validateTemplateFiles !== false) {
-      for (const templatePath of Object.keys(config.stacks)) {
-        const path = resolveTemplatePathWithinConfig(
-          configDir,
-          templatePath,
-          nodeFileSystem,
+  const config = parseConfig(content);
+  if (options.validateTemplateFiles !== false) {
+    for (const templatePath of Object.keys(config.stacks)) {
+      const path = resolveTemplatePathWithinConfig(
+        configDir,
+        templatePath,
+        nodeFileSystem,
+      );
+      if (!nodeFileSystem.exists(path)) {
+        if (options.allowMissingTemplates) continue;
+        throw new ConfigError(
+          `参照先のテンプレートファイルが存在しません: ${templatePath}`,
+          { stackKey: templatePath },
         );
-        if (!nodeFileSystem.exists(path)) {
-          if (options.allowMissingTemplates) continue;
-          throw new ConfigError(
-            `参照先のテンプレートファイルが存在しません: ${templatePath}`,
-            { stackKey: templatePath },
-          );
-        }
-        if (!nodeFileSystem.isFile(path)) {
-          throw new ConfigError(
-            `参照先のテンプレートパスは通常ファイルではありません: ${templatePath}`,
-            { stackKey: templatePath },
-          );
-        }
+      }
+      if (!nodeFileSystem.isFile(path)) {
+        throw new ConfigError(
+          `参照先のテンプレートパスは通常ファイルではありません: ${templatePath}`,
+          { stackKey: templatePath },
+        );
       }
     }
-    return config;
-  } catch (cause) {
-    if (cause instanceof ConfigError) {
-      throw cause;
-    }
-    throw cause;
   }
+  return config;
 }
 
 export function readTemplateFiles(

@@ -14,11 +14,13 @@ export const identityRedactor: TextRedactor = (text) => text;
 export function createNoEchoRedactor(
   parameters: Record<string, string>,
   noEchoParams: string[],
+  templateDefaults: Record<string, string> = {},
 ): TextRedactor {
+  const effectiveParameters = { ...templateDefaults, ...parameters };
   const rawValues = [
     ...new Set(
       noEchoParams
-        .map((name) => parameters[name])
+        .map((name) => effectiveParameters[name])
         .filter(
           (value): value is string =>
             value !== undefined &&

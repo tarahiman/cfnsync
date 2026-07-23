@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeTemplate,
   extractParameterDefaults,
+  extractScalarParameterDefaults,
   parseCfnTemplate,
   templatesEquivalent,
 } from '../../src/core/template.js';
@@ -291,5 +292,26 @@ Resources: {}
         }),
       ).toThrow(/Unsupported.*Default|Default.*Unsupported/);
     }
+  });
+
+  it('NFR-4(Default準備): redaction 用には scalar Default だけを抽出し非 scalar は無視する', () => {
+    expect(
+      extractScalarParameterDefaults({
+        Parameters: {
+          StringValue: { Type: 'String', Default: 'secret-value' },
+          NumberValue: { Type: 'Number', Default: 42 },
+          BooleanValue: { Type: 'String', Default: false },
+          IntrinsicValue: {
+            Type: 'String',
+            Default: { Ref: 'OtherParameter' },
+          },
+          MissingValue: { Type: 'String' },
+        },
+      }),
+    ).toEqual({
+      StringValue: 'secret-value',
+      NumberValue: '42',
+      BooleanValue: 'false',
+    });
   });
 });

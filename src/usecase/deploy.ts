@@ -52,6 +52,7 @@ import {
 import {
   analyzeStaticTemplate,
   extractParameterDefaults,
+  extractScalarParameterDefaults,
   parseCfnTemplate,
   parsedTemplatesEquivalent,
   resolveStaticTemplateAnalysis,
@@ -484,7 +485,11 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     analyses.set(target.stackKey, analysis);
     redactors.set(
       target.stackKey,
-      createNoEchoRedactor(target.parameters, analysis.noEchoParams),
+      createNoEchoRedactor(
+        target.parameters,
+        analysis.noEchoParams,
+        extractScalarParameterDefaults(parsed),
+      ),
     );
     currentNodes.push({
       stackKey: target.stackKey,
