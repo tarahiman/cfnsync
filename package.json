@@ -45,7 +45,12 @@
     "prepublishOnly": "pnpm run clean && pnpm run build",
     "test": "vitest run",
     "lint": "biome check . && node scripts/check-control-chars.mjs",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "quality:check": "pnpm run format:check && pnpm run lint && pnpm test && pnpm run build",
+    "gitleaks:install": "sh scripts/install-gitleaks.sh",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "hooks:setup": "pnpm run gitleaks:install && pnpm run hooks:install"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1090.0",

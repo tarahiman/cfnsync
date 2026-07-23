@@ -12,7 +12,8 @@ const violations = [];
 for (const path of filesUnder('src')) {
   const content = readFileSync(path);
   for (const byte of [0x00, 0x1b]) {
-    if (content.includes(byte)) violations.push(`${path}: 0x${byte.toString(16)}`);
+    if (content.includes(byte))
+      violations.push(`${path}: 0x${byte.toString(16)}`);
   }
 }
 if (violations.length > 0) {

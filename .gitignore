@@ -7,3 +7,4 @@ cfnsync.state.json
 cfnsync.state.json.bak
 *.log
 .DS_Store
+.tools/

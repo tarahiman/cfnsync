@@ -13,9 +13,38 @@ pnpm test             # run the full Vitest suite (no real AWS access needed)
 pnpm vitest run <file># run a single test file
 pnpm run lint         # Biome + control-char check
 pnpm run format       # Biome format
+pnpm run format:check # verify formatting without modifying files
+pnpm run quality:check# format check, lint, tests, and build
 ```
 
 Run the test suite before and after any change — it must stay green.
+
+## Pre-commit checks
+
+After cloning the repository, install the pinned Gitleaks binary and enable the
+tracked pre-commit hook:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run hooks:setup
+```
+
+`hooks:setup` downloads Gitleaks 8.30.1 from its official GitHub release,
+verifies the archive's pinned SHA-256 checksum, installs it under
+`.tools/bin/`, and configures this clone to use `.githooks/`.
+
+The setup script and hook support macOS, Linux, and Windows through WSL.
+Native Windows shells are not currently supported.
+
+Before every commit, the hook scans the staged patch with Gitleaks. If a staged
+path can affect the application, tests, build, or CI, it also runs the format
+check, lint, full unit test suite, and build against an isolated copy of the
+Git index. Unstaged files are neither checked nor modified. Documentation-only
+changes skip those four code checks, but never skip Gitleaks.
+
+If Gitleaks is already managed by your system, you may enable only the hook with
+`pnpm run hooks:install`; the hook prefers `GITLEAKS_BIN`, then the pinned
+`.tools/bin/gitleaks`, then a `gitleaks` command on `PATH`.
 
 ## Making changes
 
