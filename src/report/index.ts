@@ -382,6 +382,12 @@ const ACTION_SYMBOLS: Record<string, string> = {
   Dynamic: '?',
 };
 
+const ACTION_COLOR_CODES: Record<string, string> = {
+  Add: '32',
+  Modify: '33',
+  Remove: '31',
+};
+
 function actionSymbol(action: string): string {
   return ACTION_SYMBOLS[action] ?? '?';
 }
@@ -393,7 +399,7 @@ function colorize(text: string, code: string, color: boolean): string {
 /**
  * `DeployReport` を人間可読なテキストへ整形する(FR-3-3)。先頭に接続先(FR-7-8)、
  * 各スタックの差分(置換は警告強調。FR-3-2)、任意でイベント・結果セクションを
- * 続ける。`opts.color` 未指定時は ANSI エスケープを含めない(CI ログ想定)。
+ * 続ける。ANSI 色の有効・無効は CLI 境界で決定し、`opts.color` で明示する。
  */
 export function renderText(
   report: DeployReport,
@@ -418,14 +424,17 @@ export function renderText(
     }
     for (const resource of diff.resources) {
       const flag = resource.replacement
-        ? colorize(' [REPLACEMENT]', '33', color)
+        ? colorize(' [REPLACEMENT]', '1;31', color)
         : '';
       const props =
         resource.changedProperties.length > 0
           ? resource.changedProperties.join(', ')
           : '-';
       const label = `${actionSymbol(resource.action)} ${resource.action.padEnd(7)} ${resource.logicalResourceId} (${resource.resourceType})`;
-      lines.push(`  ${label}${flag} properties: ${props}`);
+      const actionColor = ACTION_COLOR_CODES[resource.action];
+      const coloredLabel =
+        actionColor === undefined ? label : colorize(label, actionColor, color);
+      lines.push(`  ${coloredLabel}${flag} properties: ${props}`);
       for (const detail of resource.details) {
         const target = detail.target;
         if (!target) continue;

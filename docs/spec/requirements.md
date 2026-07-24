@@ -87,6 +87,9 @@ cfnsync は、ディレクトリ内の CloudFormation テンプレートファ�
 - CloudFormation が `ResourceChange` に返した `BeforeContext` / `AfterContext` は JSON 出力へ含めなければならない。
 - IF リソースの置換(Replacement)が発生する変更が含まれる場合、ツールはそれを明確に警告として強調表示しなければならない。
 - 出力形式として人間可読なテキストに加え、機械可読な JSON を選択できなければならない(GitHub Actions での PR コメント生成等に利用するため)。
+- **FR-3-4:** WHEN `plan` または `deploy` が人間可読なテキスト差分を出力する場合、ツールは TTY / CI / パイプ・リダイレクトの別にかかわらず ANSI 色を既定で付与し、`Add` を緑、`Modify` を黄、`Remove` を赤、置換警告(`[REPLACEMENT]`)を太字の赤で表示しなければならない。
+- **FR-3-5:** IF `plan` または `deploy` に `--no-color` を指定した場合、または値が空文字である場合を含め `NO_COLOR` 環境変数が存在する場合、ツールは人間可読なテキスト差分へ ANSI エスケープシーケンスを一切含めてはならない。これらの無色化指定は既定の色付きを常に上書きしなければならない。
+- **FR-3-6:** WHEN `plan` または `deploy` に `--output json` を指定した場合、ツールは色設定にかかわらず ANSI エスケープシーケンスを一切含まない単一 JSON document を出力し、既存 JSON schema を維持しなければならない。
 
 ### FR-4: 変更セットの実行(デプロイ)
 
@@ -199,6 +202,7 @@ AWS への認証は標準的な方法で行えること。
 - **FR-12-6d〜FR-12-6g:** 有効な JSON 選択は `--output json` と `--output=json` の両記法を、サブコマンドの前後どちらでも認識しなければならない。複数指定時は最後の `--output` を採用し、`--config` 等の値付きオプションの値として消費された文字列 `--output=json` を JSON 選択として扱ってはならない。
 - **FR-12-6c:** WHEN TTY 上の `deploy --confirm` で利用者が拒否し、かつ有効な JSON 選択がある場合、ツールは標準出力へ次のキャンセル result をちょうど 1 個出力し、終了コード 0 としなければならない: `{ "exitCode": 0, "cancelled": true, "message": "Deployment cancelled." }`。text 選択時は従来どおり標準エラーへ `Deployment cancelled.` を出し、終了コード 0 とする。
 - **FR-12-6h:** WHEN `--help` または `--version` を指定した場合、`--output json` が同時に現れても JSON 契約の対象外とし、従来どおり text を出力して終了コード 0 としなければならない。
+- **FR-12-7:** WHEN `plan --help` または `deploy --help` を表示する場合、ツールは ANSI 色を無効化する `--no-color` オプションを一覧に含めなければならない。このオプションを他のサブコマンドへ提供してはならない。
 
 ### FR-13: マルチリージョンデプロイ
 

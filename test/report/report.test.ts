@@ -391,6 +391,72 @@ describe('FR-3-3: テキスト・JSON 両方の出力を選択できる', () => 
   });
 });
 
+describe('FR-3-4 / FR-3-5: text 差分の ANSI カラー', () => {
+  const colorDiff = buildStackDiff({
+    stackKey: makeStackKey('network.yaml', REGION),
+    region: REGION,
+    stackName: 'prod-network',
+    operation: 'update',
+    detail: {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'AddedSubnet',
+          action: 'Add',
+          resourceType: 'AWS::EC2::Subnet',
+        }),
+        change({
+          logicalResourceId: 'ModifiedVpc',
+          action: 'Modify',
+          replacement: 'True',
+        }),
+        change({
+          logicalResourceId: 'RemovedRoute',
+          action: 'Remove',
+          resourceType: 'AWS::EC2::Route',
+        }),
+      ],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    },
+    noEchoParams: [],
+  });
+
+  it('FR-3-4: Add=緑・Modify=黄・Remove=赤・Replacement=太字赤の ANSI SGR を付与する', () => {
+    const text = renderText(report([colorDiff]), { color: true });
+
+    expect(text).toContain('\x1b[32m+ Add');
+    expect(text).toContain('\x1b[33m~ Modify');
+    expect(text).toContain('\x1b[31m- Remove');
+    expect(text).toContain('\x1b[1;31m [REPLACEMENT]\x1b[0m');
+  });
+
+  it('FR-3-5: color=false では警告・結果を含むすべての ANSI 装飾を無効化する', () => {
+    const text = renderText(
+      report([colorDiff], {
+        result: {
+          stacks: [
+            {
+              stackKey: makeStackKey('network.yaml', REGION),
+              region: REGION,
+              stackName: 'prod-network',
+              outcome: 'failed',
+            },
+          ],
+        },
+      }),
+      { color: false },
+    );
+
+    expect(text).not.toContain('\x1b[');
+    expect(text).toContain('+ Add');
+    expect(text).toContain('~ Modify');
+    expect(text).toContain('- Remove');
+    expect(text).toContain('[REPLACEMENT]');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // NFR-4: NoEcho 値をマスク(差分・ログ・JSON のすべてで実値が現れない)
 // ---------------------------------------------------------------------------

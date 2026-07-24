@@ -74,7 +74,9 @@ Every subcommand accepts the common options `--config <path>` (default `./cfnsyn
 | `import` | Adopt existing stacks into config, templates, and state (read-only against AWS). |
 | `force-unlock <runId>` | Conditionally release a stale S3 state lock owned by the given run ID. |
 
-Key `deploy` flags: `--dry-run` (create and diff only), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`), `--confirm` (prompt before executing on a TTY). Run `cfnsync <command> --help` for the full flag list.
+Human-readable diffs from `plan` and `deploy` use ANSI colors by default, including in CI and redirected output: Add is green, Modify yellow, Remove red, and replacements are bold red. Use `--no-color` or set `NO_COLOR` (an empty value also counts) to disable ANSI output. JSON output is always uncolored.
+
+Key `deploy` flags: `--dry-run` (create and diff only), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`), `--confirm` (prompt before executing on a TTY), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list.
 
 ## Configuration
 

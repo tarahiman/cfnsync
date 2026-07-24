@@ -123,6 +123,10 @@ export function renderGraph(
   return json ? renderGraphJson(graphs) : renderGraphText(graphs);
 }
 
-export function renderDeploy(report: DeployReport, json: boolean): string {
-  return json ? renderJson(report) : renderText(report);
+export function renderDeploy(
+  report: DeployReport,
+  json: boolean,
+  color = false,
+): string {
+  return json ? renderJson(report) : renderText(report, { color });
 }

@@ -74,7 +74,9 @@ npm install --save-dev cfnsync
 | `import` | 既存スタックを設定・テンプレート・ステートへ取り込みます（AWS へは読み取り専用）。 |
 | `force-unlock <runId>` | 指定した実行 ID が所有する残存 S3 ステートロックを条件付きで解除します。 |
 
-主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`）、`--confirm`（TTY で実行前に確認）。全フラグは `cfnsync <command> --help` を参照してください。
+`plan` / `deploy` の人間向け差分は、CI やリダイレクトを含めて既定で ANSI 色付きです。Add は緑、Modify は黄、Remove は赤、置換は太字の赤で表示します。色を無効にするには `--no-color` を指定するか、`NO_COLOR` 環境変数を設定してください（空文字も設定済みとして扱います）。JSON 出力は常に無色です。
+
+主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`）、`--confirm`（TTY で実行前に確認）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。
 
 ## 設定
 
