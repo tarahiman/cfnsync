@@ -152,7 +152,7 @@ stacks:
 - `inputsHash`: `templateHash` + スタック名 + 実効パラメータ + タグ + Capabilities + 明示依存(`dependsOn`)の複合ハッシュ。**設定ファイルのみの変更もデプロイ対象として検知する**ため(FR-1 の変更検知を「デプロイへの入力全体」に適用)。旧方式の hash はこの変更後の初回検知で `modified` となり、成功保存時に新方式へ移行する。
 - `exports` / `imports`: 前回成功時点の依存辺。テンプレートファイル削除後の削除順序決定に使用(FR-6, FR-8)。
 - `dependsOn`: 前回成功時点の**明示依存**(設定の `dependsOn` をスタックキーに解決したもの)。自動解析辺と同様に旧グラフの復元に含める。新たに成功保存する v2 エントリでは配列を必須とする。v1 からの移行で欠落していたエントリに限り、次の成功保存まで `null` を unknown の印として保持する。unknown は FR-6-4/FR-6-5 の fail-closed 対象であり、自動削除を拒否する。
-- `dependencyAnalysisIncomplete`: 前回成功時点のテンプレート解析に解決不能な動的 Export / Import 警告が残っていたことを示す。曖昧な参照が明示 `dependsOn` で解消されている場合は `false` として保存できる。それ以外の `true` は FR-6-5 の曖昧な依存情報として当該スタックの自動削除を拒否する。
+- `dependencyAnalysisIncomplete`: 前回成功時点のテンプレート解析に解決不能な動的 Export / Import 警告が残っていたことを示す。解析警告が残っても、明示 `dependsOn` が1件以上ある場合は利用者が依存関係を補完済みとみなし `false` として保存する。明示 `dependsOn` がない場合だけ `true` とする。`true` は FR-6-5 の曖昧な依存情報として当該スタックの自動削除を拒否する。
 - `generation`: 保存のたびにインクリメント。読込時点の世代(`s3` では ETag)との比較により compare-and-swap を実現する(FR-1、§4.5)。
 
 ### 4.4 変更分類(core/detect)
@@ -253,8 +253,10 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 ## 6. 依存関係解析(core/template + core/graph)
 
 - YAML パースは `yaml` パッケージに CFN 短縮タグ(`!Ref`, `!Sub`, `!ImportValue`, `!GetAtt` 等)を customTags として登録して行う。JSON テンプレートはそのままパース。
-- **依存辺の抽出**: テンプレート中の `Fn::ImportValue`(短縮形含む)の値が静的文字列の場合、その Export 名を import として記録。`Outputs.*.Export.Name` が静的文字列、または `${AWS::StackName}` 等の解決可能な擬似パラメータのみを含む `Fn::Sub` の場合、解決して export として記録。
-- **解決不能ケース**(動的な Sub 合成等)は警告を出し、解析警告が残るスタックを `dependencyAnalysisIncomplete: true` としてステートへ保存する。当該スタックは後日の自動削除を fail-closed で拒否する。曖昧な依存先が設定の明示 `dependsOn` によりすべて解消されている場合だけ完全扱い(`false`)とし、明示宣言は自動解析結果とマージされる。
+- **依存辺の抽出**: テンプレート中の `Fn::ImportValue`(短縮形含む)と `Outputs.*.Export.Name` をリージョン別ターゲットの文脈で解決する。静的文字列はそのまま名前として記録する。`Ref` はテンプレートの `Parameters` に宣言された `Type: String` / `Type: Number` のパラメータだけを対象とする。文字列形式の `Fn::Sub` は、`${AWS::StackName}` / `${AWS::Region}` および同じ解決可能パラメータだけで構成される場合に解決し、CloudFormation のリテラルエスケープ `${!Literal}` はパラメータ参照ではなく `${Literal}` という文字列へ解決する。リソースへの `Ref`、`${Resource.Attribute}`、変数マップ形式の `Fn::Sub`、`Fn::Join` / `Fn::FindInMap` / `Fn::GetAtt` 等は評価しない。
+- **依存名に用いるパラメータ値**: パース済みテンプレートから `Parameters` 宣言を抽出し、scalar(`string` / `number` / `boolean`)な `Default` を文字列化した値へ、`ResolvedStackTarget.parameters`(共通 `parameters` に `regionOverrides.<region>.parameters` を後勝ちで反映済み)を上書きして実効値を得る。明示された空文字も上書き値として扱う。明示値が `__REQUIRED__` の場合は未確定であり、`Default` へフォールバックしない。`NoEcho: true`、`Type: String` / `Type: Number` 以外、Default も明示値もない、非 scalar Default、または対応外の式は解決不能とする。SSM supplied parameter 型は設定値が Parameter Store のキーで `Ref` 結果と一致しないため、対応型へ含めない。
+- **二段階解析とキャッシュ**: `analyzeStaticTemplate` はテンプレートパス単位で Parameter 宣言、Export 候補、Import 候補、NoEcho 情報を抽出してキャッシュする。`resolveStaticTemplateAnalysis` は `stackName` / `region` / 対象リージョンの実効 `parameters` を受け取り、候補をターゲット単位で解決する。同一テンプレートを複数リージョンへ展開した場合も、リージョン別パラメータ値から異なる依存名を得られる。
+- **解決不能ケース**: 解決不能な Export / Import ごとにテンプレート上の位置と理由を含む警告を出し、その候補だけを自動依存から除外する。他の解決可能な自動解析辺と設定の明示 `dependsOn` は通常どおりマージする。解析警告が残るスタックでも、明示 `dependsOn` が1件以上あれば利用者が依存関係を補完済みとみなし `dependencyAnalysisIncomplete: false` としてステートへ保存する。明示 `dependsOn` がない場合だけ `true` として保存し、後日の自動削除を fail-closed で拒否する。警告メッセージへ NoEcho の実値を含めない。
 - グラフはリージョンごとに独立構築(FR-13)。export 名 → 提供スタックキーの索引を作り、import 参照から辺を張る。
 - 削除順序の決定には、現在のテンプレート群から構築したグラフに、ステートの `exports` / `imports` から復元した旧グラフを統合したものを用いる(FR-6)。
 - トポロジカルソートは Kahn 法。循環検出時は循環に含まれるスタックキーを列挙してエラー(FR-8)。

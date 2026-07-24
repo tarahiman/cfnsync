@@ -43,6 +43,7 @@ export function getGraph(input: {
     const analysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: target.stackName,
       region: target.region,
+      parameters: target.parameters,
     });
     warnings.push(...analysis.warnings);
     nodes.push({

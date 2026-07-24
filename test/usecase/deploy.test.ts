@@ -129,6 +129,7 @@ function recordedState(
     const analysis = analyzeTemplate(source, {
       stackName: target.stackName,
       region: target.region,
+      parameters: target.parameters,
     });
     state = upsertStackEntry(state, target.stackKey, {
       stackName: target.stackName,
@@ -403,6 +404,96 @@ describe('deploy — T-14 integration', () => {
     expect(s.backend.stored?.state.stacks[`a.yaml@${REGION}`].stackId).toBe(
       `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/A/managed`,
     );
+  });
+
+  it('FR-8-7(deploy統合): リージョン別実効パラメータで依存順を決め、新しい依存名を state へ保存する', async () => {
+    const parameterizedProvider = `
+Parameters:
+  Namespace:
+    Type: String
+    Default: default
+Resources: {}
+Outputs:
+  Shared:
+    Value: value
+    Export:
+      Name: !Sub '\${Namespace}-shared'
+`;
+    const parameterizedConsumer = `
+Parameters:
+  Namespace:
+    Type: String
+    Default: default
+Resources:
+  Consumer:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub: '\${Namespace}-shared'
+`;
+    const config = configOf(
+      {
+        'provider.yaml': {
+          stackName: 'Provider',
+          regions: [REGION, REGION_2],
+          parameters: { Namespace: 'common' },
+          regionOverrides: {
+            [REGION_2]: { parameters: { Namespace: 'west' } },
+          },
+        },
+        'consumer.yaml': {
+          stackName: 'Consumer',
+          regions: [REGION, REGION_2],
+          parameters: { Namespace: 'common' },
+          regionOverrides: {
+            [REGION_2]: { parameters: { Namespace: 'west' } },
+          },
+        },
+      },
+      [REGION, REGION_2],
+    );
+    const templates = templatesOf({
+      'provider.yaml': parameterizedProvider,
+      'consumer.yaml': parameterizedConsumer,
+    });
+    const previous = recordedState(config, templates, { modified: true });
+    for (const entry of Object.values(previous.stacks)) {
+      entry.exports = entry.exports.map(() => 'old-shared');
+      entry.imports = entry.imports.map(() => 'old-shared');
+    }
+    const s = setup(config, templates, previous);
+    for (const region of [REGION, REGION_2]) {
+      setExistingStacks(config, gatewayFor(s, region), region);
+    }
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(mutationOrder(gatewayFor(s, REGION))).toEqual([
+      'create:Provider',
+      'execute:Provider',
+      'create:Consumer',
+      'execute:Consumer',
+    ]);
+    expect(mutationOrder(gatewayFor(s, REGION_2))).toEqual([
+      'create:Provider',
+      'execute:Provider',
+      'create:Consumer',
+      'execute:Consumer',
+    ]);
+    expect(
+      s.backend.stored?.state.stacks[`provider.yaml@${REGION}`].exports,
+    ).toEqual(['common-shared']);
+    expect(
+      s.backend.stored?.state.stacks[`consumer.yaml@${REGION}`].imports,
+    ).toEqual(['common-shared']);
+    expect(
+      s.backend.stored?.state.stacks[`provider.yaml@${REGION_2}`].exports,
+    ).toEqual(['west-shared']);
+    expect(
+      s.backend.stored?.state.stacks[`consumer.yaml@${REGION_2}`].imports,
+    ).toEqual(['west-shared']);
   });
 
   it('FR-5-3: dry-run は差分 describe 後に変更セットを削除し、実行しない', async () => {
@@ -1344,7 +1435,7 @@ describe('deploy — T-14 integration', () => {
     );
   });
 
-  it('§6(解析再レビュー⑥): 動的依存警告を state に incomplete 保存し、明示 dependsOn があれば完全扱いにする', async () => {
+  it('FR-6-5 / FR-8-7(不完全解析): 明示 dependsOn があれば解析警告を解消済みとして保存する', async () => {
     const dynamic = `
 Resources: {}
 Outputs:

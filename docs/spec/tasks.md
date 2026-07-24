@@ -5,7 +5,7 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-4 と FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
+- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-4、FR-8-7、FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -61,6 +61,8 @@
 | FR-8-1(解析) | `Export`(Outputs)と `Fn::ImportValue` を解析する | YAML 短縮タグ(`!ImportValue` / `!Sub` / `!Ref` / `!GetAtt`)入りテンプレートから import / export 名を抽出する。JSON テンプレートも同結果 |
 | §6 | 静的 Export 名と解決可能な `Fn::Sub`(`${AWS::StackName}` 等)は解決して export とする | `!Sub "${AWS::StackName}-VpcId"` がスタック名で解決される |
 | §6 | 解決不能な動的合成は警告 | 動的パラメータを含む `Fn::Sub` の Export → export 扱いせず警告を返す |
+| FR-8-7(解決) | `String` / `Number` Parameter の `Ref` と文字列形式 `Fn::Sub` を実効値で解決する | Export / Import の双方について `Ref`、複数変数を含む `Fn::Sub`、`${!Literal}` のリテラルエスケープ、数値の文字列化を検証する。値は scalar Default < 共通 parameters < region override の優先順位で、空文字の明示値も Default より優先する |
+| FR-8-7(未解決) | 未確定・秘匿・未対応の候補だけを除外して警告し、他の依存解析は継続する | Default/明示値なし、`__REQUIRED__`(Default へフォールバックしない)、NoEcho、非 scalar Default、List/SSM/未対応型、リソース `Ref`、変数マップ形式 `Fn::Sub`、未対応 intrinsic は対象位置・理由付き warning。NoEcho 実値は warning に含めず、同一テンプレート内の静的候補は引き続き抽出される |
 | NFR-4(準備) | NoEcho パラメータの抽出 | `Parameters` から `NoEcho: true` のキー一覧を抽出する(マスク適用は T-11) |
 | FR-1-11(a)準備 | scalar な Parameter Default を復旧比較用に文字列化して抽出し、Default なしは含めない | `FR-1-11(a)準備: Parameters Default を文字列化して抽出し Default なしは含めない` |
 | FR-1-11(a) fail-closed | object・array・intrinsic Default を実効値として推測または黙示無視しない | `FR-1-11(a) fail-closed: 非 scalar Default を実効値として推測しない` |
@@ -242,6 +244,8 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-1-7(統合) | ロックは正常・異常を問わず終了時に解放 | 成功時・途中エラー時の双方で解放される(所有権喪失時は解放試行が条件不成立で無害) |
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |
 | §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` |
+| FR-8-7(deploy統合) | target ごとの実効パラメータで依存候補を解決し、成功時の state へ記録する | 共通値と region override で異なる Export / Import 名を解決し、依存順と保存済み exports/imports がリージョン別に一致する / parameter変更後は新しい依存名を保存する |
+| FR-6-5 / FR-8-7(不完全解析) | 明示 `dependsOn` により解析警告を補完できる | 動的依存警告のみなら `dependencyAnalysisIncomplete: true` / 明示 dependsOn が1件以上あれば false / 警告なしなら false |
 
 ### T-15 usecase/delete — スタック削除
 
@@ -276,6 +280,8 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | **FR-1-9(import)** | **設定・テンプレート・ステートの各書き込み直前に fencing 検証** | 各ローカル書き込み(cfnsync.yaml・テンプレートファイル・ステート保存)の直前ごとに所有権検証が配置される(呼び出し順序検証)/ 障害注入: 設定ファイル書き込み後に所有権喪失 → **残りの書き込み(テンプレート・ステート)が行われない** |
 | FR-10-10 | スタックが存在しないテンプレートは `added` 扱い | 対応スタックなし → ステートに記録されず、次回 detect で `added` |
 | FR-10-11 | 依存辺の記録 | インポート成功時に exports / imports がステートに記録される(FR-8-5) |
+| FR-8-7(import統合) | デプロイ済みスタックの実効パラメータで依存名を解決して記録する | DescribeStacks の非 NoEcho パラメータを Default より優先して Export / Import を解決し state へ記録する / NoEcho は `__REQUIRED__` のため未解決 warning と incomplete を保持する |
+| FR-6-5 / FR-8-7(import不完全解析) | import でも明示 `dependsOn` により解析警告を補完できる | 動的依存警告のみなら `dependencyAnalysisIncomplete: true` / 明示 dependsOn が1件以上あれば false |
 | FR-13-9 | リージョンごとにインポートできる | 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる |
 | NFR-4(import warning) | import report の warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使い、text 専用診断とは分離する | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
 

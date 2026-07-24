@@ -481,6 +481,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     const analysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: target.stackName,
       region: target.region,
+      parameters: target.parameters,
     });
     analyses.set(target.stackKey, analysis);
     redactors.set(

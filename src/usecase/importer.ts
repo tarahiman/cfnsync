@@ -544,15 +544,15 @@ async function buildImportPlan(args: {
       }
       staticAnalysis = representation.staticAnalysis;
     }
+    const configParameters = toConfigParameters(
+      summary.parameters,
+      staticAnalysis.noEchoParams,
+    );
     const deployedAnalysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: summary.stackName,
       region: target.region,
+      parameters: configParameters,
     });
-
-    const configParameters = toConfigParameters(
-      summary.parameters,
-      deployedAnalysis.noEchoParams,
-    );
     const configTags = toConfigTags(summary.tags);
     const noEchoPlaceholders = Object.keys(configParameters).filter(
       (key) => configParameters[key] === REQUIRED_PLACEHOLDER,
