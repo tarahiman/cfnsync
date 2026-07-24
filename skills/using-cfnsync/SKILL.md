@@ -7,29 +7,104 @@ description: Use when operating or investigating the cfnsync CLI (a tool that sy
 
 `cfnsync` is a CLI that syncs a directory of raw CloudFormation templates (YAML/JSON) with AWS stacks. It detects added/modified/deleted templates, creates/diffs/executes change sets, and creates/updates/deletes stacks in dependency order. It targets non-interactive execution in CI (GitHub Actions) and has no template-generation or abstraction layer like CDK.
 
-This skill is a guide for selecting and running cfnsync subcommands appropriately from Claude Code and interpreting their output (exit codes, diffs, errors) correctly.
+Use this guide to select and run cfnsync subcommands and interpret their output (exit codes, diffs, and errors) correctly.
 
 ## Writing the config file
 
-The parameter list and samples for `cfnsync.yaml` are canonically defined in the following documents in this repository (this skill does not duplicate them — always refer to these when reading or writing the config file):
+Read the bundled references whenever reading, writing, or validating `cfnsync.yaml`:
 
-- Parameter reference: [`../../docs/config-reference.md`](../../docs/config-reference.md)
-- Commented sample: [`../../docs/examples/cfnsync.sample.yaml`](../../docs/examples/cfnsync.sample.yaml)
+- Parameter reference: [`references/config-reference.md`](references/config-reference.md)
+- Commented sample: [`references/examples/cfnsync.sample.yaml`](references/examples/cfnsync.sample.yaml)
+
+The references are distributed with the skill and do not require access to the cfnsync source repository.
+
+## Command usage
+
+Run commands as `cfnsync <command> [options]`. Every subcommand accepts these common options:
+
+| Option | Meaning |
+|---|---|
+| `--config <path>` | Read configuration from this path (default `./cfnsync.yaml`) |
+| `--profile <name>` | Use this AWS shared-config profile |
+| `--region <region>` | Override `defaultRegion` |
+| `--output <text|json>` | Select human-readable or machine-readable output (default `text`) |
+
+Use `--output json` for automation. Run `cfnsync --help` or `cfnsync <command> --help` to verify the options supported by the installed version.
+
+### `status`
+
+```sh
+cfnsync status [common options]
+```
+
+Compare state with the current templates and report `added`, `modified`, `deleted`, and `unchanged`. This performs no CloudFormation or STS calls; an S3 backend may read state from S3.
+
+### `plan`
+
+```sh
+cfnsync plan [common options]
+```
+
+Create and describe change sets, print the diff, then delete those change sets without executing them. Review Add/Modify/Remove operations, replacements, and deletion previews. A diff produces exit code `2`.
+
+### `deploy`
+
+```sh
+cfnsync deploy [common options] [--dry-run] [--allow-delete] \
+  [--on-failure <stop|continue>] [--confirm]
+```
+
+Detect changes, resolve dependency order, and create, describe, and execute change sets non-interactively.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | Behave like `plan`: create and show change sets without executing them |
+| `--allow-delete` | Permit deletion of removed stacks; without it, only report deletions |
+| `--on-failure <stop|continue>` | Stop after a failure or continue with independent stacks (default `stop`) |
+| `--confirm` | Prompt before deployment when attached to a TTY; has no effect in non-interactive CI |
+
+### `graph`
+
+```sh
+cfnsync graph [common options]
+```
+
+Show the per-region dependency graph derived from template exports/imports and explicit `dependsOn` entries. This has no AWS side effects.
+
+### `import`
+
+```sh
+cfnsync import [common options] [--reconcile <remote|local>] [--write-template]
+```
+
+Adopt existing stacks into config, templates, and state. It only reads CloudFormation stacks, but it writes local config/template files and the configured state backend (including S3), and acquires/releases the S3 state lock when that backend is selected.
+
+| Option | Meaning |
+|---|---|
+| `--reconcile remote` | Resolve a template difference by replacing the local template with the deployed template |
+| `--reconcile local` | Keep the local template and record deployed state so the next plan exposes the difference |
+| `--write-template` | Write a deployed template when its local template file does not exist |
+
+Without `--reconcile`, a local/deployed template difference is an error.
+
+### `force-unlock`
+
+```sh
+cfnsync force-unlock <runId> [common options]
+```
+
+Conditionally release a stale S3 state lock only when it is owned by the specified run ID. First confirm that the prior process or CI job has fully terminated. Never unlock a live run.
 
 ## Choosing a subcommand
 
-Every subcommand accepts the common options `--config <path>` (default `./cfnsync.yaml`), `--profile`, `--region`, and `--output <text|json>`. Use `--output json` when you want machine-readable output.
-
-| Command | Purpose | Side effects on AWS |
+| Command | Purpose | Side effects |
 |---|---|---|
-| `status` | Compare state with the current templates and show `added`/`modified`/`deleted`/`unchanged` | None (read-only) |
-| `plan` | Create change sets, show the diff, and exit without executing | Creates change sets only (does not execute) |
+| `status` | Inspect local changes quickly | State read only |
+| `plan` | Preview exact CloudFormation changes | Creates and deletes temporary change sets |
 | `deploy` | Detect changes, resolve dependency order, create/diff/execute change sets non-interactively | Yes. `--dry-run` limits it to creation and diff only |
-| `graph` | Show the dependency graph derived from Export/`Fn::ImportValue` and `dependsOn` | None (read-only) |
-| `import` | Adopt an existing stack's config, template, and state | Read-only against AWS. Local config/template/state may be modified |
-| `force-unlock <runId>` | Conditionally release a stale lock in S3 state, only when the given run ID matches | Releases the lock only (does nothing if it does not match) |
-
-The common options above and `import`'s `--reconcile`/`--write-template` are a summary of the main ones, not a complete list. To confirm the exact options and usage of each command (which flags exist, their defaults, etc.), run `cfnsync --help` or `cfnsync <subcommand> --help` (e.g. `cfnsync deploy --help`). That is the source of truth; when in doubt, check `--help` first rather than assembling options by guesswork.
+| `graph` | Inspect deployment order | State read only |
+| `import` | Adopt existing stacks | Reads CloudFormation; writes local config/templates and configured state, and manages an S3 lock when applicable |
+| `force-unlock` | Recover from a stale S3 lock | Conditionally deletes the lock |
 
 ### Typical workflow
 
@@ -67,5 +142,3 @@ cfnsync's mutating operations are designed around the following defense-in-depth
 - Errors about "another change set exists": a manual action or another tool created a change set on the target stack. Inspect that change set on the AWS side before executing, execute or delete it, then re-run cfnsync.
 - Lock acquisition failure: usually correct behavior (preventing concurrent runs). Do not `force-unlock` without confirming the previous run has truly terminated.
 - A `deploy` that fails partway: you may re-run with the same config. Already-succeeded stacks are automatically skipped as unchanged.
-
-For more detailed command options, GitHub Actions usage, and manual verification steps, see the repository's [`README.md`](../../README.md).
