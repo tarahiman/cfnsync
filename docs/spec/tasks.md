@@ -5,7 +5,7 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-4、FR-8-7、FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
+- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-3、FR-4、FR-8-7、FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -178,6 +178,9 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-3-1 | リソース単位の Add / Modify / Remove と変更プロパティを表示 | DescribeChangeSet の Changes から種別・プロパティ一覧が整形される |
 | FR-3-2 | Replacement は警告として強調 | `Replacement: True` のリソースが警告表示になる(テキスト・JSON 双方にフラグ) |
 | FR-3-3 | テキストに加え JSON を選択できる | `--output json` で機械可読 JSON(スキーマ検証)が出る |
+| FR-3-4 | plan / deploy の text 差分は実行環境によらず既定で色付き | report renderer が Add=緑・Modify=黄・Remove=赤・Replacement=太字赤の ANSI SGR を付与する / 非 TTY の plan と deploy でも既定で同じ ANSI 色を stdout へ出す |
+| FR-3-5 | `--no-color` または `NO_COLOR` の存在は既定色を無効化 | plan / deploy の両方で各指定時に ANSI が一切出ない / 空の `NO_COLOR` も存在として扱う |
+| FR-3-6 | JSON は色設定にかかわらず ANSI なしの単一 document | plan / deploy の `--output json` を JSON parse でき、ANSI が混入せず既存 schema を維持する |
 | NFR-4 | NoEcho 値をマスクする。ただし予約済み `REQUIRED_PLACEHOLDER` との完全一致だけは非秘匿 sentinel として置換候補から除外する | 差分・ログ・JSON のすべてで NoEcho パラメータ値が `****` になる(実値がどの出力にも現れない) / `NFR-4: NoEcho 実効値が __REQUIRED__ の場合は予約 sentinel を誤マスクしない` / `NFR-4: 明示値は template Default より優先して redactor の実効値になる` |
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
@@ -339,6 +342,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12(JSON選択): 複数指定は最後の --output を採用する` |
 | FR-12-6g(JSON誤検出防止) | 他の値付きオプションの値として消費された `--output=json` は JSON 選択ではない | `FR-12(JSON選択): 他オプションの値 --output=json を JSON 指定として扱わない` |
 | FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12(JSON契約外): --help と --version は text を出して exit 0` |
+| FR-12-7 | plan / deploy だけが `--no-color` を提供 | plan / deploy の help に `--no-color` があり、他サブコマンドの help にはない |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-5-2(オプション) | ローカル向け確認プロンプトはオプトイン | 確認オプション指定時のみプロンプト(既定は非対話) |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |

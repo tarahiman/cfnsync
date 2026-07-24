@@ -68,6 +68,8 @@ graph TD
 cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、各サブコマンドの `--help` に
 共通オプション(`--config` / `--profile` / `--region` / `--output`)を「Global Options」として表示する
 (FR-12-5)。
+`plan` / `deploy` だけはサブコマンドオプション `--no-color` を持つ。これを共通オプションにはせず、
+status / graph / import / force-unlock の出力契約を変更しない(FR-12-7)。
 CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。事前 parser は Commander と同じく値を取るグローバル／サブコマンドオプション(`--config` / `--profile` / `--region` / `--output` / `--on-failure` / `--reconcile`)の arity を解釈し、他オプションの値として消費された `--output=json` を選択と誤認しない。サブコマンド前後のグローバルオプションを同様に扱う。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
 
 ## 4. データ設計
@@ -203,6 +205,11 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 6. 終了コード: 差分あり 2 / なし 0 / エラー 1
 
 各スタックの変更セット作成開始・差分確定は `DeployDeps.onProgress`(FR-5-4)を通じてスタックキー付きで標準エラーへ逐次通知する。差分確定後に意図どおり停止すること自体は `skipped` 進捗として通知しない。依存失敗等による実際のスキップ通知は維持する。CFN リソースイベント(`onEvent`、FR-4-1)とは独立したチャネルであり、差分・結果の最終 report(標準出力)には一切含まれない。
+人間可読な text 差分は端末判定を行わず ANSI 色を既定で有効にし、リソース行の
+`Add` は緑(SGR 32)、`Modify` は黄(SGR 33)、`Remove` は赤(SGR 31)、
+`[REPLACEMENT]` は太字の赤(SGR 1;31)とする。`--no-color` または `NO_COLOR`
+環境変数の存在(空文字を含む)は既定値より優先してすべての ANSI 装飾を無効化する。
+この判定は TTY / CI / パイプ・リダイレクトで変えない(FR-3-4 / FR-3-5)。
 plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用する。
 
 ### 5.3 `cfnsync deploy`
@@ -220,6 +227,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
 4. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)
 5. `--dry-run` は plan と同一動作(FR-5)
 
+人間可読な text 差分の色と無色化の優先順位は plan と同じとする(FR-3-4 / FR-3-5)。
 deploy report を生成できた場合は、fail-closed の失敗 report を含めて既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用し、成功・失敗 report を `{ok,data}` で包み直さない。
 
 ### 5.4 `cfnsync import`
@@ -341,6 +349,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - 共通エラーの `type` は外部契約として許可した cfnsync エラー分類だけを使用する。Commander の引数・subcommand エラーは `CliUsageError`、分類不能な例外は固定値 `Error` とし、任意の `constructor.name` を無制限に公開しない。
 - text 出力時のエラー診断は従来どおり stderr とする。Commander の usage / help-after-error も stderr に出してよい。JSON 本体を stderr へ移さず、action catch と Commander catch は同じ renderer を共有して二重 JSON を防ぐ。
 - 成功 JSON、および deploy/import/force-unlock が生成した既存 result JSON は `{ok,data}` で包み直さず、その schema と終了コードを維持する。`--help` / `--version` は従来の text 出力、exit 0 とする。`--output bogus` は有効な JSON 選択が成立しないため共通 JSON エラー契約の対象外とする。
+- `plan` / `deploy` の `--output json` は ANSI 色の既定値、`--no-color`、`NO_COLOR` の状態にかかわらず ANSI エスケープシーケンスを含めず、stdout 上の単一 JSON document 契約と既存 schema を維持する(FR-3-6)。
 - TTY 上の `deploy --confirm` を拒否した場合、text 選択では stderr の `Deployment cancelled.` と exit 0 を維持する。有効な JSON 選択では stdout に次の専用 result を 1 個出力し、同じく exit 0 とする。
 
 ```json

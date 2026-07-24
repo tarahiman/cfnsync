@@ -177,9 +177,14 @@ export function createCliProgram(
   program
     .command('plan')
     .description('Create change sets and show the diff')
-    .action((_opts, command) =>
+    .option('--no-color', 'Disable ANSI colors in the diff')
+    .action((local: { color?: boolean }, command) =>
       invoke(runtime, () =>
-        runDeployment(runtime, { ...commonOptions(command), dryRun: true }),
+        runDeployment(runtime, {
+          ...commonOptions(command),
+          ...local,
+          dryRun: true,
+        }),
       )(),
     );
 
@@ -194,6 +199,7 @@ export function createCliProgram(
         .default('stop'),
     )
     .option('--confirm', 'Prompt for confirmation before running (TTY only)')
+    .option('--no-color', 'Disable ANSI colors in the diff')
     .action(
       (
         local: {
@@ -201,6 +207,7 @@ export function createCliProgram(
           allowDelete?: boolean;
           onFailure: 'stop' | 'continue';
           confirm?: boolean;
+          color?: boolean;
         },
         command,
       ) =>

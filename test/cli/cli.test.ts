@@ -49,6 +49,31 @@ const report: DeployReport = {
   diffs: [],
 };
 
+const colorReport: DeployReport = {
+  connection: report.connection,
+  diffs: [
+    {
+      stackKey: 'app.yaml@ap-northeast-1',
+      region: 'ap-northeast-1',
+      stackName: 'app',
+      operation: 'update',
+      resources: [
+        {
+          action: 'Add',
+          logicalResourceId: 'AppBucket',
+          resourceType: 'AWS::S3::Bucket',
+          replacement: false,
+          scope: ['Properties'],
+          changedProperties: ['BucketName'],
+          details: [],
+          containsNoEchoChange: false,
+        },
+      ],
+      warnings: [],
+    },
+  ],
+};
+
 function backend(): StateBackend {
   return {
     load: vi.fn(async () => ({
@@ -303,6 +328,73 @@ describe('T-19 cli', () => {
         },
       }),
     );
+  });
+
+  it.each([
+    'plan',
+    'deploy',
+  ] as const)('FR-3-4: 非 TTY の %s でも text 差分は既定で ANSI 色付き', async (command) => {
+    const deps = dependencies({
+      deploy: vi.fn(async () => ({
+        exitCode: command === 'plan' ? (2 as const) : (0 as const),
+        report: colorReport,
+        hasDiff: true,
+      })),
+    });
+    const out = capture();
+
+    await runCli([command], {
+      deps,
+      io: out.io,
+      env: {},
+      isTTY: false,
+    });
+
+    expect(out.stdout()).toContain('\x1b[32m+ Add');
+  });
+
+  it.each([
+    ['plan --no-color', ['plan', '--no-color'], {}],
+    ['deploy --no-color', ['deploy', '--no-color'], {}],
+    ['plan NO_COLOR', ['plan'], { NO_COLOR: '1' }],
+    ['deploy 空 NO_COLOR', ['deploy'], { NO_COLOR: '' }],
+  ] as const)('FR-3-5: %s は text 差分の ANSI 色を無効化する', async (_label, args, env) => {
+    const deps = dependencies({
+      deploy: vi.fn(async () => ({
+        exitCode: args[0] === 'plan' ? (2 as const) : (0 as const),
+        report: colorReport,
+        hasDiff: true,
+      })),
+    });
+    const out = capture();
+
+    await runCli([...args], { deps, io: out.io, env });
+
+    expect(out.stdout()).not.toContain('\x1b[');
+    expect(out.stdout()).toContain('+ Add');
+  });
+
+  it.each([
+    'plan',
+    'deploy',
+  ] as const)('FR-3-6: %s --output json は ANSI なしの単一 JSON document', async (command) => {
+    const deps = dependencies({
+      deploy: vi.fn(async () => ({
+        exitCode: command === 'plan' ? (2 as const) : (0 as const),
+        report: colorReport,
+        hasDiff: true,
+      })),
+    });
+    const out = capture();
+
+    await runCli([command, '--output', 'json'], {
+      deps,
+      io: out.io,
+      env: {},
+    });
+
+    expect(out.stdout()).not.toContain('\x1b[');
+    expect(JSON.parse(out.stdout()).diffs[0].resources[0].action).toBe('Add');
   });
 
   it('FR-12-1: import と force-unlock を対応 usecase に渡す', async () => {
@@ -881,6 +973,36 @@ describe('T-19 cli', () => {
     expect(out.stdout()).toContain('--profile');
     expect(out.stdout()).toContain('--region');
     expect(out.stdout()).toContain('--output');
+  });
+
+  it.each([
+    'plan',
+    'deploy',
+  ] as const)('FR-12-7: %s の --help に --no-color を表示する', async (name) => {
+    const out = capture();
+    expect(
+      await runCli([name, '--help'], {
+        deps: dependencies(),
+        io: out.io,
+      }),
+    ).toBe(0);
+    expect(out.stdout()).toContain('--no-color');
+  });
+
+  it.each([
+    'status',
+    'graph',
+    'import',
+    'force-unlock',
+  ] as const)('FR-12-7: %s の --help には --no-color を表示しない', async (name) => {
+    const out = capture();
+    expect(
+      await runCli([name, '--help'], {
+        deps: dependencies(),
+        io: out.io,
+      }),
+    ).toBe(0);
+    expect(out.stdout()).not.toContain('--no-color');
   });
 
   it('FR-12-5: ルートの --help は従来どおり Options: の下に共通オプションを表示する', async () => {

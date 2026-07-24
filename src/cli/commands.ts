@@ -185,6 +185,7 @@ export async function runDeployment(
     dryRun?: boolean;
     allowDelete?: boolean;
     onFailure?: 'stop' | 'continue';
+    color?: boolean;
   },
 ): Promise<0 | 1 | 2> {
   const input = loadInputs(ctx, options);
@@ -201,7 +202,11 @@ export async function runDeployment(
   });
   writeLine(
     ctx.io.stdout,
-    renderDeploy(result.report, options.output === 'json'),
+    renderDeploy(
+      result.report,
+      options.output === 'json',
+      options.color !== false && !Object.hasOwn(ctx.env, 'NO_COLOR'),
+    ),
   );
   return result.exitCode;
 }
