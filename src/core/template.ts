@@ -14,12 +14,14 @@
 
 import type { CollectionTag, ScalarTag } from 'yaml';
 import { parse as parseYaml } from 'yaml';
+import { REQUIRED_PLACEHOLDER } from './constants.js';
 import { TemplateParseError } from './errors.js';
 
-/** `analyzeTemplate` に渡す文脈。Export の `Fn::Sub` 解決に用いる。 */
+/** ターゲット単位の依存名解決文脈。parameters はリージョン上書き反映済み。 */
 export interface TemplateAnalysisContext {
   stackName: string;
   region: string;
+  parameters?: Record<string, string>;
 }
 
 /** `analyzeTemplate` の解析結果(design.md §6)。 */
@@ -36,10 +38,22 @@ export interface TemplateAnalysis {
 
 /** AST 全走査をテンプレートごとに一度だけ行ったリージョン非依存の中間結果。 */
 export interface StaticTemplateAnalysis {
-  exportCandidates: Array<{ outputName: string; nameValue: unknown }>;
-  imports: string[];
-  warnings: string[];
+  exportCandidates: DependencyNameCandidate[];
+  importCandidates: DependencyNameCandidate[];
+  parameterDeclarations: Record<string, ParameterDeclaration>;
   noEchoParams: string[];
+}
+
+interface DependencyNameCandidate {
+  path: string;
+  value: unknown;
+}
+
+interface ParameterDeclaration {
+  type: unknown;
+  noEcho: boolean;
+  hasDefault: boolean;
+  defaultValue: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -266,60 +280,124 @@ export function extractScalarParameterDefaults(
 /** `${AWS::StackName}` / `${AWS::Region}` プレースホルダの置換パターン。 */
 const SUB_VAR_PATTERN = /\$\{([^}]*)\}/g;
 
-/**
- * `Fn::Sub` の文字列テンプレートを、`${AWS::StackName}` / `${AWS::Region}` のみを
- * 擬似パラメータとして解決する。それ以外の変数(テンプレートパラメータ参照等)を
- * 含む場合は解決不能として `undefined` を返す(design.md §6)。
- */
+type NameResolution =
+  | { resolved: true; value: string }
+  | { resolved: false; reason: string };
+
+function unresolved(reason: string): NameResolution {
+  return { resolved: false, reason };
+}
+
+function resolveParameter(
+  name: string,
+  analysis: StaticTemplateAnalysis,
+  ctx: TemplateAnalysisContext,
+): NameResolution {
+  const declaration = analysis.parameterDeclarations[name];
+  if (declaration === undefined) {
+    return unresolved(
+      `Ref '${name}' はテンプレートの Parameters に宣言されたパラメータではありません`,
+    );
+  }
+  if (declaration.type !== 'String' && declaration.type !== 'Number') {
+    return unresolved(
+      `Parameter '${name}' の Type '${String(declaration.type)}' は対応範囲外です`,
+    );
+  }
+  if (declaration.noEcho) {
+    return unresolved(`Parameter '${name}' は NoEcho のため解決しません`);
+  }
+
+  const parameters = ctx.parameters ?? {};
+  if (Object.hasOwn(parameters, name)) {
+    const value = parameters[name];
+    if (value === REQUIRED_PLACEHOLDER) {
+      return unresolved(
+        `Parameter '${name}' の明示値が ${REQUIRED_PLACEHOLDER} のため値が確定できません`,
+      );
+    }
+    return { resolved: true, value };
+  }
+
+  if (!declaration.hasDefault) {
+    return unresolved(`Parameter '${name}' に明示値も Default 値もありません`);
+  }
+  const value = declaration.defaultValue;
+  if (
+    typeof value !== 'string' &&
+    typeof value !== 'number' &&
+    typeof value !== 'boolean'
+  ) {
+    return unresolved(
+      `Parameter '${name}' の Default は scalar ではありません`,
+    );
+  }
+  return { resolved: true, value: String(value) };
+}
+
+/** 文字列形式の `Fn::Sub` を擬似パラメータと確定済み Parameter で解決する。 */
 function resolveSubTemplate(
   template: string,
+  analysis: StaticTemplateAnalysis,
   ctx: TemplateAnalysisContext,
-): string | undefined {
-  let resolvable = true;
+): NameResolution {
+  let failureReason: string | undefined;
   const resolved = template.replace(
     SUB_VAR_PATTERN,
     (_match, rawVarName: string) => {
       const varName = rawVarName.trim();
+      if (varName.startsWith('!')) {
+        return `\${${varName.slice(1)}}`;
+      }
       if (varName === 'AWS::StackName') return ctx.stackName;
       if (varName === 'AWS::Region') return ctx.region;
-      resolvable = false;
+      const parameter = resolveParameter(varName, analysis, ctx);
+      if (parameter.resolved) return parameter.value;
+      failureReason ??= parameter.reason;
       return '';
     },
   );
-  return resolvable ? resolved : undefined;
+  return failureReason === undefined
+    ? { resolved: true, value: resolved }
+    : unresolved(failureReason);
 }
 
-/**
- * `Outputs.*.Export.Name` を解決する。静的文字列はそのまま、`Fn::Sub` は擬似パラメータ
- * のみで構成される場合に解決する。それ以外(テンプレートパラメータ等の動的合成)は
- * `undefined` を返す。
- */
-function resolveExportName(
-  nameValue: unknown,
+/** 対応範囲を静的文字列 / Parameter Ref / 文字列形式 Fn::Sub に限定して解決する。 */
+function resolveDependencyName(
+  value: unknown,
+  analysis: StaticTemplateAnalysis,
   ctx: TemplateAnalysisContext,
-): string | undefined {
-  if (typeof nameValue === 'string') return nameValue;
-  if (isRecord(nameValue) && typeof nameValue['Fn::Sub'] === 'string') {
-    return resolveSubTemplate(nameValue['Fn::Sub'], ctx);
+): NameResolution {
+  if (typeof value === 'string') return { resolved: true, value };
+  if (!isRecord(value)) {
+    return unresolved('依存名の式が対応範囲外です');
   }
-  return undefined;
+  if (Object.hasOwn(value, 'Ref')) {
+    return typeof value.Ref === 'string'
+      ? resolveParameter(value.Ref, analysis, ctx)
+      : unresolved('Ref の参照先が文字列ではありません');
+  }
+  if (Object.hasOwn(value, 'Fn::Sub')) {
+    return typeof value['Fn::Sub'] === 'string'
+      ? resolveSubTemplate(value['Fn::Sub'], analysis, ctx)
+      : unresolved('変数マップ形式の Fn::Sub は対応範囲外です');
+  }
+  return unresolved('依存名の intrinsic 式が対応範囲外です');
 }
 
 /**
  * テンプレート全体(Resources / Outputs / Conditions 等すべて)を再帰走査し、
- * `Fn::ImportValue` の値が静的文字列であれば import として記録する。動的
- * (解決不能な `Fn::Sub` 等)であれば警告とする(design.md §6)。
+ * `Fn::ImportValue` の候補とテンプレート上の位置を抽出する。
  */
 function walkForImports(
   node: unknown,
-  imports: string[],
-  warnings: string[],
+  candidates: DependencyNameCandidate[],
   path: Array<string | number>,
 ): void {
   if (Array.isArray(node)) {
     node.forEach((item, i) => {
       path.push(i);
-      walkForImports(item, imports, warnings, path);
+      walkForImports(item, candidates, path);
       path.pop();
     });
     return;
@@ -329,15 +407,9 @@ function walkForImports(
   for (const [key, value] of Object.entries(node)) {
     path.push(key);
     if (key === 'Fn::ImportValue') {
-      if (typeof value === 'string') {
-        imports.push(value);
-      } else {
-        warnings.push(
-          `${formatTemplatePath(path)} を解決できません(動的な合成のため import として扱いません): ${JSON.stringify(value)}`,
-        );
-      }
+      candidates.push({ path: formatTemplatePath(path), value });
     }
-    walkForImports(value, imports, warnings, path);
+    walkForImports(value, candidates, path);
     path.pop();
   }
 }
@@ -365,6 +437,25 @@ function extractNoEchoParams(template: Record<string, unknown>): string[] {
   return noEchoParams;
 }
 
+function extractParameterDeclarations(
+  template: Record<string, unknown>,
+): Record<string, ParameterDeclaration> {
+  const declarations: Record<string, ParameterDeclaration> = {};
+  const params = template.Parameters;
+  if (!isRecord(params)) return declarations;
+  for (const [name, definition] of Object.entries(params)) {
+    if (!isRecord(definition)) continue;
+    const noEcho = definition.NoEcho;
+    declarations[name] = {
+      type: definition.Type,
+      noEcho: noEcho === true || noEcho === 'true',
+      hasDefault: Object.hasOwn(definition, 'Default'),
+      defaultValue: definition.Default,
+    };
+  }
+  return declarations;
+}
+
 /**
  * テンプレートソースを解析し、import / export の依存辺・警告・NoEcho パラメータを
  * 抽出する(design.md §6, requirements.md FR-8 / NFR-4)。
@@ -387,9 +478,8 @@ export function analyzeParsedTemplate(
 /** imports / NoEcho / Export 候補を AST から一度だけ抽出する。 */
 export function analyzeStaticTemplate(parsed: unknown): StaticTemplateAnalysis {
   const template = isRecord(parsed) ? parsed : {};
-  const warnings: string[] = [];
-  const imports: string[] = [];
-  walkForImports(template, imports, warnings, []);
+  const importCandidates: DependencyNameCandidate[] = [];
+  walkForImports(template, importCandidates, []);
   const exportCandidates: StaticTemplateAnalysis['exportCandidates'] = [];
   const outputs = template['Outputs'];
   if (isRecord(outputs)) {
@@ -397,37 +487,50 @@ export function analyzeStaticTemplate(parsed: unknown): StaticTemplateAnalysis {
       if (!isRecord(outputDef)) continue;
       const exportDef = outputDef['Export'];
       if (!isRecord(exportDef)) continue;
-      exportCandidates.push({ outputName, nameValue: exportDef['Name'] });
+      exportCandidates.push({
+        path: `Outputs.${outputName}.Export.Name`,
+        value: exportDef['Name'],
+      });
     }
   }
 
   return {
     exportCandidates,
-    imports: dedupePreserveOrder(imports),
-    warnings,
+    importCandidates,
+    parameterDeclarations: extractParameterDeclarations(template),
     noEchoParams: extractNoEchoParams(template),
   };
 }
 
-/** 中間結果の Export 候補だけを stack/region 文脈で解決する。 */
+/** 中間結果の Export / Import 候補を target の実効パラメータ文脈で解決する。 */
 export function resolveStaticTemplateAnalysis(
   analysis: StaticTemplateAnalysis,
   ctx: TemplateAnalysisContext,
 ): TemplateAnalysis {
-  const warnings = [...analysis.warnings];
+  const warnings: string[] = [];
+  const imports: string[] = [];
   const exports: string[] = [];
-  for (const candidate of analysis.exportCandidates) {
-    const resolved = resolveExportName(candidate.nameValue, ctx);
-    if (resolved !== undefined) exports.push(resolved);
+  for (const candidate of analysis.importCandidates) {
+    const result = resolveDependencyName(candidate.value, analysis, ctx);
+    if (result.resolved) imports.push(result.value);
     else {
       warnings.push(
-        `Outputs.${candidate.outputName}.Export.Name を解決できません(動的な合成のため export として扱いません): ${JSON.stringify(candidate.nameValue)}`,
+        `${candidate.path} を解決できません(${result.reason}。この候補は import として扱いません)`,
+      );
+    }
+  }
+  for (const candidate of analysis.exportCandidates) {
+    const result = resolveDependencyName(candidate.value, analysis, ctx);
+    if (result.resolved) exports.push(result.value);
+    else {
+      warnings.push(
+        `${candidate.path} を解決できません(${result.reason}。この候補は export として扱いません)`,
       );
     }
   }
 
   return {
-    imports: analysis.imports,
+    imports: dedupePreserveOrder(imports),
     exports: dedupePreserveOrder(exports),
     warnings,
     noEchoParams: analysis.noEchoParams,

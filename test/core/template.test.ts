@@ -156,6 +156,203 @@ describe('analyzeTemplate', () => {
     expect(result.warnings).toHaveLength(2);
   });
 
+  it('FR-8-7(解決): String/Number Parameter の Ref と文字列 Fn::Sub を Default < 明示値で解決する', () => {
+    const source = `
+Parameters:
+  Prefix:
+    Type: String
+    Default: default
+  Revision:
+    Type: Number
+    Default: 7
+  Empty:
+    Type: String
+    Default: fallback
+Resources:
+  ByRef:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Ref: Prefix
+  BySub:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub: '\${Prefix}-\${Revision}-\${Empty}-\${AWS::Region}'
+Outputs:
+  ByRef:
+    Value: value
+    Export:
+      Name: !Ref Prefix
+  BySub:
+    Value: value
+    Export:
+      Name: !Sub '\${AWS::StackName}-\${Prefix}-\${Revision}-\${Empty}'
+`;
+    const result = analyzeTemplate(source, {
+      stackName: 'provider',
+      region: 'ap-northeast-1',
+      parameters: { Prefix: 'prod', Empty: '' },
+    });
+
+    expect(result.imports).toEqual(['prod', 'prod-7--ap-northeast-1']);
+    expect(result.exports).toEqual(['prod', 'provider-prod-7-']);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('FR-8-7(Fn::Sub escape): ${!Literal} は Parameter 参照せず Export / Import 名へ ${Literal} として残す', () => {
+    const source = `
+Parameters:
+  Prefix:
+    Type: String
+    Default: default
+Resources:
+  Consumer:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub: '\${!ImportedLiteral}-\${Prefix}'
+Outputs:
+  Shared:
+    Value: value
+    Export:
+      Name:
+        Fn::Sub: '\${!ExportedLiteral}-\${Prefix}'
+`;
+
+    const result = analyzeTemplate(source, {
+      stackName: 'provider',
+      region: 'ap-northeast-1',
+      parameters: { Prefix: 'prod' },
+    });
+
+    expect(result.imports).toEqual(['${ImportedLiteral}-prod']);
+    expect(result.exports).toEqual(['${ExportedLiteral}-prod']);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('FR-8-7(未解決): 未確定・秘匿・未対応候補だけを位置と理由つきで除外し、静的候補は継続する', () => {
+    const source = `
+Parameters:
+  Missing:
+    Type: String
+  Required:
+    Type: String
+    Default: default-must-not-be-used
+  Secret:
+    Type: String
+    NoEcho: true
+    Default: noecho-default-must-not-leak
+  Structured:
+    Type: String
+    Default: [not, scalar]
+  ListValue:
+    Type: CommaDelimitedList
+    Default: a,b
+  SsmValue:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /secret/path
+Resources:
+  Static:
+    Type: Custom::Consumer
+    Properties:
+      Value: !ImportValue static-import
+  Missing:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue: { Ref: Missing }
+  Required:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue: { Ref: Required }
+  ResourceRef:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue: { Ref: Static }
+  MappedSub:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub:
+            - '\${Alias}-name'
+            - Alias: value
+  Joined:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Join: ['-', [a, b]]
+Outputs:
+  Static:
+    Value: value
+    Export:
+      Name: static-export
+  Secret:
+    Value: value
+    Export:
+      Name: !Sub '\${Secret}-name'
+  Structured:
+    Value: value
+    Export:
+      Name: !Ref Structured
+  List:
+    Value: value
+    Export:
+      Name: !Ref ListValue
+  Ssm:
+    Value: value
+    Export:
+      Name: !Ref SsmValue
+`;
+    const result = analyzeTemplate(source, {
+      ...ctx,
+      parameters: {
+        Required: '__REQUIRED__',
+        Secret: 'configured-noecho-must-not-leak',
+      },
+    });
+
+    expect(result.imports).toEqual(['static-import']);
+    expect(result.exports).toEqual(['static-export']);
+    expect(result.warnings).toHaveLength(9);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          /\$\.Resources\.Missing\.Properties\.Value\.Fn::ImportValue.*値.*ありません/,
+        ),
+        expect.stringMatching(
+          /\$\.Resources\.Required\.Properties\.Value\.Fn::ImportValue.*__REQUIRED__/,
+        ),
+        expect.stringMatching(
+          /\$\.Resources\.ResourceRef\.Properties\.Value\.Fn::ImportValue.*Parameters/,
+        ),
+        expect.stringMatching(
+          /\$\.Resources\.MappedSub\.Properties\.Value\.Fn::ImportValue.*変数マップ/,
+        ),
+        expect.stringMatching(
+          /\$\.Resources\.Joined\.Properties\.Value\.Fn::ImportValue.*対応範囲外/,
+        ),
+        expect.stringMatching(/Outputs\.Secret\.Export\.Name.*NoEcho/),
+        expect.stringMatching(/Outputs\.Structured\.Export\.Name.*scalar/),
+        expect.stringMatching(/Outputs\.List\.Export\.Name.*Type/),
+        expect.stringMatching(/Outputs\.Ssm\.Export\.Name.*Type/),
+      ]),
+    );
+    expect(result.warnings.join('\n')).not.toContain(
+      'configured-noecho-must-not-leak',
+    );
+    expect(result.warnings.join('\n')).not.toContain(
+      'noecho-default-must-not-leak',
+    );
+  });
+
   it('NFR-4(準備): Parameters から NoEcho: true / "true" のパラメータ名一覧を抽出する', () => {
     const result = analyzeTemplate(readFixture('noecho-params.yaml'), ctx);
     expect(result.noEchoParams).toEqual(['DbPassword', 'ApiKey']);

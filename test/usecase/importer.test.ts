@@ -998,6 +998,111 @@ describe('FR-10-11: exports / imports のステート記録', () => {
       s.backend.stored!.state.stacks[`app.yaml@${REGION}`].dependsOn,
     ).toEqual([NET_KEY]);
   });
+
+  it('FR-8-7(import統合): DescribeStacks の非 NoEcho 値を Default より優先して依存名を保存する', async () => {
+    const template = `
+Parameters:
+  Namespace:
+    Type: String
+    Default: default
+Resources:
+  Consumer:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub: '\${Namespace}-input'
+Outputs:
+  Shared:
+    Value: value
+    Export:
+      Name: !Ref Namespace
+`;
+    const s = setup({
+      configText: `version: 1
+defaultRegion: ${REGION}
+stacks:
+  network.yaml:
+    stackName: prod-network
+`,
+      files: { [NETWORK_ABS]: template },
+    });
+    const cfn = s.cfns.get(REGION)!;
+    cfn.stacks.set(
+      'prod-network',
+      makeSummary({
+        parameters: { Namespace: 'deployed' },
+        tags: {},
+        capabilities: [],
+      }),
+    );
+    cfn.templates.set('prod-network', template);
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(0);
+    expect(s.backend.stored!.state.stacks[NET_KEY]).toMatchObject({
+      exports: ['deployed'],
+      imports: ['deployed-input'],
+      dependencyAnalysisIncomplete: false,
+    });
+  });
+
+  it('FR-8-7(import不完全解析): NoEcho placeholder の警告が残れば dependsOn があっても incomplete 保存する', async () => {
+    const template = `
+Parameters:
+  Secret:
+    Type: String
+    NoEcho: true
+    Default: noecho-default-must-not-leak
+Resources: {}
+Outputs:
+  Hidden:
+    Value: value
+    Export:
+      Name: !Sub '\${Secret}-output'
+  Static:
+    Value: value
+    Export:
+      Name: static-output
+`;
+    const configText = `version: 1
+defaultRegion: ${REGION}
+stacks:
+  network.yaml:
+    stackName: prod-network
+    dependsOn: [app.yaml]
+  app.yaml:
+    stackName: prod-app
+`;
+    const s = setup({
+      configText,
+      files: { [NETWORK_ABS]: template, [APP_ABS]: APP_TEMPLATE },
+    });
+    const cfn = s.cfns.get(REGION)!;
+    cfn.stacks.set(
+      'prod-network',
+      makeSummary({
+        parameters: { Secret: '****' },
+        tags: {},
+        capabilities: [],
+      }),
+    );
+    cfn.templates.set('prod-network', template);
+
+    const result = await run(s);
+
+    expect(result.exitCode).toBe(0);
+    expect(s.backend.stored!.state.stacks[NET_KEY]).toMatchObject({
+      exports: ['static-output'],
+      dependencyAnalysisIncomplete: true,
+    });
+    expect(result.report.warnings.join('\n')).toContain('NoEcho');
+    expect(result.report.warnings.join('\n')).not.toContain(
+      'noecho-default-must-not-leak',
+    );
+    expect(result.report.warnings.join('\n')).not.toContain('****');
+  });
 });
 
 // ===========================================================================

@@ -59,4 +59,88 @@ describe('usecase/status・graph', () => {
     ]);
     expect(result.warnings).toEqual([]);
   });
+
+  it('FR-8-7(解決): graph は共通 parameters < region override の実効値でリージョン別に依存名を解決する', () => {
+    const regions = ['ap-northeast-1', 'us-east-1'];
+    const dynamicConfig: CfnSyncConfig = {
+      ...config,
+      stacks: {
+        'provider.yaml': {
+          stackName: 'provider',
+          regions,
+          parameters: { Namespace: 'common' },
+          tags: {},
+          capabilities: [],
+          dependsOn: [],
+          regionOverrides: {
+            'us-east-1': {
+              parameters: { Namespace: 'east' },
+              tags: {},
+            },
+          },
+        },
+        'consumer.yaml': {
+          stackName: 'consumer',
+          regions,
+          parameters: { Namespace: 'common' },
+          tags: {},
+          capabilities: [],
+          dependsOn: [],
+          regionOverrides: {
+            'us-east-1': {
+              parameters: { Namespace: 'east' },
+              tags: {},
+            },
+          },
+        },
+      },
+    };
+    const provider = `
+Parameters:
+  Namespace:
+    Type: String
+    Default: default
+Resources: {}
+Outputs:
+  Shared:
+    Value: value
+    Export:
+      Name: !Sub '\${Namespace}-\${AWS::Region}'
+`;
+    const consumer = `
+Parameters:
+  Namespace:
+    Type: String
+    Default: default
+Resources:
+  Consumer:
+    Type: Custom::Consumer
+    Properties:
+      Value:
+        Fn::ImportValue:
+          Fn::Sub: '\${Namespace}-\${AWS::Region}'
+`;
+
+    const result = getGraph({
+      config: dynamicConfig,
+      templates: new Map([
+        ['provider.yaml', provider],
+        ['consumer.yaml', consumer],
+      ]),
+    });
+
+    expect(result.graphs.get('ap-northeast-1')?.edges).toEqual([
+      {
+        from: 'provider.yaml@ap-northeast-1',
+        to: 'consumer.yaml@ap-northeast-1',
+      },
+    ]);
+    expect(result.graphs.get('us-east-1')?.edges).toEqual([
+      {
+        from: 'provider.yaml@us-east-1',
+        to: 'consumer.yaml@us-east-1',
+      },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
 });

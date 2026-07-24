@@ -544,15 +544,15 @@ async function buildImportPlan(args: {
       }
       staticAnalysis = representation.staticAnalysis;
     }
+    const configParameters = toConfigParameters(
+      summary.parameters,
+      staticAnalysis.noEchoParams,
+    );
     const deployedAnalysis = resolveStaticTemplateAnalysis(staticAnalysis, {
       stackName: summary.stackName,
       region: target.region,
+      parameters: configParameters,
     });
-
-    const configParameters = toConfigParameters(
-      summary.parameters,
-      deployedAnalysis.noEchoParams,
-    );
     const configTags = toConfigTags(summary.tags);
     const noEchoPlaceholders = Object.keys(configParameters).filter(
       (key) => configParameters[key] === REQUIRED_PLACEHOLDER,
@@ -668,8 +668,7 @@ async function buildImportPlan(args: {
         dependsOn: target.dependsOn.map((raw) =>
           resolveDependsOnKey(raw, target.region),
         ),
-        dependencyAnalysisIncomplete:
-          baselineAnalysis.warnings.length > 0 && target.dependsOn.length === 0,
+        dependencyAnalysisIncomplete: baselineAnalysis.warnings.length > 0,
         lastAction: 'IMPORT',
         lastSuccessAt: new Date().toISOString(),
       },
