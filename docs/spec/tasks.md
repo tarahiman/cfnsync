@@ -245,7 +245,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |
 | §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` |
 | FR-8-7(deploy統合) | target ごとの実効パラメータで依存候補を解決し、成功時の state へ記録する | 共通値と region override で異なる Export / Import 名を解決し、依存順と保存済み exports/imports がリージョン別に一致する / parameter変更後は新しい依存名を保存する |
-| FR-6-5 / FR-8-7(不完全解析) | 警告が残れば `dependsOn` の有無にかかわらず解析不完全として保存する | 動的依存警告と明示 dependsOn が併存しても `dependencyAnalysisIncomplete: true`。警告なしの場合だけ false |
+| FR-6-5 / FR-8-7(不完全解析) | 明示 `dependsOn` により解析警告を補完できる | 動的依存警告のみなら `dependencyAnalysisIncomplete: true` / 明示 dependsOn が1件以上あれば false / 警告なしなら false |
 
 ### T-15 usecase/delete — スタック削除
 
@@ -281,7 +281,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-10-10 | スタックが存在しないテンプレートは `added` 扱い | 対応スタックなし → ステートに記録されず、次回 detect で `added` |
 | FR-10-11 | 依存辺の記録 | インポート成功時に exports / imports がステートに記録される(FR-8-5) |
 | FR-8-7(import統合) | デプロイ済みスタックの実効パラメータで依存名を解決して記録する | DescribeStacks の非 NoEcho パラメータを Default より優先して Export / Import を解決し state へ記録する / NoEcho は `__REQUIRED__` のため未解決 warning と incomplete を保持する |
-| FR-6-5 / FR-8-7(import不完全解析) | import でも警告が残れば `dependsOn` の有無にかかわらず解析不完全として保存する | 動的依存警告と明示 dependsOn が併存しても `dependencyAnalysisIncomplete: true` |
+| FR-6-5 / FR-8-7(import不完全解析) | import でも明示 `dependsOn` により解析警告を補完できる | 動的依存警告のみなら `dependencyAnalysisIncomplete: true` / 明示 dependsOn が1件以上あれば false |
 | FR-13-9 | リージョンごとにインポートできる | 2 リージョンの既存スタックがそれぞれのスタックキーで取り込まれる |
 | NFR-4(import warning) | import report の warning は `CfnSyncError.publicMessage` または固定の安全な文言だけを使い、text 専用診断とは分離する | `NFR-4(import warning): ロック取得・解放エラーの cause を JSON warnings に含めない` / `NFR-4(import warning): 分類不能なロック解放例外は固定文言に置換する` |
 

@@ -151,7 +151,8 @@ function recordedState(
       dependsOn: target.dependsOn.map((raw) =>
         resolveDependsOnKey(raw, target.region),
       ),
-      dependencyAnalysisIncomplete: analysis.warnings.length > 0,
+      dependencyAnalysisIncomplete:
+        analysis.warnings.length > 0 && target.dependsOn.length === 0,
       lastAction: 'UPDATE',
       lastSuccessAt: '2026-07-19T00:00:00.000Z',
     });
@@ -1434,7 +1435,7 @@ Resources:
     );
   });
 
-  it('FR-6-5 / FR-8-7(不完全解析): 警告が残れば明示 dependsOn の有無にかかわらず incomplete 保存する', async () => {
+  it('FR-6-5 / FR-8-7(不完全解析): 明示 dependsOn があれば解析警告を解消済みとして保存する', async () => {
     const dynamic = `
 Resources: {}
 Outputs:
@@ -1472,7 +1473,7 @@ Outputs:
     expect(
       s.backend.stored?.state.stacks[`covered.yaml@${REGION}`]
         .dependencyAnalysisIncomplete,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('§7 CREATE 復旧: added 既存スタックが完全一致なら NoEcho/dependsOn 除外を警告し SYNC 保存する', async () => {

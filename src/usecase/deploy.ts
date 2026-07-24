@@ -1140,7 +1140,8 @@ async function saveSuccessfulEntry(
     dependsOn: target.dependsOn.map((raw) =>
       resolveDependsOnKey(raw, target.region),
     ),
-    dependencyAnalysisIncomplete: analysis.warnings.length > 0,
+    dependencyAnalysisIncomplete:
+      analysis.warnings.length > 0 && target.dependsOn.length === 0,
     lastAction,
     lastSuccessAt: now(ctx.deps).toISOString(),
   };

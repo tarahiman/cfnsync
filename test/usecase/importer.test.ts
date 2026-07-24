@@ -1048,7 +1048,7 @@ stacks:
     });
   });
 
-  it('FR-8-7(import不完全解析): NoEcho placeholder の警告が残れば dependsOn があっても incomplete 保存する', async () => {
+  it('FR-8-7(import不完全解析): 明示 dependsOn があれば NoEcho placeholder の警告を解消済みとして保存する', async () => {
     const template = `
 Parameters:
   Secret:
@@ -1095,7 +1095,7 @@ stacks:
     expect(result.exitCode).toBe(0);
     expect(s.backend.stored!.state.stacks[NET_KEY]).toMatchObject({
       exports: ['static-output'],
-      dependencyAnalysisIncomplete: true,
+      dependencyAnalysisIncomplete: false,
     });
     expect(result.report.warnings.join('\n')).toContain('NoEcho');
     expect(result.report.warnings.join('\n')).not.toContain(

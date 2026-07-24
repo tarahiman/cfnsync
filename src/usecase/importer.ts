@@ -668,7 +668,8 @@ async function buildImportPlan(args: {
         dependsOn: target.dependsOn.map((raw) =>
           resolveDependsOnKey(raw, target.region),
         ),
-        dependencyAnalysisIncomplete: baselineAnalysis.warnings.length > 0,
+        dependencyAnalysisIncomplete:
+          baselineAnalysis.warnings.length > 0 && target.dependsOn.length === 0,
         lastAction: 'IMPORT',
         lastSuccessAt: new Date().toISOString(),
       },
