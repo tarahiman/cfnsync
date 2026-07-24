@@ -11,12 +11,12 @@ const REPOSITORY_ONLY_SECTION = '\n## 関連ドキュメント\n';
 export const SKILL_REFERENCE_FILES = [
   {
     source: 'docs/config-reference.md',
-    target: 'skills/using-cfnsync/references/docs/config-reference.md',
+    target: 'skills/using-cfnsync/references/config-reference.md',
     transform: 'remove-repository-only-related-documents',
   },
   {
     source: 'docs/examples/cfnsync.sample.yaml',
-    target: 'skills/using-cfnsync/references/docs/examples/cfnsync.sample.yaml',
+    target: 'skills/using-cfnsync/references/examples/cfnsync.sample.yaml',
   },
 ];
 

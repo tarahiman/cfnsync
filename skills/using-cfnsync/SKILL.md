@@ -13,8 +13,8 @@ Use this guide to select and run cfnsync subcommands and interpret their output 
 
 Read the bundled references whenever reading, writing, or validating `cfnsync.yaml`:
 
-- Parameter reference: [`references/docs/config-reference.md`](references/docs/config-reference.md)
-- Commented sample: [`references/docs/examples/cfnsync.sample.yaml`](references/docs/examples/cfnsync.sample.yaml)
+- Parameter reference: [`references/config-reference.md`](references/config-reference.md)
+- Commented sample: [`references/examples/cfnsync.sample.yaml`](references/examples/cfnsync.sample.yaml)
 
 The references are distributed with the skill and do not require access to the cfnsync source repository.
 
