@@ -65,6 +65,12 @@ function makeChange(logicalId: string) {
             Attribute: 'Properties',
             Name: 'CidrBlock',
             RequiresRecreation: 'Always',
+            Path: '/Properties/CidrBlock',
+            BeforeValue: '10.0.0.0/16',
+            AfterValue: '10.1.0.0/16',
+            BeforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
+            AfterValueFrom: 'TEMPLATE',
+            AttributeChangeType: 'Modify',
           },
           Evaluation: 'Static',
           ChangeSource: 'DirectModification',
@@ -263,6 +269,14 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
       scope: ['Properties'],
     });
     expect(detail.changes[0].details[0].target?.name).toBe('CidrBlock');
+    expect(detail.changes[0].details[0].target).toMatchObject({
+      path: '/Properties/CidrBlock',
+      beforeValue: '10.0.0.0/16',
+      afterValue: '10.1.0.0/16',
+      beforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
+      afterValueFrom: 'TEMPLATE',
+      attributeChangeType: 'Modify',
+    });
     expect(detail.parameters).toEqual({ K: 'V' });
     expect(detail.tags).toEqual({ T: 'v' });
     expect(detail.capabilities).toEqual(['CAPABILITY_IAM']);
@@ -272,7 +286,9 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
     expect(calls[0].args[0].input).toMatchObject({
       StackName: 'stk',
       ChangeSetName: 'cs',
+      IncludePropertyValues: true,
     });
+    expect(calls[1].args[0].input.IncludePropertyValues).toBe(true);
     expect(calls[1].args[0].input.NextToken).toBe('page2');
   });
 

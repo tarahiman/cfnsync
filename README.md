@@ -14,7 +14,7 @@ It is deliberately **not** a new IaC abstraction: no CDK/SAM-style template gene
 ## Why cfnsync
 
 - **Your templates, unchanged** — operates on raw CloudFormation; nothing to rewrite or migrate.
-- **Safe change sets** — every deploy goes through a change set you can diff before it executes.
+- **Safe, value-aware change sets** — every deploy goes through a change set you can inspect before execution, including the property before/after values returned by CloudFormation.
 - **Dependency-aware** — resolves order from `Export` / `Fn::ImportValue` plus explicit `dependsOn`, and deploys/deletes accordingly.
 - **CI-first** — non-interactive, with a stable [exit-code contract](#exit-codes) CI can branch on.
 - **Fail-closed** — mutations require an account/region allow-list verified against STS; unverifiable situations abort instead of guessing.

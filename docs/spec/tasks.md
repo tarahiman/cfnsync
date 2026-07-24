@@ -180,6 +180,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-13-7 | 出力に対象リージョンを明示 | 差分・ログ・JSON にスタックキー(リージョン込み)が含まれる |
 | FR-8-3 | 依存マッピングをテキストツリー / JSON で出力 | `renderGraphText` は `computeLevels` の結果を `Lv0`, `Lv1`, ... の見出しでグループ化した人間可読出力を返す(diamond 依存でも記述は重複しない)/ `renderGraphJson` のノード・辺構造(既存の JSON 契約)は変更されない |
 | FR-5-4(契約) | 進捗マイルストーンの型を定義する | `ProgressEvent`(stackKey・region・phase・message)/ `ProgressPhase` の union 型が report/index.ts で定義され、usecase が依存する出力契約に含まれる |
+| FR-3(値差分) | CloudFormation が返すプロパティ値差分をそのまま表示する | 全 `DescribeChangeSet` ページに `IncludePropertyValues=true` を渡す / `Target` の path・before/after・由来・変更種別等を正規化する / text と JSON に前後値を出力する / CloudFormation が省略した値は補完しない / NoEcho 由来値と context はマスクする |
 | FR-7-8(出力) | 接続先を出力の先頭に含める | レポート先頭にアカウント ID・リージョン |
 
 ## 6. M3: usecase
@@ -232,7 +233,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | **NFR-3(継続)** | **途中失敗後の再実行は成功済みをスキップし、失敗地点から継続** | A 成功・B 失敗の直後の状態からそのまま再実行 → A は `unchanged` となり **A への CreateChangeSet / ExecuteChangeSet が一切呼ばれない**、B から処理が再開して収束する。変種: B の失敗実行が残した変更セットが FR-2-7 の残存回収で処理されること |
 | **FR-13-4** | **テンプレート変更時、設定された全対象リージョンに変更セットを作成** | 2 リージョン設定のテンプレートを変更 → 各リージョンに CreateChangeSet が**ちょうど 1 回ずつ**、リージョン別の実効パラメータ・タグで呼ばれ、設定順に直列実行される |
 | FR-1-9 | 各副作用の直前に fencing 検証。喪失時は中断 | 副作用(変更セット作成・実行・削除、ステート保存)の直前ごとにロック検証が呼ばれる(呼び出し順序検証)/ 完了待機後・CAS 保存直前の検証で所有権喪失 → 保存せず中断 |
-| FR-5-4 | 一括実行の各段階で進捗をスタックキー付きで通知する | CREATE 成功シナリオで `onProgress` が ['changeset-create-start','diff-ready','execute-start','done'] の順に、対象スタックキー付きで呼ばれる / 空変更セットでは ['changeset-create-start','no-change'] で止まる / `--dry-run` では ['changeset-create-start','diff-ready','skipped'] で止まり execute-start/done は呼ばれない |
+| FR-5-4 | 一括実行の各段階で進捗をスタックキー付きで通知する | CREATE 成功シナリオで `onProgress` が ['changeset-create-start','diff-ready','execute-start','done'] の順に、対象スタックキー付きで呼ばれる / 空変更セットでは ['changeset-create-start','no-change'] で止まる / `--dry-run` では ['changeset-create-start','diff-ready'] で止まり、正常な停止を skipped として通知せず execute-start/done も呼ばれない |
 | FR-5-4(失敗) | 失敗時の progress メッセージは report と同じ redactor 適用済み文字列を再利用する | NoEcho を含む StatusReason で失敗させた場合、`onProgress` の 'failed' メッセージに実値が含まれない(report.result の errorMessage と同一文字列であることを確認) |
 | NFR-4(Default) | 設定で省略した NoEcho の scalar template Default も redactor の実効値に含める。`inputsHash` は補完しない | `NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする` / `NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする` / `NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする` |
 | FR-5-4(スキップ) | 依存失敗によるスキップも通知する | A 失敗・B が A に依存 → B の `onProgress` に phase 'skipped' が呼ばれる |
