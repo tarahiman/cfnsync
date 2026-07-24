@@ -1,0 +1,103 @@
+# cfnsync.yaml サンプル設定ファイル
+#
+# マルチリージョン展開・dependsOn(明示依存)・regionOverrides(リージョン別上書き)・
+# __REQUIRED__ プレースホルダ・s3 state backend を含む実運用向けの一例です。
+# パラメータの完全なリファレンスは ../config-reference.md を参照してください。
+#
+# このファイルをそのままコピーして使う場合は、allowedAccounts / allowedRegions /
+# state.s3 / stackName 等を自分の環境の値に置き換えてください。
+
+version: 1
+
+# 変更系操作(deploy/import 等)の fail-closed ガード。
+# 誤って別アカウント・別リージョンに接続した状態で実行しても、
+# ここに列挙されていなければ一切変更を加えずエラー終了します。
+allowedAccounts:
+  - "123456789012"
+allowedRegions:
+  - ap-northeast-1
+  - us-east-1
+
+# regions を省略したスタックのデプロイ先。
+defaultRegion: ap-northeast-1
+
+# stackName を省略したスタックの名前接頭辞
+# (実際のスタック名は stackNamePrefix + テンプレートのファイル名(拡張子除去))。
+stackNamePrefix: legacy-app-
+
+# すべての管理対象スタックへ既定で付与するタグ。
+# 実効タグへのマージ順は defaultTags < stacks.<templatePath>.tags <
+# regionOverrides.<region>.tags(後勝ち)。同名キーの重複はエラーにはならず、
+# より狭いスコープの値が優先されます(スタック側やリージョン別上書きで
+# 同名キーを指定すれば defaultTags の値を上書きできます)。
+defaultTags:
+  ManagedBy: cfnsync
+  Environment: prod
+
+# ステートバックエンド。省略時は local(./cfnsync.state.json)になりますが、
+# CI など複数の実行環境から共有する場合は s3 を使い、S3 バケットの
+# バージョニングを有効化しておくことを推奨します。
+state:
+  backend: s3
+  s3:
+    bucket: my-cfnsync-state
+    key: prod/cfnsync.state.json
+    region: ap-northeast-1
+
+stacks:
+  # --- ネットワーク層: 依存されるスタック。マルチリージョンに展開する例 ---
+  templates/network.yaml:
+    stackName: prod-network
+    # 記載順が実行順の正本。us-east-1 が先にデプロイされます。
+    regions:
+      - us-east-1
+      - ap-northeast-1
+    parameters:
+      VpcCidr: 10.0.0.0/16
+      InstanceCount: 3
+      EnableNat: true
+      # NoEcho 等、値をリポジトリにコミットしたくないパラメータのプレースホルダ。
+      # 実値に置き換えるまで deploy が拒否します。
+      DbPassword: __REQUIRED__
+    tags:
+      Project: legacy-app
+    # IAM リソースを含むテンプレートで必要な Capabilities。
+    capabilities:
+      - CAPABILITY_NAMED_IAM
+    dependsOn: []
+    # us-east-1 だけ VpcCidr とタグを上書き(浅いマージ: 指定したキーのみ置き換わる)。
+    # ap-northeast-1 は共通の parameters/tags がそのまま使われます。
+    regionOverrides:
+      us-east-1:
+        parameters:
+          VpcCidr: 10.1.0.0/16
+        tags:
+          Region: us
+
+  # --- データベース層: network.yaml に明示依存するスタック ---
+  templates/database.yaml:
+    stackName: prod-database
+    regions:
+      - ap-northeast-1
+    parameters:
+      DbInstanceClass: db.t3.medium
+      MasterUserPassword: __REQUIRED__
+    tags:
+      Project: legacy-app
+    capabilities: []
+    # 依存先テンプレートパスを指定。"@region" を付けても実装上は無視され、
+    # 常に依存元と同一リージョン(ここでは ap-northeast-1)のスタックに解決されます。
+    dependsOn:
+      - templates/network.yaml
+    regionOverrides: {}
+
+  # --- アプリ層: stackName/regions/capabilities/regionOverrides を省略した最小例 ---
+  # スタック名は stackNamePrefix + "app" = "legacy-app-app"、
+  # リージョンは defaultRegion(ap-northeast-1)のみになります。
+  templates/app.yaml:
+    parameters:
+      ImageTag: v1.2.3
+    tags:
+      Project: legacy-app
+    dependsOn:
+      - templates/database.yaml

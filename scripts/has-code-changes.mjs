@@ -5,6 +5,7 @@ const CODE_DIRECTORIES = [
   '.github/workflows/',
   '.githooks/',
   'scripts/',
+  'skills/',
   'src/',
   'test/',
 ];
@@ -12,6 +13,8 @@ const CODE_DIRECTORIES = [
 const CODE_FILES = new Set([
   '.mcp.json',
   'biome.json',
+  'docs/config-reference.md',
+  'docs/examples/cfnsync.sample.yaml',
   'mise.toml',
   'package.json',
   'pnpm-lock.yaml',
