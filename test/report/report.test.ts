@@ -145,6 +145,75 @@ describe('FR-3-1: リソース単位の変更種別・変更プロパティの�
     expect(text).toContain('AWS::EC2::VPC');
     expect(text).toContain('CidrBlock');
   });
+
+  it('FR-3-1(値差分): CloudFormation が返したプロパティ前後値とメタデータを text / JSON にそのまま含める', () => {
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'Vpc',
+          beforeContext: '{"Properties":{"CidrBlock":"10.0.0.0/16"}}',
+          afterContext: '{"Properties":{"CidrBlock":"10.1.0.0/16"}}',
+          details: [
+            {
+              target: {
+                attribute: 'Properties',
+                name: 'CidrBlock',
+                path: '/Properties/CidrBlock',
+                beforeValue: '10.0.0.0/16',
+                afterValue: '10.1.0.0/16',
+                beforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
+                afterValueFrom: 'TEMPLATE',
+                attributeChangeType: 'Modify',
+                requiresRecreation: 'Never',
+              },
+              evaluation: 'Static',
+              changeSource: 'DirectModification',
+            },
+          ],
+        }),
+      ],
+      parameters: {},
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('network.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-network',
+      operation: 'update',
+      detail,
+      noEchoParams: [],
+    });
+
+    const text = renderText(report([diff]));
+    expect(text).toContain('/Properties/CidrBlock');
+    expect(text).toContain('10.0.0.0/16');
+    expect(text).toContain('10.1.0.0/16');
+    expect(text).toContain('DirectModification');
+    expect(text).toContain('PREVIOUS_DEPLOYMENT_STATE');
+    expect(text).toContain('TEMPLATE');
+
+    const json = JSON.parse(renderJson(report([diff])));
+    expect(json.diffs[0].resources[0]).toMatchObject({
+      beforeContext: '{"Properties":{"CidrBlock":"10.0.0.0/16"}}',
+      afterContext: '{"Properties":{"CidrBlock":"10.1.0.0/16"}}',
+      details: [
+        {
+          target: {
+            path: '/Properties/CidrBlock',
+            beforeValue: '10.0.0.0/16',
+            afterValue: '10.1.0.0/16',
+            beforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
+            afterValueFrom: 'TEMPLATE',
+            attributeChangeType: 'Modify',
+          },
+          evaluation: 'Static',
+          changeSource: 'DirectModification',
+        },
+      ],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -268,7 +337,13 @@ const ResourceDiffLineSchema = z.object({
   logicalResourceId: z.string(),
   resourceType: z.string(),
   replacement: z.boolean(),
+  replacementType: z.string().optional(),
+  physicalResourceId: z.string().optional(),
+  scope: z.array(z.string()),
   changedProperties: z.array(z.string()),
+  details: z.array(z.unknown()),
+  beforeContext: z.string().optional(),
+  afterContext: z.string().optional(),
 });
 
 const StackDiffSchema = z.object({
@@ -385,6 +460,58 @@ describe('NFR-4: NoEcho マスク', () => {
 
     expect(renderText(rep)).not.toContain(SECRET);
     expect(renderJson(rep)).not.toContain(SECRET);
+  });
+
+  it('NFR-4(値差分): NoEcho 由来の before/after と context を text / JSON 格納前にマスクする', () => {
+    const OLD_SECRET = 'old';
+    const detail: ChangeSetDetail = {
+      status: 'CREATE_COMPLETE',
+      changes: [
+        change({
+          logicalResourceId: 'Db',
+          beforeContext: `{"password":"${OLD_SECRET}"}`,
+          afterContext: `{"password":"next-${SECRET}"}`,
+          details: [
+            {
+              target: {
+                attribute: 'Properties',
+                name: 'MasterUserPassword',
+                beforeValue: OLD_SECRET,
+                afterValue: `next-${SECRET}`,
+              },
+              causingEntity: 'DbPassword',
+            },
+          ],
+        }),
+      ],
+      parameters: { DbPassword: SECRET },
+      tags: {},
+      capabilities: [],
+    };
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('database.yaml', REGION),
+      region: REGION,
+      stackName: 'prod-db',
+      operation: 'update',
+      detail,
+      noEchoParams: ['DbPassword'],
+      redact: (text) => text.replaceAll(SECRET, '****'),
+    });
+    const rep = report([diff]);
+
+    expect(diff.resources[0].details[0].target).toMatchObject({
+      beforeValue: '****',
+      afterValue: '****',
+    });
+    expect(diff.resources[0]).toMatchObject({
+      beforeContext: '****',
+      afterContext: '****',
+    });
+    expect(renderText(rep)).not.toContain(OLD_SECRET);
+    expect(renderJson(rep)).not.toContain(OLD_SECRET);
+    expect(renderText(rep)).not.toContain(SECRET);
+    expect(renderJson(rep)).not.toContain(SECRET);
+    expect(renderJson(rep)).toContain('****');
   });
 });
 

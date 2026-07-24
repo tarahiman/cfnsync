@@ -1622,7 +1622,7 @@ Outputs:
     ).toEqual(['changeset-create-start', 'no-change']);
   });
 
-  it('FR-5-4: dry-run は changeset-create-start→diff-ready→skipped で止まる', async () => {
+  it('FR-5-4: dry-run は changeset-create-start→diff-ready で止まり正常停止を skipped 通知しない', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(
@@ -1639,7 +1639,8 @@ Outputs:
     const phases = s.progress
       .filter((p) => p.stackKey === `a.yaml@${REGION}`)
       .map((p) => p.phase);
-    expect(phases).toEqual(['changeset-create-start', 'diff-ready', 'skipped']);
+    expect(phases).toEqual(['changeset-create-start', 'diff-ready']);
+    expect(phases).not.toContain('skipped');
     expect(phases).not.toContain('execute-start');
     expect(phases).not.toContain('done');
   });

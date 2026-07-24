@@ -327,6 +327,8 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
           StackName: stackName,
           ChangeSetName: changeSetName,
           NextToken: nextToken,
+          // FR-3: CloudFormation 自身が算出したプロパティ前後値を取得する。
+          IncludePropertyValues: true,
         }),
       ),
     );
@@ -593,11 +595,19 @@ function normalizeResourceChange(change: {
     ResourceType?: string;
     Replacement?: string;
     Scope?: string[];
+    BeforeContext?: string;
+    AfterContext?: string;
     Details?: {
       Target?: {
         Attribute?: string;
         Name?: string;
         RequiresRecreation?: string;
+        Path?: string;
+        BeforeValue?: string;
+        AfterValue?: string;
+        BeforeValueFrom?: string;
+        AfterValueFrom?: string;
+        AttributeChangeType?: string;
       };
       Evaluation?: string;
       ChangeSource?: string;
@@ -613,12 +623,20 @@ function normalizeResourceChange(change: {
     resourceType: rc.ResourceType ?? '',
     replacement: rc.Replacement,
     scope: rc.Scope ?? [],
+    beforeContext: rc.BeforeContext,
+    afterContext: rc.AfterContext,
     details: (rc.Details ?? []).map((d) => ({
       target: d.Target
         ? {
             attribute: d.Target.Attribute,
             name: d.Target.Name,
             requiresRecreation: d.Target.RequiresRecreation,
+            path: d.Target.Path,
+            beforeValue: d.Target.BeforeValue,
+            afterValue: d.Target.AfterValue,
+            beforeValueFrom: d.Target.BeforeValueFrom,
+            afterValueFrom: d.Target.AfterValueFrom,
+            attributeChangeType: d.Target.AttributeChangeType,
           }
         : undefined,
       evaluation: d.Evaluation,

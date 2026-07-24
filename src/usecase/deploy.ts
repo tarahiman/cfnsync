@@ -694,6 +694,7 @@ async function processCreateOrUpdate(
     operation: prepared.kind,
     detail: created.detail,
     noEchoParams: analysis.noEchoParams,
+    redact,
   });
   diff.warnings.push(...analysis.warnings);
   report.diffs.push(diff);
@@ -709,13 +710,6 @@ async function processCreateOrUpdate(
     // design §5.2: DescribeChangeSet 済みの変更セットを後始末する。proxy が直前 fencing を担う。
     await cfn.deleteChangeSet(target.stackName, created.id);
     report.result?.stacks.push(stackResult(target, 'skipped'));
-    emitProgress(
-      ctx.deps,
-      operation.stackKey,
-      operation.region,
-      'skipped',
-      'dry-run のため実行しません',
-    );
     return { hasDiff: true };
   }
 

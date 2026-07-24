@@ -6,12 +6,12 @@
  * 型)をここで確定する(依存方向 `cli → usecase → core / ports / report` の遵守。
  * report は core の型を読み取り専用で参照してよいが、逆方向の依存は発生しない)。
  *
- * NoEcho マスク(NFR-4)は差分・ログ・JSON のすべてが対象。`StackDiff` はそもそも
- * パラメータ実値を保持できる構造になっていない(`ChangeSetDetail.parameters` を
- * 取り込まない)ため、構造的に実値が紛れ込まない。`renderText` / `renderJson` は
- * さらに、渡された `DeployReport` から契約に定義されたフィールドのみを明示的に
- * 再構築して出力する(呼び出し側が誤って秘匿情報を余剰フィールドとして紛れ込ませても
- * 出力には現れない、多層防御)。
+ * NoEcho マスク(NFR-4)は差分・ログ・JSON のすべてが対象。`ChangeSetDetail.parameters`
+ * の実効パラメータ一覧は取り込まない一方、CloudFormation が変更詳細として返した
+ * BeforeValue / AfterValue / context は共通 redactor と causingEntity 判定でマスクする。
+ * `renderText` / `renderJson` は、渡された `DeployReport` から契約に定義された
+ * フィールドのみを明示的に再構築して出力する(呼び出し側が誤って秘匿情報を余剰
+ * フィールドとして紛れ込ませても出力には現れない、多層防御)。
  */
 
 import { computeLevels, type RegionGraph } from '../core/graph.js';
@@ -35,7 +35,35 @@ export interface ResourceDiffLine {
   resourceType: string;
   /** `Replacement: True` または `Conditional` のとき true(FR-3-2: いずれも警告扱い)。 */
   replacement: boolean;
+  /** CloudFormation が返した Replacement の生値。 */
+  replacementType?: string;
+  physicalResourceId?: string;
+  scope: string[];
   changedProperties: string[];
+  details: ResourceDiffDetail[];
+  /** CloudFormation が返した encoded JSON。独自補完はしない。 */
+  beforeContext?: string;
+  afterContext?: string;
+  /** report 再マスク時にも context 全体の秘匿を維持する内部フラグ。JSON には出力しない。 */
+  containsNoEchoChange: boolean;
+}
+
+/** CloudFormation `ResourceChange.Details[]` の表示用コピー(FR-3-1)。 */
+export interface ResourceDiffDetail {
+  target?: {
+    attribute?: string;
+    name?: string;
+    requiresRecreation?: string;
+    path?: string;
+    beforeValue?: string;
+    afterValue?: string;
+    beforeValueFrom?: string;
+    afterValueFrom?: string;
+    attributeChangeType?: string;
+  };
+  evaluation?: string;
+  changeSource?: string;
+  causingEntity?: string;
 }
 
 /** スタック単位の差分(FR-13-7: リージョン込みのスタックキーを常に含む)。 */
@@ -126,6 +154,37 @@ export function redactReportMessages(
       resources: diff.resources.map((resource) => ({
         ...resource,
         changedProperties: [...resource.changedProperties],
+        scope: [...resource.scope],
+        details: resource.details.map((detail) => ({
+          ...detail,
+          target: detail.target
+            ? {
+                ...detail.target,
+                beforeValue:
+                  detail.target.beforeValue === undefined
+                    ? undefined
+                    : redact(diff.stackKey, detail.target.beforeValue),
+                afterValue:
+                  detail.target.afterValue === undefined
+                    ? undefined
+                    : redact(diff.stackKey, detail.target.afterValue),
+              }
+            : undefined,
+        })),
+        beforeContext: resource.containsNoEchoChange
+          ? resource.beforeContext === undefined
+            ? undefined
+            : '****'
+          : resource.beforeContext === undefined
+            ? undefined
+            : redact(diff.stackKey, resource.beforeContext),
+        afterContext: resource.containsNoEchoChange
+          ? resource.afterContext === undefined
+            ? undefined
+            : '****'
+          : resource.afterContext === undefined
+            ? undefined
+            : redact(diff.stackKey, resource.afterContext),
       })),
       warnings: diff.warnings.map((warning) => redact(diff.stackKey, warning)),
     })),
@@ -174,7 +233,15 @@ function extractChangedProperties(change: ResourceChange): string[] {
   return props;
 }
 
-function buildResourceDiffLine(change: ResourceChange): ResourceDiffLine {
+function buildResourceDiffLine(
+  change: ResourceChange,
+  noEchoSet: ReadonlySet<string>,
+  redact: (text: string) => string,
+): ResourceDiffLine {
+  const containsNoEchoChange = change.details.some(
+    (detail) =>
+      detail.causingEntity !== undefined && noEchoSet.has(detail.causingEntity),
+  );
   return {
     action: change.action,
     logicalResourceId: change.logicalResourceId,
@@ -182,7 +249,48 @@ function buildResourceDiffLine(change: ResourceChange): ResourceDiffLine {
     // FR-3-2: True(通常の置換)・Conditional(条件次第で置換されうる)のいずれも警告対象とする。
     replacement:
       change.replacement === 'True' || change.replacement === 'Conditional',
+    replacementType: change.replacement,
+    physicalResourceId: change.physicalResourceId,
+    scope: [...change.scope],
     changedProperties: extractChangedProperties(change),
+    details: change.details.map((detail) => {
+      const noEcho =
+        detail.causingEntity !== undefined &&
+        noEchoSet.has(detail.causingEntity);
+      return {
+        ...detail,
+        target: detail.target
+          ? {
+              ...detail.target,
+              beforeValue:
+                detail.target.beforeValue === undefined
+                  ? undefined
+                  : noEcho
+                    ? '****'
+                    : redact(detail.target.beforeValue),
+              afterValue:
+                detail.target.afterValue === undefined
+                  ? undefined
+                  : noEcho
+                    ? '****'
+                    : redact(detail.target.afterValue),
+            }
+          : undefined,
+      };
+    }),
+    beforeContext:
+      change.beforeContext === undefined
+        ? undefined
+        : containsNoEchoChange
+          ? '****'
+          : redact(change.beforeContext),
+    afterContext:
+      change.afterContext === undefined
+        ? undefined
+        : containsNoEchoChange
+          ? '****'
+          : redact(change.afterContext),
+    containsNoEchoChange,
   };
 }
 
@@ -191,11 +299,9 @@ function buildResourceDiffLine(change: ResourceChange): ResourceDiffLine {
  * `StackDiff` を組み立てる(FR-3-1)。`detail` 省略時(削除等、変更セットを介さない
  * 操作)は空の差分になる。
  *
- * NFR-4: `detail.parameters`(実効パラメータの値)は意図的に一切読み取らない —
- * `StackDiff` にパラメータ実値を持ち込まない設計そのものが NoEcho マスクの構造的
- * 保証になる。`noEchoParams` は、変更理由(`causingEntity`)が NoEcho パラメータで
- * あることを警告として明示するためだけに用いる(値そのものは常にどの入力にも
- * 現れない)。
+ * NFR-4: `detail.parameters`(実効パラメータの値)は意図的に一切読み取らない。
+ * CloudFormation が返す前後値は `redact` を通し、`causingEntity` が NoEcho
+ * パラメータなら値そのものとの一致にかかわらず `****` とする。
  */
 export function buildStackDiff(input: {
   stackKey: string;
@@ -204,10 +310,14 @@ export function buildStackDiff(input: {
   operation: 'create' | 'update' | 'delete' | 'no-change';
   detail?: ChangeSetDetail;
   noEchoParams: string[];
+  redact?: (text: string) => string;
 }): StackDiff {
   const noEchoSet = new Set(input.noEchoParams);
   const changes = input.detail?.changes ?? [];
-  const resources = changes.map(buildResourceDiffLine);
+  const redact = input.redact ?? ((text: string) => text);
+  const resources = changes.map((change) =>
+    buildResourceDiffLine(change, noEchoSet, redact),
+  );
   const warnings: string[] = [];
 
   changes.forEach((change, index) => {
@@ -316,6 +426,41 @@ export function renderText(
           : '-';
       const label = `${actionSymbol(resource.action)} ${resource.action.padEnd(7)} ${resource.logicalResourceId} (${resource.resourceType})`;
       lines.push(`  ${label}${flag} properties: ${props}`);
+      for (const detail of resource.details) {
+        const target = detail.target;
+        if (!target) continue;
+        const path =
+          target.path ||
+          [target.attribute, target.name].filter(Boolean).join('.') ||
+          '(unknown)';
+        const metadata = [
+          target.attributeChangeType,
+          detail.evaluation,
+          detail.changeSource,
+          target.requiresRecreation
+            ? `recreation: ${target.requiresRecreation}`
+            : undefined,
+        ].filter((value): value is string => value !== undefined);
+        lines.push(
+          `    ${path}${metadata.length > 0 ? ` [${metadata.join(', ')}]` : ''}`,
+        );
+        if (target.beforeValue !== undefined) {
+          const source = target.beforeValueFrom
+            ? ` (${target.beforeValueFrom})`
+            : '';
+          lines.push(
+            `      before${source}: ${JSON.stringify(target.beforeValue)}`,
+          );
+        }
+        if (target.afterValue !== undefined) {
+          const source = target.afterValueFrom
+            ? ` (${target.afterValueFrom})`
+            : '';
+          lines.push(
+            `      after${source}:  ${JSON.stringify(target.afterValue)}`,
+          );
+        }
+      }
     }
     if (diff.warnings.length > 0) {
       lines.push('  警告:');
@@ -380,7 +525,18 @@ export function renderJson(report: DeployReport): string {
         logicalResourceId: resource.logicalResourceId,
         resourceType: resource.resourceType,
         replacement: resource.replacement,
+        replacementType: resource.replacementType,
+        physicalResourceId: resource.physicalResourceId,
+        scope: [...resource.scope],
         changedProperties: [...resource.changedProperties],
+        details: resource.details.map((detail) => ({
+          target: detail.target ? { ...detail.target } : undefined,
+          evaluation: detail.evaluation,
+          changeSource: detail.changeSource,
+          causingEntity: detail.causingEntity,
+        })),
+        beforeContext: resource.beforeContext,
+        afterContext: resource.afterContext,
       })),
       warnings: [...diff.warnings],
     })),

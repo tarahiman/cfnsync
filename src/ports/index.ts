@@ -63,6 +63,9 @@ export interface ResourceChange {
   replacement?: string;
   scope: string[];
   details: ResourceChangeDetail[];
+  /** CloudFormation が返した変更前後のリソース context(encoded JSON)。 */
+  beforeContext?: string;
+  afterContext?: string;
 }
 
 /** `ResourceChange.Details[]` の 1 件(変更されたプロパティの特定に使う)。 */
@@ -71,6 +74,12 @@ export interface ResourceChangeDetail {
     attribute?: string;
     name?: string;
     requiresRecreation?: string;
+    path?: string;
+    beforeValue?: string;
+    afterValue?: string;
+    beforeValueFrom?: string;
+    afterValueFrom?: string;
+    attributeChangeType?: string;
   };
   evaluation?: string;
   changeSource?: string;
