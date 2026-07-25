@@ -67,6 +67,8 @@ npm login                              # once per machine
 pnpm publish
 ```
 
+The package is published under the scoped name `@tarahi/cfnsync` — npm rejects the unscoped `cfnsync` as too similar to the existing `gensync`. `publishConfig.access` is set to `public`, so no `--access` flag is needed; the installed command name is still `cfnsync`.
+
 `prepack` regenerates `npm-shrinkwrap.json` (in an isolated temp directory, because npm cannot resolve this repository's pnpm-managed `node_modules`), cleans and rebuilds `dist/`, and runs `verify:dist` to reject stale build output. The published tarball contains only `dist/`, `npm-shrinkwrap.json`, both READMEs, `LICENSE`, and `package.json`. `npm-shrinkwrap.json` is a build artifact and is not committed.
 
 ## License

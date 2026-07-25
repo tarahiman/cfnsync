@@ -367,7 +367,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 
 ### T-21 npm パッケージング
 
-- `package.json` の `bin`(`cfnsync`)・`files`・`engines`(node >= 24)整備、`npx cfnsync --help` の動作確認。
+- `package.json` の `name`(`@tarahi/cfnsync`)・`bin`(`cfnsync`)・`files`・`engines`(node >= 24)整備、`npx @tarahi/cfnsync --help` の動作確認。
 - 将来の GitHub Action 化(§2)を妨げない構成であることを確認(ビルド成果物が単一ディレクトリに収まる)。
 
 ## 9. テスト対象外(ドキュメント・構造で満たす)受け入れ基準の一覧

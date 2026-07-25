@@ -14,7 +14,7 @@
 | 事項 | 決定 | 理由 |
 |---|---|---|
 | 実装言語・ランタイム | TypeScript / Node.js 24+ | GitHub Actions の JS アクション(node24 ランタイム)としてコンテナ不要でそのまま動かせる。CLI とアクションでコードを共有できる。AWS SDK v3 と `aws-sdk-client-mock` により TDD との相性が良い |
-| 配布 | npm パッケージ(`npx cfnsync`)。将来 GitHub Action としてパッケージング | CI からの利用が最も簡単 |
+| 配布 | npm パッケージ `@tarahi/cfnsync`(`npx @tarahi/cfnsync`、bin 名は `cfnsync`)。将来 GitHub Action としてパッケージング | CI からの利用が最も簡単。スコープなしの `cfnsync` は npm の名前類似チェック(既存の `gensync`)に阻まれて公開できないため、スコープ付きとする |
 | 開発時パッケージマネージャ | pnpm | 高速かつ厳密な依存管理のため。配布形式は npm パッケージのまま |
 | 設定ファイル | `cfnsync.yaml`(テンプレートディレクトリ直下、YAML) | FR-11。スキーマ検証は zod で行う |
 | ステート管理 | Terraform 方式のバックエンド切替: `local`(既定、ローカル JSON)/ `s3` | FR-1。CI・チーム利用は `s3` を必須とする。git 管理はマージ・push 競合や複数ランナー間の整合の運用負荷が大きいため不採用 |
@@ -414,7 +414,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy
         working-directory: templates
 ```
 

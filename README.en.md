@@ -4,7 +4,7 @@
 
 > Sync a directory of raw AWS CloudFormation templates to stacks — detect changes, diff and execute change sets, and deploy in dependency order.
 
-[![npm version](https://img.shields.io/npm/v/cfnsync.svg)](https://www.npmjs.com/package/cfnsync)
+[![npm version](https://img.shields.io/npm/v/@tarahi/cfnsync.svg)](https://www.npmjs.com/package/@tarahi/cfnsync)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 `cfnsync` is a minimal CLI for teams that operate legacy products on hand-written CloudFormation. It syncs a folder of raw templates (YAML / JSON) to stacks: it detects added / modified / deleted templates, creates and diffs change sets, and creates, updates, or deletes stacks in dependency order. It is built for non-interactive CI (GitHub Actions in particular).
@@ -30,10 +30,12 @@ It is deliberately **not** a new IaC abstraction: no CDK/SAM-style template gene
 Run it directly with `npx` (no install), or add it as a dev dependency:
 
 ```sh
-npx cfnsync --help
+npx @tarahi/cfnsync --help
 # or
-npm install --save-dev cfnsync
+npm install --save-dev @tarahi/cfnsync
 ```
+
+The npm package is scoped (`@tarahi/cfnsync`), but the command it installs is `cfnsync`. Once it is a dev dependency you can also run it as `npx cfnsync ...`.
 
 ## Quickstart
 
@@ -56,9 +58,9 @@ npm install --save-dev cfnsync
 2. See what would change, review the diff, then deploy:
 
    ```sh
-   npx cfnsync status   # added / modified / deleted / unchanged
-   npx cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
-   npx cfnsync deploy   # execute in dependency order
+   npx @tarahi/cfnsync status   # added / modified / deleted / unchanged
+   npx @tarahi/cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
+   npx @tarahi/cfnsync deploy   # execute in dependency order
    ```
 
 ## Commands
@@ -110,7 +112,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy
         working-directory: templates
 ```
 
