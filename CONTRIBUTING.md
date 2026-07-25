@@ -58,18 +58,46 @@ Automated tests never touch real AWS. Before a release, run a manual end-to-end 
 
 ## Releasing
 
-Publishing is done with `pnpm publish` from a clean `main` worktree by a maintainer with npm publish rights.
+Releases are published by CI, not from a laptop. Pushing a `vX.Y.Z` tag runs
+[`.github/workflows/publish.yml`](./.github/workflows/publish.yml), which publishes to npm
+using [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): GitHub Actions
+mints a short-lived OIDC token, so **no long-lived npm token is stored anywhere** — do not
+add an `NPM_TOKEN` secret.
+
+> The trusted publisher on npm is bound to the workflow **file name** `publish.yml`
+> (Environment left blank). Renaming or moving that file breaks publishing.
+
+### Steps
+
+1. Complete the manual AWS verification pass described above.
+2. On a branch, bump `version` in `package.json`, open a PR, and merge it into `main`.
+3. Tag the merge commit and push the tag:
+
+   ```sh
+   git switch main && git pull
+   git tag "v$(node -p 'require("./package.json").version')"
+   git push origin "v$(node -p 'require("./package.json").version')"
+   ```
+
+The workflow then runs `quality:check`, verifies the release preconditions, publishes, and
+creates a GitHub Release with auto-generated notes. It refuses to publish when the tag name
+does not match `v<package.json version>`, when the tagged commit is not contained in `main`,
+or when that version is already on the registry (`scripts/verify-release-tag.mjs`). The same
+checks run locally:
 
 ```sh
-pnpm run quality:check                 # gate: skill refs, format, lint, tests, build
-pnpm pack --pack-destination /tmp      # optional: inspect the tarball before publishing
-npm login                              # once per machine
-pnpm publish
+pnpm run quality:check                              # gate: skill refs, format, lint, tests, build
+GITHUB_REF_NAME=v0.2.0 node scripts/verify-release-tag.mjs
+pnpm pack --pack-destination /tmp                   # optional: inspect the tarball
 ```
 
-The package is published under the scoped name `@tarahi/cfnsync` — npm rejects the unscoped `cfnsync` as too similar to the existing `gensync`. `publishConfig.access` is set to `public`, so no `--access` flag is needed; the installed command name is still `cfnsync`.
+### Notes
+
+The package is published under the scoped name `@tarahi/cfnsync` — npm rejects the unscoped `cfnsync` as too similar to the existing `gensync`. `publishConfig.access` is set to `public`; the installed command name is still `cfnsync`.
 
 `prepack` regenerates `npm-shrinkwrap.json` (in an isolated temp directory, because npm cannot resolve this repository's pnpm-managed `node_modules`), cleans and rebuilds `dist/`, and runs `verify:dist` to reject stale build output. The published tarball contains only `dist/`, `npm-shrinkwrap.json`, both READMEs, `LICENSE`, and `package.json`. `npm-shrinkwrap.json` is a build artifact and is not committed.
+
+The workflow publishes with `--provenance`, so each release carries an attestation linking it to the commit and workflow run it was built from. The workflow deliberately does **not** set `registry-url` on `actions/setup-node`: that writes an unresolved `_authToken` placeholder into `.npmrc` and can prevent the OIDC fallback ([pnpm#11513](https://github.com/pnpm/pnpm/issues/11513)).
 
 ## License
 
