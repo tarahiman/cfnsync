@@ -4,7 +4,7 @@
 
 > ディレクトリ内の生の AWS CloudFormation テンプレートをスタックへ同期する CLI。変更を検知し、Change Set の差分表示・実行を行い、依存順にデプロイします。
 
-[![npm version](https://img.shields.io/npm/v/cfnsync.svg)](https://www.npmjs.com/package/cfnsync)
+[![npm version](https://img.shields.io/npm/v/@tarahi/cfnsync.svg)](https://www.npmjs.com/package/@tarahi/cfnsync)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 `cfnsync` は、手書きの CloudFormation で稼働するレガシー製品を運用するチーム向けの、最小限の CLI です。生のテンプレート（YAML / JSON）のディレクトリをスタックへ同期します。テンプレートの追加・変更・削除を検知し、Change Set の作成と差分表示を行い、依存順にスタックを作成・更新・削除します。非対話の CI（特に GitHub Actions）での実行を想定しています。
@@ -30,10 +30,12 @@
 `npx` でそのまま実行（インストール不要）するか、dev 依存として追加します。
 
 ```sh
-npx cfnsync --help
+npx @tarahi/cfnsync --help
 # または
-npm install --save-dev cfnsync
+npm install --save-dev @tarahi/cfnsync
 ```
+
+npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが、コマンド名は `cfnsync` です。dev 依存として追加した後は `npx cfnsync ...` でも実行できます。
 
 ## クイックスタート
 
@@ -56,9 +58,9 @@ npm install --save-dev cfnsync
 2. 変更内容を確認し、差分をレビューしてからデプロイします。
 
    ```sh
-   npx cfnsync status   # added / modified / deleted / unchanged
-   npx cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
-   npx cfnsync deploy   # 依存順に実行
+   npx @tarahi/cfnsync status   # added / modified / deleted / unchanged
+   npx @tarahi/cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
+   npx @tarahi/cfnsync deploy   # 依存順に実行
    ```
 
 ## コマンド
@@ -110,7 +112,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy
         working-directory: templates
 ```
 
