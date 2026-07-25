@@ -1,0 +1,103 @@
+# npm の Trusted Publisher はこのワークフローを *ファイル名* で識別している
+# (npmjs.com の @tarahi/cfnsync > Settings > Trusted publisher に `publish.yml`
+# として登録済み、Environment は未設定)。リネームや移動をすると OIDC 認証が
+# 通らなくなり公開が失敗するため、ファイル名は変更しないこと。
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Enable pnpm 11.2.2
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.2.2 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check formatting, lint, test, and build
+        run: pnpm run quality:check
+      - name: Verify the tag matches the package version
+        run: node scripts/verify-release-tag.mjs
+
+  publish:
+    name: Publish to npm
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # `actions/setup-node` の `registry-url` は意図的に使わない。指定すると
+      # `.npmrc` に `_authToken=${NODE_AUTH_TOKEN}` が書き込まれ、OIDC への
+      # フォールバックを妨げうる (pnpm#11513)。既定のレジストリが npmjs.org
+      # なので指定は不要で、長期トークンも一切使わない。
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Enable pnpm 11.2.2
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.2.2 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify the tag is an ancestor of main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not contained in origin/main. Only commits merged into main may be published."
+            exit 1
+          fi
+      # 公開直前に再検証する。quality ジョブの実行後に同じバージョンが別経路で
+      # 公開される可能性があるため、副作用の直前でもう一度確認する。
+      - name: Re-verify the release tag
+        run: node scripts/verify-release-tag.mjs
+      # 認証は GitHub Actions の OIDC トークンを npm の短命トークンに交換して
+      # 行う (Trusted Publishing)。npm のシークレットは設定しないこと。
+      # `--no-git-checks`: タグの checkout は detached HEAD になるため。
+      # `prepack` が shrinkwrap 生成・クリーンビルド・stale 検査を行う。
+      - name: Publish to npm with trusted publishing
+        run: pnpm publish --access public --provenance --no-git-checks
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=''
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease='--prerelease' ;;
+          esac
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            $prerelease
