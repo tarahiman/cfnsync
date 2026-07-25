@@ -2,6 +2,7 @@ node_modules/
 dist/
 templates/
 .claude/
+.codex/
 *.tsbuildinfo
 cfnsync.state.json
 cfnsync.state.json.bak
