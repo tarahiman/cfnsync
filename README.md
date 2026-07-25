@@ -1,43 +1,43 @@
-English | [日本語](./README.ja.md)
+日本語 | [English](./README.md)
 
 # cfnsync
 
-> Sync a directory of raw AWS CloudFormation templates to stacks — detect changes, diff and execute change sets, and deploy in dependency order.
+> ディレクトリ内の生の AWS CloudFormation テンプレートをスタックへ同期する CLI。変更を検知し、Change Set の差分表示・実行を行い、依存順にデプロイします。
 
 [![npm version](https://img.shields.io/npm/v/cfnsync.svg)](https://www.npmjs.com/package/cfnsync)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-`cfnsync` is a minimal CLI for teams that operate legacy products on hand-written CloudFormation. It syncs a folder of raw templates (YAML / JSON) to stacks: it detects added / modified / deleted templates, creates and diffs change sets, and creates, updates, or deletes stacks in dependency order. It is built for non-interactive CI (GitHub Actions in particular).
+`cfnsync` は、手書きの CloudFormation で稼働するレガシー製品を運用するチーム向けの、最小限の CLI です。生のテンプレート（YAML / JSON）のディレクトリをスタックへ同期します。テンプレートの追加・変更・削除を検知し、Change Set の作成と差分表示を行い、依存順にスタックを作成・更新・削除します。非対話の CI（特に GitHub Actions）での実行を想定しています。
 
-It is deliberately **not** a new IaC abstraction: no CDK/SAM-style template generation, no linting, no drift remediation, no multi-account fan-out, no GUI.
+新しい IaC 抽象化レイヤーでは **ありません**。CDK / SAM 相当のテンプレート生成、Lint、ドリフト修復、複数アカウント一括デプロイ、GUI は対象外です。
 
-## Why cfnsync
+## なぜ cfnsync か
 
-- **Your templates, unchanged** — operates on raw CloudFormation; nothing to rewrite or migrate.
-- **Safe, value-aware change sets** — every deploy goes through a change set you can inspect before execution, including the property before/after values returned by CloudFormation.
-- **Dependency-aware** — resolves order from `Export` / `Fn::ImportValue` plus explicit `dependsOn`, and deploys/deletes accordingly.
-- **CI-first** — non-interactive, with a stable [exit-code contract](#exit-codes) CI can branch on.
-- **Fail-closed** — mutations require an account/region allow-list verified against STS; unverifiable situations abort instead of guessing.
-- **State with locking** — Terraform-style state (`local` or `s3`) with compare-and-swap and distributed locking for CI.
+- **テンプレートをそのまま** — 生の CloudFormation を対象とし、書き換えや移行は不要です。
+- **設定値まで確認できる安全な Change Set** — すべてのデプロイは Change Set を経由し、CloudFormation が返すプロパティの変更前後値を実行前に確認できます。
+- **依存関係を解決** — `Export` / `Fn::ImportValue` と明示的な `dependsOn` から順序を解決し、デプロイ・削除に反映します。
+- **CI ファースト** — 非対話で、CI が分岐に使える安定した[終了コード契約](#終了コード)を持ちます。
+- **Fail-closed** — 変更系操作は STS で照合するアカウント / リージョンの許可リストを要求し、検証できない状況は続行せず中断します。
+- **ロック付きステート** — Terraform 型のステート（`local` / `s3`）に compare-and-swap と CI 向けの分散ロックを備えます。
 
-## Requirements
+## 動作要件
 
-- Node.js **24 or later**
-- AWS credentials via the standard SDK credential chain (shared profiles, environment variables, or GitHub Actions OIDC). cfnsync never stores credentials.
+- Node.js **24 以上**
+- AWS SDK 標準クレデンシャルチェーン経由の AWS 認証（共有プロファイル、環境変数、GitHub Actions OIDC など）。cfnsync 自身はクレデンシャルを保存しません。
 
-## Install
+## インストール
 
-Run it directly with `npx` (no install), or add it as a dev dependency:
+`npx` でそのまま実行（インストール不要）するか、dev 依存として追加します。
 
 ```sh
 npx cfnsync --help
-# or
+# または
 npm install --save-dev cfnsync
 ```
 
-## Quickstart
+## クイックスタート
 
-1. Create a `cfnsync.yaml` next to your templates:
+1. テンプレートの隣に `cfnsync.yaml` を作成します。
 
    ```yaml
    version: 1
@@ -53,42 +53,42 @@ npm install --save-dev cfnsync
        dependsOn: [network.yaml]
    ```
 
-2. See what would change, review the diff, then deploy:
+2. 変更内容を確認し、差分をレビューしてからデプロイします。
 
    ```sh
    npx cfnsync status   # added / modified / deleted / unchanged
-   npx cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
-   npx cfnsync deploy   # execute in dependency order
+   npx cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
+   npx cfnsync deploy   # 依存順に実行
    ```
 
-## Commands
+## コマンド
 
-Every subcommand accepts the common options `--config <path>` (default `./cfnsync.yaml`), `--profile <name>`, `--region <region>`, and `--output <text|json>`.
+全サブコマンドで共通オプション `--config <path>`（既定 `./cfnsync.yaml`）、`--profile <name>`、`--region <region>`、`--output <text|json>` を使えます。
 
-| Command | Description |
+| コマンド | 説明 |
 |---|---|
-| `status` | Compare state with local templates and print `added` / `modified` / `deleted` / `unchanged`. |
-| `plan` | Create change sets, print the diff, and exit without executing. Exit code `2` when a diff exists. |
-| `deploy` | Detect changes, resolve order, create/diff/execute change sets non-interactively. |
-| `graph` | Print the per-region dependency graph derived from Exports/Imports and `dependsOn`. |
-| `import` | Adopt existing stacks into config, templates, and state (read-only against AWS). |
-| `force-unlock <runId>` | Conditionally release a stale S3 state lock owned by the given run ID. |
+| `status` | ステートとローカルのテンプレートを比較し、`added` / `modified` / `deleted` / `unchanged` を表示します。 |
+| `plan` | Change Set を作成して差分を表示し、実行せず終了します。差分があると終了コードは `2`。 |
+| `deploy` | 変更検知・順序解決・Change Set の作成/差分/実行を非対話で行います。 |
+| `graph` | Export/Import と `dependsOn` から得たリージョンごとの依存グラフを表示します。 |
+| `import` | 既存スタックを設定・テンプレート・ステートへ取り込みます（AWS へは読み取り専用）。 |
+| `force-unlock <runId>` | 指定した実行 ID が所有する残存 S3 ステートロックを条件付きで解除します。 |
 
-Human-readable diffs from `plan` and `deploy` use ANSI colors by default, including in CI and redirected output: Add is green, Modify yellow, Remove red, and replacements are bold red. Use `--no-color` or set `NO_COLOR` (an empty value also counts) to disable ANSI output. JSON output is always uncolored.
+`plan` / `deploy` の人間向け差分は、CI やリダイレクトを含めて既定で ANSI 色付きです。Add は緑、Modify は黄、Remove は赤、置換は太字の赤で表示します。色を無効にするには `--no-color` を指定するか、`NO_COLOR` 環境変数を設定してください（空文字も設定済みとして扱います）。JSON 出力は常に無色です。
 
-Key `deploy` flags: `--dry-run` (create and diff only), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`), `--confirm` (prompt before executing on a TTY), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list.
+主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`）、`--confirm`（TTY で実行前に確認）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。
 
-## Configuration
+## 設定
 
-`cfnsync.yaml` (in the current directory by default) drives everything. `allowedAccounts` / `allowedRegions` are the fail-closed guard for mutating operations; `regions` defaults to `defaultRegion`; `stackName` is derived from `stackNamePrefix` + filename when omitted. `defaultTags` and per-region `regionOverrides` are supported.
+`cfnsync.yaml`（既定ではカレントディレクトリ）がすべてを制御します。`allowedAccounts` / `allowedRegions` は変更系操作の fail-closed ガードです。`regions` は省略時 `defaultRegion`、`stackName` は省略時 `stackNamePrefix` + ファイル名から導出されます。`defaultTags` とリージョン別の `regionOverrides` に対応します。
 
-For the full parameter list see [`docs/config-reference.md`](./docs/config-reference.md), and a commented starter file at [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml).
+全パラメータのリファレンスは [`docs/config-reference.md`](./docs/config-reference.md)、コメント付きのサンプルは [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml) を参照してください。
 
-State defaults to the `local` backend (`cfnsync.state.json` next to the config). For CI or any multi-runner setup, use the `s3` backend (conditional-write locking + compare-and-swap); enabling S3 bucket versioning is recommended.
+ステートは既定で `local` バックエンド（設定の隣に `cfnsync.state.json`）です。CI や複数ランナーの構成では `s3` バックエンド（条件付き書き込みロック + compare-and-swap）を使用してください。S3 バケットのバージョニング有効化を推奨します。
 
-## Using in CI (GitHub Actions)
+## CI での利用（GitHub Actions）
 
-Use the `s3` backend and never write state back to Git. Give each environment its own `concurrency.group` and S3 state key so concurrent triggers queue instead of racing.
+`s3` バックエンドを使用し、ステートを Git へ書き戻さないでください。環境ごとに `concurrency.group` と S3 の state key を分離し、並行トリガーを競合ではなく待機にします。
 
 ```yaml
 name: cfnsync deploy
@@ -114,55 +114,55 @@ jobs:
         working-directory: templates
 ```
 
-The execution role needs `sts:GetCallerIdentity`, the CloudFormation change-set / stack / template actions, and (for the `s3` backend) `s3:GetObject` / `PutObject` / `DeleteObject` on the state and lock keys. Your templates may require additional permissions (e.g. `iam:PassRole`) depending on the resources they create. See [`docs/config-reference.md`](./docs/config-reference.md) and [`docs/spec/design.md`](./docs/spec/design.md) for details.
+実行ロールには `sts:GetCallerIdentity`、CloudFormation の Change Set / スタック / テンプレート系 Action、（`s3` バックエンド時）state / lock キーへの `s3:GetObject` / `PutObject` / `DeleteObject` が必要です。テンプレートが作成するリソースに応じて追加権限（例: `iam:PassRole`）が必要になる場合があります。詳細は [`docs/config-reference.md`](./docs/config-reference.md) と [`docs/spec/design.md`](./docs/spec/design.md) を参照してください。
 
-### Exit codes
+### 終了コード
 
-CI depends on these:
+CI はこれらに依存します。
 
-| Code | Meaning |
+| コード | 意味 |
 |---|---|
-| `0` | Success (including "no changes") |
-| `1` | Error (validation, guard, or AWS operation failure) |
-| `2` | Diff exists (`plan` / `--dry-run` only) |
+| `0` | 成功（変更なしを含む） |
+| `1` | エラー（検証・ガード・AWS 操作の失敗） |
+| `2` | 差分あり（`plan` / `--dry-run` 時のみ） |
 
-## Claude Code plugin
+## Claude Code プラグイン
 
-cfnsync ships a [Claude Code](https://claude.com/claude-code) plugin — a skill that helps Claude drive and interpret cfnsync safely (which subcommand to use, how to read exit codes, the fail-closed / locking / change-set-ownership invariants). Install it from this repository's marketplace:
+cfnsync は [Claude Code](https://claude.com/claude-code) プラグイン（skill）を同梱しています。Claude が cfnsync を安全に操作・解釈するための手引き（サブコマンドの使い分け、終了コードの読み方、fail-closed・ロック・Change Set 所有権の不変条件）です。本リポジトリの marketplace からインストールします。
 
 ```
 /plugin marketplace add tarahiman/cfnsync
 /plugin install cfnsync@cfnsync
 ```
 
-Then ask Claude to work with cfnsync in a repo that has a `cfnsync.yaml`. The plugin manifest is [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json) and the skill lives in [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md).
+その後、`cfnsync.yaml` のあるリポジトリで cfnsync の操作を Claude に依頼してください。プラグインマニフェストは [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)、skill 本体は [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md) です。
 
-## Codex plugin
+## Codex プラグイン
 
-cfnsync also ships a [Codex CLI](https://developers.openai.com/codex/) plugin backed by the same skill. Install it from this repository's marketplace:
+cfnsync は同じ skill を使った [Codex CLI](https://developers.openai.com/codex/) プラグインも同梱しています。本リポジトリの marketplace からインストールします。
 
 ```
 codex plugin marketplace add tarahiman/cfnsync
 codex plugin add cfnsync@cfnsync
 ```
 
-Then ask Codex to work with cfnsync in a repo that has a `cfnsync.yaml`. The plugin manifest is [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json), the marketplace manifest is [`.agents/plugins/marketplace.json`](./.agents/plugins/marketplace.json), and it points at the same skill: [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md).
+その後、`cfnsync.yaml` のあるリポジトリで cfnsync の操作を Codex に依頼してください。プラグインマニフェストは [`.codex-plugin/plugin.json`](./.codex-plugin/plugin.json)、marketplace マニフェストは [`.agents/plugins/marketplace.json`](./.agents/plugins/marketplace.json) で、同じ skill を参照しています: [`skills/using-cfnsync/SKILL.md`](./skills/using-cfnsync/SKILL.md)。
 
-## Safety model
+## 安全性モデル
 
-Several invariants come out of adversarial review and are load-bearing; do not weaken them:
+いくつかの不変条件は反復的な敵対的レビューから導かれた load-bearing なもので、弱めないでください。
 
-- Mutations are fail-closed: they require `allowedAccounts` / `allowedRegions` and an STS identity match, and state is bound to a single AWS account.
-- State consistency is guaranteed by compare-and-swap (`If-Match` on S3); the losing writer fails. Concurrent operations on one stack fail safely via `*_IN_PROGRESS` guards and CloudFormation's own in-progress rejection.
-- Ownership fencing (re-checking before every side effect) is **best-effort** — it narrows the race window but does not, and cannot, close it on the CloudFormation API. Separate the cfnsync execution principal in IAM as well.
-- A foreign change set on a managed stack blocks execution (executing a change set implicitly deletes the others), so cfnsync stops rather than clobbering it.
+- 変更系操作は fail-closed です。`allowedAccounts` / `allowedRegions` と STS の ID 一致を要求し、ステートは単一の AWS アカウントに束縛されます。
+- ステートの一貫性は compare-and-swap（S3 の `If-Match`）が保証し、競合した側の保存を失敗させます。同一スタックへの同時操作は `*_IN_PROGRESS` ガードと CloudFormation 自身の進行中拒否により安全に失敗します。
+- 所有権 fencing（各副作用前の再検証）は**ベストエフォート**です。競合窓を狭めますが、CloudFormation API 上で完全には排除できません。IAM でも cfnsync の操作主体を分離してください。
+- 管理対象スタックに他主体の Change Set があると実行を停止します（Change Set 実行は他の Change Set を暗黙削除するため）。上書きせず fail-closed で止まります。
 
-Do not create change sets on cfnsync-managed stacks manually or with other tools. Full rationale is in [`docs/spec/design.md`](./docs/spec/design.md) and [`docs/spec/requirements.md`](./docs/spec/requirements.md).
+cfnsync 管理対象スタックへ、手動または他ツールで Change Set を作成しないでください。詳細な根拠は [`docs/spec/design.md`](./docs/spec/design.md) と [`docs/spec/requirements.md`](./docs/spec/requirements.md) にあります。
 
-## Contributing
+## コントリビュート
 
-Built with TypeScript, pnpm, Biome, and Vitest, following spec-driven TDD. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+TypeScript / pnpm / Biome / Vitest で構築し、spec-driven TDD に従っています。[CONTRIBUTING.md](./CONTRIBUTING.md) を参照してください。
 
-## License
+## ライセンス
 
 [MIT](./LICENSE) © tarahiman
