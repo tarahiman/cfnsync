@@ -27,15 +27,15 @@
 
 ## インストール
 
-`npx` でそのまま実行（インストール不要）するか、dev 依存として追加します。
+使用するパッケージマネージャーに合わせて、グローバルにインストールします。
 
 ```sh
-npx @tarahi/cfnsync --help
-# または
-npm install --save-dev @tarahi/cfnsync
+npm install --global @tarahi/cfnsync
+# または pnpm の場合
+pnpm add --global @tarahi/cfnsync
 ```
 
-npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが、コマンド名は `cfnsync` です。dev 依存として追加した後は `npx cfnsync ...` でも実行できます。
+npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが、インストール後のコマンド名は `cfnsync` です。
 
 ## クイックスタート
 
@@ -58,9 +58,9 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 2. 変更内容を確認し、差分をレビューしてからデプロイします。
 
    ```sh
-   npx @tarahi/cfnsync status   # added / modified / deleted / unchanged
-   npx @tarahi/cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
-   npx @tarahi/cfnsync deploy   # 依存順に実行
+   cfnsync status   # added / modified / deleted / unchanged
+   cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
+   cfnsync deploy   # 依存順に実行
    ```
 
 ## コマンド
@@ -112,7 +112,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx @tarahi/cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy --no-color
         working-directory: templates
 ```
 
