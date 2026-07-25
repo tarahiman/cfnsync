@@ -27,15 +27,15 @@ It is deliberately **not** a new IaC abstraction: no CDK/SAM-style template gene
 
 ## Install
 
-Run it directly with `npx` (no install), or add it as a dev dependency:
+Install it globally with your preferred package manager:
 
 ```sh
-npx @tarahi/cfnsync --help
-# or
-npm install --save-dev @tarahi/cfnsync
+npm install --global @tarahi/cfnsync
+# or, with pnpm
+pnpm add --global @tarahi/cfnsync
 ```
 
-The npm package is scoped (`@tarahi/cfnsync`), but the command it installs is `cfnsync`. Once it is a dev dependency you can also run it as `npx cfnsync ...`.
+The npm package is scoped (`@tarahi/cfnsync`), but the installed command is `cfnsync`.
 
 ## Quickstart
 
@@ -58,9 +58,9 @@ The npm package is scoped (`@tarahi/cfnsync`), but the command it installs is `c
 2. See what would change, review the diff, then deploy:
 
    ```sh
-   npx @tarahi/cfnsync status   # added / modified / deleted / unchanged
-   npx @tarahi/cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
-   npx @tarahi/cfnsync deploy   # execute in dependency order
+   cfnsync status   # added / modified / deleted / unchanged
+   cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
+   cfnsync deploy   # execute in dependency order
    ```
 
 ## Commands
@@ -112,7 +112,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx @tarahi/cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy --no-color
         working-directory: templates
 ```
 
