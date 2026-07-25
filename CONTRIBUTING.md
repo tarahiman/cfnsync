@@ -56,6 +56,19 @@ If Gitleaks is already managed by your system, you may enable only the hook with
 
 Automated tests never touch real AWS. Before a release, run a manual end-to-end pass against an **isolated, disposable** AWS account with a dedicated S3 state bucket and stack names you are free to delete — never a production account or existing stacks. Exercise `status` → `graph` → `plan` → `deploy`, an update, a `--allow-delete` deletion, a concurrent-lock scenario, and `import`. See [`docs/spec/design.md`](./docs/spec/design.md) for the full rationale.
 
+## Releasing
+
+Publishing is done with `pnpm publish` from a clean `main` worktree by a maintainer with npm publish rights.
+
+```sh
+pnpm run quality:check                 # gate: skill refs, format, lint, tests, build
+pnpm pack --pack-destination /tmp      # optional: inspect the tarball before publishing
+npm login                              # once per machine
+pnpm publish
+```
+
+`prepack` regenerates `npm-shrinkwrap.json` (in an isolated temp directory, because npm cannot resolve this repository's pnpm-managed `node_modules`), cleans and rebuilds `dist/`, and runs `verify:dist` to reject stale build output. The published tarball contains only `dist/`, `npm-shrinkwrap.json`, both READMEs, `LICENSE`, and `package.json`. `npm-shrinkwrap.json` is a build artifact and is not committed.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](./LICENSE).

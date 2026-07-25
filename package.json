@@ -29,8 +29,9 @@
   },
   "files": [
     "dist",
+    "npm-shrinkwrap.json",
     "README.md",
-    "README.ja.md",
+    "README.en.md",
     "LICENSE"
   ],
   "engines": {
@@ -39,7 +40,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "generate:shrinkwrap": "npm install --package-lock-only --ignore-scripts && npm shrinkwrap",
+    "generate:shrinkwrap": "node scripts/generate-shrinkwrap.mjs",
     "verify:dist": "node scripts/verify-dist.mjs",
     "sync:skill-references": "node scripts/sync-skill-references.mjs",
     "check:skill-references": "node scripts/sync-skill-references.mjs --check",
