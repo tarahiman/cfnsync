@@ -5,7 +5,26 @@
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
-- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-3、FR-4、FR-5、FR-8-7、FR-12 である(FR-5 は T-22 の仕様変更時に、従来の出現順 ID `FR-5-1`〜`FR-5-4` と同じ番号で明示 ID 化した — 既存参照の意味は変わらない)。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
+- **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-3、FR-4、FR-5、FR-8-7、FR-11-10、FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
+- **1 基準 = 1 主張**: 複数の主張を 1 つの基準へ詰め込まない。複数主張を含む基準はサブ ID(`FR-5-6a` / `FR-5-6b` …)へ分割し、requirements.md の基準と各タスクの対応表の行を真に 1:1 にする。
+
+#### 1.1 T-22 による受け入れ基準 ID の移行表
+
+T-22(deploy 承認フロー)は既存 ID の**意味を変える**変更を含む。下表が正本であり、「意味は変わらない」とみなしてはならない。
+
+| 旧 ID | 旧 ID の内容 | 新 ID | 変化 |
+|---|---|---|---|
+| FR-5-1 | 変更検知 → 順序解決 → 変更セット作成 → 差分表示 → 実行 | FR-5-1 | **拡張**(「承認」が工程に加わる)。既存テストは `--auto-approve` 前提へ更新が必要 |
+| FR-5-2 | 既定で**非対話**完走。確認プロンプトはオプトイン | FR-5-2a / FR-5-2b | **意味が反転**。既定が「1 回承認」になり、非対話は `--auto-approve` のオプトインになった |
+| FR-5-3 | `--dry-run` は差分表示までで停止 | FR-5-3 | 変更なし。ただし変更セットライフサイクルの規定を FR-5-9b として新設 |
+| FR-5-4 | 進捗をスタックキー付きで stderr へ逐次出力 | FR-5-4 | **追記**(承認を挟んでもスタックごとの段階の相対順序を変えない、という条項を追加) |
+| (なし) | — | FR-5-5a〜c / FR-5-6a〜g / FR-5-7a〜d / FR-5-8a〜b / FR-5-9a〜b / FR-5-10a〜c / FR-5-11 / FR-5-12a〜c / FR-5-13 / FR-5-14a〜b / FR-5-15a〜b / FR-5-16 / FR-5-17a〜d | 新設 |
+| (なし) | — | FR-3-7a / FR-3-7b | 新設(承認要約の色・出力先) |
+| (なし) | — | FR-11-10a / FR-11-10b | 新設((リージョン, スタック名)の一意性) |
+| FR-12-3 | すべてのコマンドは TTY なしで動作する | FR-12-3a | **意味を保存**(FR-12-3a が旧 FR-12-3 と同義) |
+| (なし) | — | FR-12-3b / FR-12-3c | 新設(非 TTY の `deploy` は `--auto-approve` 必須。変更 0 件でもエラー) |
+| FR-12-6c | 拒否は専用キャンセル payload を stdout へ 1 個、exit 0 | FR-12-6c1 / FR-12-6c2 / FR-12-6c3 | **契約が置換**。payload が deploy report + `cancelled: true` になり、`exitCode` / `message` フィールドは消滅 |
+| (なし) | — | FR-12-8a〜c | 新設(`--auto-approve` の提供範囲と `--confirm` の廃止) |
 - 各タスクの表が design.md §10 の「受け入れ基準 → テストケース対応表」の実体である。**1 受け入れ基準 = 1 行以上**。仕様の変更が生じた場合は requirements.md / design.md を先に更新し、この表を追随させる。
 - テストは実 AWS に接続しない(§10): `core/` は純粋単体テスト、`aws/` / `backend/` は `aws-sdk-client-mock` とテンポラリファイル、`usecase/` はゲートウェイをインメモリフェイクに差し替えたシナリオテスト。
 - タスクの完了条件: 対応表のテストがすべて green、かつ既存テスト全体(`vitest run`)が green。
@@ -21,7 +40,7 @@
 | M3 | usecase(guard / executor / importer) | T-12〜T-18 | FR-2, FR-4〜FR-7, FR-10 |
 | M4 | cli | T-19 | FR-12, NFR-1 |
 | M5 | ドキュメント・パッケージング | T-20〜T-21 | FR-1-5, NFR-4, §11 |
-| M6 | deploy 承認フロー(仕様変更) | T-22 | FR-5-2, FR-5-5〜FR-5-16, FR-12-3, FR-12-6c, FR-12-8 |
+| M6 | deploy 承認フロー(仕様変更) | T-22 | FR-5-1〜FR-5-17, FR-3-7, FR-11-10, FR-12-3, FR-12-6c, FR-12-8 |
 
 依存方向(`cli → usecase → core / ports / report`、`aws` / `backend` は `ports` を実装)に従い、**usecase が依存する契約(ports / report)を usecase より先に固定する**。M0 → M5 の順、ミルストーン内も記載順を推奨する(後続タスクが前のタスクの型・fixture を使う)。
 
@@ -229,7 +248,7 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | ID | 受け入れ基準(要約) | テストケース |
 |---|---|---|
 | FR-5-1 | 変更検知 → 依存順解決 → 変更セット作成 → 差分表示 → 実行を一連で実行 | 2 スタック(依存あり)の一括実行で全工程が依存順に呼ばれる |
-| FR-5-2 | 実行全体で 1 回だけ承認を求め、`--auto-approve` では求めない | `--auto-approve` 指定時は `approve` が呼ばれずプロンプト・stdin 読み取りなしで完了する(承認フロー本体の検証は T-22) |
+| FR-5-2b | `--auto-approve` 指定時は承認を求めない | `--auto-approve` 指定時は `approve` が呼ばれずプロンプト・stdin 読み取りなしで完了する(承認フロー本体の検証は T-22) |
 | FR-5-3 | `--dry-run` は差分表示までで停止 | `ExecuteChangeSet` が呼ばれず、describe 後に変更セットが削除される(§5.2) |
 | FR-4-1 | 完了まで待機しイベントを逐次出力 | イベントポーリングの逐次出力と完了待機を検証 |
 | FR-4-2 | 失敗時は原因リソースとメッセージを出力し非ゼロ終了 | 失敗イベントから `ResourceStatusReason` が抽出され、終了コード 1 |
@@ -244,10 +263,10 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | NFR-4(Default) | 設定で省略した NoEcho の scalar template Default も redactor の実効値に含める。`inputsHash` は補完しない | `NFR-4(Default/event): NoEcho template Default をイベントと failed progress/report の格納前にマスクする` / `NFR-4(Default/change set): NoEcho template Default を変更セット失敗の report/progress 格納前にマスクする` / `NFR-4(Default/final status): NoEcho template Default を最終 status failure の report/progress 格納前にマスクする` |
 | FR-5-4(スキップ) | 依存失敗によるスキップも通知する | A 失敗・B が A に依存 → B の `onProgress` に phase 'skipped' が呼ばれる |
 | NFR-1(進捗) | 進捗は標準エラーのみに出力し、`--output json` の標準出力を汚さない | CLI 統合テストで `--output json` 実行中に `onProgress` を複数回発火させても stdout が単一の有効な JSON のままであることを確認(cli.test.ts 側) |
-| FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue`(**Phase B の失敗にのみ適用**。FR-5-12) | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行(いずれも承認後の実行中に失敗させるシナリオ) |
+| FR-9-2 | 失敗時: 依存下流は中止、独立は `--on-failure stop|continue`(**Phase B の失敗にのみ適用**。FR-5-12b) | B(Aに依存)は中止 / 独立の C は `stop` で中止・`continue` で続行(いずれも承認後の実行中に失敗させるシナリオ) |
 | FR-1-7(統合) | ロックは正常・異常を問わず終了時に解放 | 成功時・途中エラー時の双方で解放される(所有権喪失時は解放試行が条件不成立で無害) |
 | NFR-3(冪等) | 再実行で成功済みはスキップ | plan → deploy → 再 deploy で全スタック「変更なし」(空変更セット)、終了コード 0 |
-| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する。この失敗は Phase A で確定するため FR-5-12 により実行全体を中断する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` / (T-22 で更新) `FR-9-2(__REQUIRED__): 必須値不足は Phase A の失敗として承認を求めず実行全体を中断する` |
+| §8.2 | `__REQUIRED__` 残存スタックの deploy 拒否。診断は literal sentinel と対象名を保持する。この失敗は Phase A で確定するため FR-5-12b により実行全体を中断する | プレースホルダ残存 → 当該スタックは検証エラーで実行されない / `§8.2/NFR-4: __REQUIRED__ 拒否の errorMessage は literal sentinel と対象名を保持し AWS 副作用ゼロ` / (T-22 で更新) `FR-9-2(__REQUIRED__): 必須値不足は Phase A の失敗として承認を求めず実行全体を中断する` |
 | FR-8-7(deploy統合) | target ごとの実効パラメータで依存候補を解決し、成功時の state へ記録する | 共通値と region override で異なる Export / Import 名を解決し、依存順と保存済み exports/imports がリージョン別に一致する / parameter変更後は新しい依存名を保存する |
 | FR-6-5 / FR-8-7(不完全解析) | 明示 `dependsOn` により解析警告を補完できる | 動的依存警告のみなら `dependencyAnalysisIncomplete: true` / 明示 dependsOn が1件以上あれば false / 警告なしなら false |
 
@@ -330,14 +349,15 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | ID | 受け入れ基準(要約) | テストケース |
 |---|---|---|
 | FR-12-1 | status / plan / deploy / graph / import(+ force-unlock)を提供 | 各サブコマンドが定義され、対応する usecase が呼ばれる |
-| FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
-| FR-12-3 | TTY なしで動作。ただし非 dry-run の `deploy` は `--auto-approve` 必須 | 非 TTY 環境で `status` / `plan` / `graph` / `import` / `force-unlock` / `deploy --auto-approve` がプロンプトなしに完走する(`--auto-approve` なしの拒否は T-22) |
+| FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり |
+| FR-12-4 | `--version`(短縮形 `-v`)で `package.json` の version を表示し終了コード 0 | `FR-12(JSON契約外): --version は text を出して exit 0`(exit 0 と非 JSON の text 出力を固定)。**短縮形 `-v` と、出力が `package.json` の version と一致することは未検証**(下記の穴埋めを T-22 で行う) | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
+| FR-12-3a | TTY なしで全コマンドが動作する | 非 TTY 環境で `status` / `plan` / `graph` / `import` / `force-unlock` / `deploy --auto-approve` がプロンプトなしに完走する(`--auto-approve` なしの拒否は T-22 の FR-12-3b / FR-12-3c) |
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
 | FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
 | FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
 | FR-12-6a / FR-12-6b(import診断) | import の JSON warning は安全な本文、text warning は `CfnSyncError.message` の装飾済み診断を使う | `FR-12(import JSON診断): ロック warning の内部 cause を出力しない` / `FR-12(import text診断): ロック warning の装飾済み cause を出力する` |
 | FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
-| FR-12-6c(JSONキャンセル) | deploy の承認拒否は `cancelled: true` 付きの deploy report を stdout へ 1 個出し exit 0 | (T-22 で更新) `FR-12-6c(JSONキャンセル): 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0` |
+| FR-12-6c1 | deploy の承認拒否は `cancelled: true` 付きの deploy report を stdout へ 1 個出し exit 0 | (T-22 で更新) `FR-12-6c1: 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0(diffs と skipped を保持)` |
 | FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12(JSON選択): --output json と --output=json の両記法を認識する` |
 | FR-12-6e(JSON配置) | `--output` はサブコマンドの前後どちらでも有効 | `FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効` |
 | FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12(JSON選択): 複数指定は最後の --output を採用する` |
@@ -345,9 +365,9 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12(JSON契約外): --help と --version は text を出して exit 0` |
 | FR-12-7 | plan / deploy だけが `--no-color` を提供 | plan / deploy の help に `--no-color` があり、他サブコマンドの help にはない |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
-| FR-12-8 | `deploy` だけが `--auto-approve`(`-y`)を提供し、`--confirm` は廃止 | (T-22) `FR-12-8: deploy の help にだけ --auto-approve/-y があり plan の help にはない` / `FR-12-8: --confirm は CliUsageError で exit 1` |
+| FR-12-8a / FR-12-8b / FR-12-8c | `deploy` だけが `--auto-approve`(`-y`)を提供し、`--confirm` は廃止 | (T-22 で検証) `FR-12-8a` / `FR-12-8b` / `FR-12-8c` の各テスト |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |
-| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗・承認要約は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / (T-22) `FR-3-7/NFR-1: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
+| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗・承認要約は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / (T-22) `FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
 
 ## 8. M5: ドキュメント・パッケージング
 
@@ -365,9 +385,10 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | NFR-4 | 実行に必要な最低限の IAM 権限一覧 |
 | §10 | 実 AWS を使う手動検証手順(E2E はスコープ外のため) |
 | FR-12-2 | 終了コード表 |
-| FR-5-2 / FR-12-3 / FR-12-8 | `deploy` の既定は「差分表示 → 承認 → 実行」。CI(非 TTY)では `--auto-approve` が必須であること。`--confirm` 廃止を含む破壊的変更の一覧 |
-| FR-5-14 / §5.3 | 人間の承認を待つ間ステートロックを保持し続けること。承認時点の差分と実行時点の実状態の一致は保証されず、防御は実行直前再検査・stackId 再照合・`*_IN_PROGRESS` ガード・fencing に限ること |
-| FR-5-15 / §5.3.1 | 既知の性質: `Fn::ImportValue` 由来のプロパティは承認時点で最終値が確定せず `{{changeSet:KNOWN_AFTER_APPLY}}` と表示されること(terraform の "known after apply" と同じ)。値は実行時に解決されること |
+| FR-5-2a / FR-12-3b / FR-12-3c / FR-12-8c | `deploy` の既定は「差分表示 → 承認 → 実行」。CI(非 TTY)では `--auto-approve` が必須で、変更 0 件の実行も未指定ではエラーになること。`--confirm` 廃止と承認拒否時の出力契約の置換を含む破壊的変更の一覧(リリースノートにも掲載) |
+| FR-5-12b | **`--on-failure` の適用範囲を計画段階から取り除く互換性破壊**。従来は `__REQUIRED__` 残存等の計画上の失敗でも独立スタックは `--on-failure continue` に従って実行された(変更前 design.md §8.2)。今後は Phase A の失敗を値にかかわらず実行全体の中断とすること(README・リリースノート双方の必須記載事項) |
+| FR-5-14a / FR-5-14b / §5.3 | 人間の承認を待つ間ステートロックを保持し続けること。承認時点の差分と実行時点の実状態の一致は保証されず、防御は FR-5-17 の実行直前再検査(変更セット再検査・stackId 再照合・`*_IN_PROGRESS` ガード・fencing)に限ること |
+| FR-5-15b / §5.3.1 | 既知の性質: **この実行で新規作成される Export** を参照するプロパティは承認時点で最終値が確定せず `{{changeSet:KNOWN_AFTER_APPLY}}` と表示されること(terraform の "known after apply" と同じ)。既存 Export を参照するプロパティは作成時に実値へ解決されること。AWS 公式文書はこの挙動を契約として保証しておらず、実測に基づく設計判断であること |
 | §5.3.1(殻) | 承認拒否・plan で `REVIEW_IN_PROGRESS` の殻が残ること。次回実行で自動回収され、`DeleteStack` は行わないこと |
 
 ### T-21 npm パッケージング
@@ -379,65 +400,111 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 
 ### T-22 deploy を「差分表示 → 承認 → 実行」へ変更する
 
-`deploy` の既定挙動を `terraform apply` 相当にする(requirements.md FR-5-2 / design.md §5.3)。**既存の T-01〜T-21 の実装を再構築せず、`runLocked` の 2 フェーズ化として拡張する。**
+`deploy` の既定挙動を `terraform apply` 相当にする(requirements.md FR-5 / design.md §5.3)。**既存の T-01〜T-21 の実装を再構築せず、`runLocked` の 2 フェーズ化として拡張する。**
 
 成果物:
 
+- `src/core/config.ts`((リージョン, スタック名)の一意性検証), `test/core/config.test.ts`
 - `src/report/index.ts`(`ApprovalRequest` / `ApprovalSummary` / `renderApprovalSummary`、`DeployReport.cancelled`、`renderJson` の whitelist へ `cancelled` 追加、リソース差分 0 件の表示), `test/report/report.test.ts`
-- `src/usecase/deploy.ts`(`DeployDeps.approve` / `DeployOptions.autoApprove`、Phase A / Phase B 分割、拒否時クリーンアップ), `test/usecase/deploy.test.ts`, `test/usecase/approval.test.ts`(新規)
+- `src/usecase/deploy.ts`(`DeployDeps.approve` / `DeployOptions.autoApprove`、Phase A / Phase B 分割、実行直前再検査、拒否時クリーンアップ), `test/usecase/deploy.test.ts`, `test/usecase/approval.test.ts`(新規)
 - `src/cli/index.ts` / `src/cli/commands.ts`(`--auto-approve`(`-y`)追加、`--confirm` 削除、非 TTY ガード、承認要約の stderr 出力とプロンプト注入), `test/cli/cli.test.ts`
-- README の更新(T-20 の再実行。承認フロー・CI での `--auto-approve` 必須・承認待ち中のロック保持)
+- README の更新(T-20 の再実行。承認フロー・CI での `--auto-approve` 必須・承認待ち中のロック保持・`KNOWN_AFTER_APPLY` の既知の性質)
+- **リリースノート(破壊的変更の一覧と移行例)**。FR-12-6c3 / FR-12-3c により、CI 利用者は必ず影響を受けるため必須成果物とする
 
 TDD 手順(red → green → refactor):
 
-1. `report` の型と `renderApprovalSummary` / `renderJson` の whitelist 追加、リソース差分 0 件の表示をテスト・実装する(usecase が依存する出力契約を先に固定する — §3 の依存方向)。
-2. `usecase/deploy.ts` を Phase A / Phase B へ分割する。**まず `--auto-approve` 経路で既存の `test/usecase/deploy.test.ts` 全件が green に戻ることを確認**してから、承認・拒否・Phase A 失敗のテストを追加する。
-3. `cli` のオプションと非 TTY ガードをテスト・実装する。
-4. `pnpm run quality:check` を通す。
-5. QA が `templates/.qa-baseline/` に記録した `--output json` のベースラインと突き合わせ、`connection` / `diffs` / `events` / `result` に非回帰であることを確認する(FR-5-16)。
+1. `core/config.ts` の (リージョン, スタック名) 一意性検証をテスト・実装する(AWS 非依存。FR-11-10a)。
+2. `report` の型と `renderApprovalSummary` / `renderJson` の whitelist 追加、リソース差分 0 件の表示をテスト・実装する(usecase が依存する出力契約を先に固定する — §3 の依存方向)。
+3. `usecase/deploy.ts` を Phase A / Phase B へ分割する。**まず `--auto-approve` 経路で既存の `test/usecase/deploy.test.ts` 全件が green に戻ることを確認**してから、承認・拒否・Phase A 失敗・実行直前再検査のテストを追加する。
+4. `cli` のオプションと非 TTY ガードをテスト・実装する。
+5. `pnpm run quality:check` を通す。
+6. QA が `templates/.qa-baseline/` に記録した `--output json` のベースラインと突き合わせ、`connection` / `diffs` / `events` / `result` に非回帰であることを確認する(FR-5-16)。**テキスト出力は FR-5-7b により意図的に変わる**ため、非回帰判定の対象は JSON に限る。
+7. 実機検証(QA)で、**新規 Export を参照する対象を含む実行を `ExecuteChangeSet` まで通す**。design §5.3.1 の限界 1 のとおり、保留値(`{{changeSet:KNOWN_AFTER_APPLY}}`)を持つ変更セットの実行は未実測であり、依存順(FR-9)によりその経路へ到達しないという設計上の理屈しか裏付けがない。ここで実測を得る。
 
-`core/plan.ts` は変更しない。当初検討していた deferred(遅延変更セット)機構は**採用しない**。その出発点だった「依存先の Export が未作成だと Phase A の変更セット作成が失敗する」という前提は、生 AWS CLI による独立検証(cfnsync 非経由)で否定された — スタックも Export も存在しない状態で `--change-set-type CREATE` を実行しても `Status: CREATE_COMPLETE` / `ExecutionStatus: AVAILABLE` となり、プロパティ値は `{{changeSet:KNOWN_AFTER_APPLY}}` として保留される(design.md §5.3.1)。したがって `computeDeferred`・`StackDiff.deferred`・`plan` の挙動変更はいずれも不要であり、**`plan` の挙動は現行のまま無変更**である(既存テストも壊れない)。`CreateChangeSet` が別の理由で失敗した場合は FR-5-12 の Phase A 失敗として fail-closed に中断する。
+`core/plan.ts` は変更しない。当初検討していた deferred(遅延変更セット)機構は**採用しない**。その出発点だった「依存先の Export が未作成だと Phase A の変更セット作成が失敗する」という前提は、生 AWS CLI による独立検証(cfnsync 非経由)で否定された — スタックも Export も存在しない状態で `--change-set-type CREATE` を実行しても `Status: CREATE_COMPLETE` / `ExecutionStatus: AVAILABLE` となり、プロパティ値は `{{changeSet:KNOWN_AFTER_APPLY}}` として保留される(design.md §5.3.1)。したがって `computeDeferred`・`StackDiff.deferred`・`plan` の挙動変更はいずれも不要であり、**`plan` の挙動は FR-5-7b のテキスト表示を除いて無変更**である。`CreateChangeSet` が別の理由で失敗した場合は FR-5-12a の Phase A 失敗として fail-closed に中断する。
 
 破壊的変更(0.x のため許容。README・リリースノートに明記すること):
 
-- `--confirm` の削除と `--auto-approve`(`-y`)の新設(FR-12-8)
-- 非 TTY での `deploy`(非 dry-run)は `--auto-approve` 必須。未指定はエラー(FR-12-3)
-- 承認拒否時の JSON が専用ペイロードから `cancelled: true` 付き deploy report へ変更(FR-12-6c)
-- Phase A の失敗では `--on-failure continue` でも独立スタックを実行しない(FR-5-12)
+- `--confirm` の削除と `--auto-approve`(`-y`)の新設(FR-12-8c)
+- 非 TTY での `deploy`(非 dry-run)は `--auto-approve` 必須。未指定はエラー(FR-12-3b)。**変更が 1 件もない実行も同様にエラーになる**(FR-12-3c)
+- 承認拒否時の出力契約の置換。JSON は専用 payload から `cancelled: true` 付き deploy report へ、text は「stderr のキャンセル文のみ」から「stderr のキャンセル文 + stdout の deploy report」へ(FR-12-6c3)
+- **`--on-failure` の適用範囲を計画段階から取り除く互換性破壊**(FR-5-12b)。従来は `__REQUIRED__` 残存等の計画上の失敗でも、依存下流を skipped としたうえで独立スタックは `--on-failure continue` に従って実行された(変更前 design.md §8.2 の「独立スタックだけを `--on-failure` に従わせる」を今回削除)。今後は Phase A の失敗を `--on-failure` の値にかかわらず実行全体の中断とする
+- リソース差分 0 件の `create` / `update` のテキスト表示が `(変更なし)` から変わる(FR-5-7b)
+- 同一リージョンで同一スタック名へ解決される設定が `ConfigError` になる(FR-11-10a)
+
+**更新が必要な既存テスト**(新設計と矛盾するもの):
+
+| ファイル・テスト名 | 理由 |
+|---|---|
+| `test/usecase/deploy.test.ts` `FR-5-2: 変更検知から実行まで依存順に非対話で一括実行する` | 既定が承認フローになったため `--auto-approve` を渡す形へ更新(FR-5-1 / FR-5-2b) |
+| `test/usecase/deploy.test.ts` `FR-5-3: dry-run は差分 describe 後に変更セットを削除し、実行しない` | FR-5-9b により経路が `plan` 統一。意図は不変だが、Phase A の保持経路を通らないことの確認を追加 |
+| `test/usecase/deploy.test.ts` `FR-5-4: *`(6 件) | 2 フェーズ化後もスタックごとの相対順序が不変であることの確認へ更新 |
+| `test/usecase/deploy.test.ts` `FR-9-2(__REQUIRED__再レビュー⑥)` | FR-5-12b により `--on-failure continue` でも独立スタックを実行しない |
+| `test/usecase/deploy.test.ts` の `--on-failure continue` 系 | Phase A ではなく **Phase B で失敗させる**シナリオへ組み替える |
+| `test/cli/cli.test.ts` `FR-12-3: 非 TTY は --confirm 指定時もプロンプトなしで完走する` | 削除。FR-12-3a / FR-12-3b / FR-12-3c へ置換 |
+| `test/cli/cli.test.ts` `FR-5-2: --confirm 指定かつ TTY の場合だけ確認する` | 削除。FR-12-8a / FR-12-8c へ置換 |
+| `test/cli/cli.test.ts` `FR-12(JSONキャンセル)` / `FR-12(textキャンセル)` | FR-12-6c1 / FR-12-6c2 / FR-12-6c3 の新契約へ書き換え |
+| `test/report/report.test.ts` のテキスト差分ゴールデン | FR-5-7b により 0 件 `create` / `update` の文言が変わる |
 
 | ID | 受け入れ基準(要約) | テストケース |
 |---|---|---|
-| FR-5-2 | 実行全体につき 1 回だけ承認を求め、承認後にだけ実行へ進む | `FR-5-2: 3 スタックの実行で approve がちょうど 1 回だけ呼ばれ、承認後に全件が依存順で実行される` |
-| FR-5-2(auto) | `--auto-approve` は承認を求めずに実行する | `FR-5-2: --auto-approve では approve が呼ばれずそのまま実行される` |
-| FR-5-5 | Phase A では `ExecuteChangeSet` / `DeleteStack` / state 保存を行わない | `FR-5-5: approve 呼び出し時点で全対象の CreateChangeSet が完了し ExecuteChangeSet・DeleteStack・save が 0 回` |
-| FR-5-5(保持) | Phase A で作成した変更セットは承認まで削除しない | `FR-5-5: approve 呼び出し時点で事前作成した変更セットが DeleteChangeSet されていない` |
-| FR-5-5(繰り延べ) | 空変更セット・CREATE 復旧・削除済み同期の state 保存も Phase B へ繰り延べる | `FR-5-5: 空変更セットの state 保存は approve 前に呼ばれず承認後に行われる` |
-| FR-5-6 | 承認要求に接続先・操作種別・差分・置換警告・削除対象を含める | `FR-5-6: ApprovalRequest に connection・各スタックの operation・Replacement 警告・削除対象が含まれる` |
-| FR-5-6(出力先) | 承認要約とプロンプト(入力エコー含む)は stderr へ出す | `FR-5-6: 承認プロンプトと入力エコーが stderr へ出力され stdout に現れない` |
-| FR-5-6(削除) | `--allow-delete` の削除対象を承認要約に必ず含める | `FR-5-6: --allow-delete の削除対象が ApprovalRequest.diffs と summary.delete に現れる` |
-| FR-5-7 | リソース差分 0 件で成功した変更セットは「変更なし」扱いにせず実行する | `FR-5-7: Outputs のみ変更したスタックの 0 件変更セットは ExecuteChangeSet され Export が作成される` |
-| FR-5-7(表示) | 0 件であることが分かる表示にし、空変更セットの「変更なし」と紛らわしくしない | `FR-5-7: 承認要約と text 差分で 0 件の update は「変更あり」かつリソース差分なしと明示され、no-change 表示と区別できる` |
-| FR-5-7(判定境界) | `noChanges` は FAILED + 既知定型文 + changes 0 件のすべてを満たす場合だけ | `FR-5-7: 成功した 0 件変更セットは noChanges として扱われず実行対象に残る(既存 executor 契約の非回帰)` |
-| FR-5-8 | 実行予定が 0 件なら承認を求めず exit 0 | `FR-5-8: 全対象が変更なしの再実行では approve が呼ばれず exit 0`(NFR-3 冪等性の維持) / `FR-5-8: state 同期のみ必要な実行でも approve は呼ばれず同期して exit 0` |
-| FR-5-9 | `--dry-run` / `plan` は承認を求めない | `FR-5-9: deploy --dry-run と plan では approve が呼ばれず、作成した変更セットは削除される` |
-| FR-5-10 | 拒否で事前作成した変更セットを全削除し、副作用ゼロ・`skipped`・exit 0 | `FR-5-10: 承認拒否で全事前変更セットが DeleteChangeSet され ExecuteChangeSet/DeleteStack/save が 0 回、未実行は skipped、exit 0` |
+| FR-5-1 | 変更検知 → 順序解決 → 変更セット作成 → 差分表示 → 承認 → 実行を一連で行う | `FR-5-1: 依存のある 2 スタックが承認を挟んで全工程を依存順に通る` |
+| FR-5-2a | 実行全体につき 1 回だけ承認を求め、承認後にだけ実行へ進む | `FR-5-2a: 3 スタックの実行で approve がちょうど 1 回だけ呼ばれ、承認後に全件が依存順で実行される` |
+| FR-5-2b | `--auto-approve` は承認を求めずに実行する | `FR-5-2b: --auto-approve では approve が呼ばれずそのまま実行される` |
+| FR-5-3 | `--dry-run` は差分表示までで停止する | `FR-5-3: --dry-run は ExecuteChangeSet を呼ばずに差分を出して終了する` |
+| FR-5-4 | 進捗をスタックキー付きで stderr へ逐次出力し、承認を挟んでも相対順序を変えない | `FR-5-4: 2 スタックの承認フローで各スタックの phase 順序が維持され、全 diff-ready が最初の execute-start に先行する` |
+| FR-5-5a | Phase A では `ExecuteChangeSet` / `DeleteStack` を行わない | `FR-5-5a: approve 呼び出し時点で全対象の CreateChangeSet が完了し ExecuteChangeSet・DeleteStack が 0 回` |
+| FR-5-5b | Phase A の state 保存は既成事実の再同期に限り許され、fencing + CAS を経る | `FR-5-5b: 空変更セット・CREATE 復旧・削除済み同期の再同期が Phase A で fencing 検証つき CAS 保存される` |
+| FR-5-5c | 実行の成功記録は Phase B でのみ保存する | `FR-5-5c: ExecuteChangeSet の成功記録は approve 前に保存されず承認後に保存される` |
+| FR-5-6a | 承認要求に接続先を含める | `FR-5-6a: ApprovalRequest.connection に accountId と regions が入る` |
+| FR-5-6b | 承認要求に操作種別を含める | `FR-5-6b: ApprovalRequest.diffs の各要素が create/update/delete の operation を持つ` |
+| FR-5-6c | 承認要求にリソース単位の差分を含める | `FR-5-6c: ApprovalRequest.diffs の resources に Phase A で確定したリソース変更が入る` |
+| FR-5-6d | 承認要求に Replacement 警告を含める | `FR-5-6d: Replacement: True のリソースが ApprovalRequest の警告と summary.replacements に現れる` |
+| FR-5-6e | 承認要求に削除対象を `--allow-delete` の有無を明示して含める | `FR-5-6e: --allow-delete あり/なしで削除対象の提示が「削除する」/「警告のみ」と区別される` |
+| FR-5-6f | 承認要約とプロンプト(入力エコー含む)は stderr へ出す | `FR-5-6f: 承認要約・プロンプト・入力エコーが stderr へ出力され stdout に現れない` |
+| FR-5-6g | 承認要約にも report と同一の redactor を適用する | `FR-5-6g: NoEcho 実値を含む差分でも ApprovalRequest.diffs と承認要約に実値が現れない` |
+| FR-5-7a | リソース差分 0 件で成功した変更セットを「変更なし」扱いにせず実行する | `FR-5-7a: Outputs のみ変更したスタックの 0 件変更セットは ExecuteChangeSet され Export が作成される` |
+| FR-5-7b | 0 件であることが分かる表示にし、`no-change` と区別する | `FR-5-7b: 0 件の update は「変更あり」かつ「CloudFormation リソース差分 0 件」と表示され no-change 表示と一致しない` |
+| FR-5-7c | 判別表示は create / update に限定し、削除プレビューを誤分類しない | `FR-5-7c: delete プレビュー(resources 空)は 0 件注記の対象にならない` / `FR-5-7c: plan / deploy の create/update/delete/no-change × 空 resources の境界で表示が正しい` |
+| FR-5-7d | 判別はレンダラのみで行い `DeployReport` のデータを変えない | `FR-5-7d: 0 件 update の JSON は warnings 空・operation update のままベースラインと一致し、text 出力だけが変わる` |
+| FR-5-8a | 実行予定が 0 件なら承認を求めない | `FR-5-8a: 全対象が変更なしの再実行では approve が呼ばれない`(NFR-3 冪等性の維持) |
+| FR-5-8b | その場合も再同期を行い exit 0 で終了する | `FR-5-8b: 再同期のみ必要な実行は approve なしで state を同期して exit 0` |
+| FR-5-9a | `--dry-run` / `plan` は承認を求めない | `FR-5-9a: deploy --dry-run と plan では approve が呼ばれない` |
+| FR-5-9b | `--dry-run` は `plan` と同一の変更セットライフサイクルに従う | `FR-5-9b: --dry-run は describe 直後に自身の変更セットを削除し、Phase A の保持経路を通らない` |
+| FR-5-10a | 拒否で事前作成した変更セットを全削除する | `FR-5-10a: 承認拒否で Phase A の全変更セットが ARN 指定で DeleteChangeSet される` |
+| FR-5-10b | 拒否で承認対象の AWS 変更操作を 1 件も行わない | `FR-5-10b: 承認拒否で ExecuteChangeSet と DeleteStack が 0 回(変更セットの作成・削除と再同期保存は発生しうる)` |
+| FR-5-10c | 拒否で未実行を `skipped` として報告し exit 0 | `FR-5-10c: 承認拒否で未実行スタックの outcome が skipped、exit 0` |
 | FR-5-11 | 拒否後のクリーンアップ失敗は報告して exit 1 | `FR-5-11: 拒否後の DeleteChangeSet が失敗したら警告を報告し exit 1(次回の残存回収に委ねる)` |
-| FR-5-12 | Phase A 失敗は承認を求めず中断・変更セット後始末・exit 1 | `FR-5-12: Phase A の 1 件が失敗したら approve が呼ばれず、作成済み変更セットが全削除され exit 1` / `FR-5-12: --on-failure continue でも Phase A 失敗では独立スタックを実行しない` |
-| FR-5-12 / §8.2 | `__REQUIRED__` 残存も Phase A の失敗として実行全体を中断する(既存 T-14 テストの更新) | `FR-9-2(__REQUIRED__): 必須値不足は Phase A の失敗として承認を求めず実行全体を中断する` |
+| FR-5-12a | Phase A 失敗は承認を求めず中断し exit 1 | `FR-5-12a: Phase A の 1 件が失敗したら approve が呼ばれず exit 1` |
+| FR-5-12b | `--on-failure continue` でも Phase A 失敗では Phase B へ進まない | `FR-5-12b: --on-failure continue でも Phase A 失敗では独立スタックを実行しない` / `FR-9-2(__REQUIRED__): 必須値不足は Phase A の失敗として実行全体を中断する` |
+| FR-5-12c | 中断時に作成済み変更セットを全削除する | `FR-5-12c: Phase A 失敗で作成済みの変更セットが全削除される` |
 | FR-5-13 | 承認手段がなければ AWS アクセス前に fail-closed | `FR-5-13: approve 未注入かつ --auto-approve なしは STS・backend・CFN を 1 度も呼ばず GuardError で exit 1` |
-| FR-5-14 | 承認待ちの間ステートロックを保持する | `FR-5-14: approve 呼び出し中にロックが保持されており、release がまだ呼ばれていない` |
-| FR-5-14(TOCTOU) | 承認時点の差分と実行時点の実状態の一致を保証しない | (仕様明記 + 既存防御の再確認) `FR-5-14: 承認後に他主体の変更セットが現れた場合、実行直前再検査で ExecuteChangeSet を呼ばず停止する` |
-| FR-5-4 | 2 フェーズ化後もスタックごとの phase 相対順序を維持する | `FR-5-4: 2 スタックの承認フローで各スタックの phase 順序が維持され、全 diff-ready が最初の execute-start に先行する` |
-| FR-3-7 / NFR-1 | 承認要約は色規則に従い stderr へ出し、stdout の単一 JSON を汚さない | `FR-3-7: 承認要約は既定で ANSI 色付き、--no-color / NO_COLOR で無色化される` / `FR-3-7/NFR-1: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
-| NFR-4 | 承認要約にも report と同一の redactor を適用する | `NFR-4: NoEcho 実値を含む差分でも ApprovalRequest.diffs と承認要約に実値が現れない` |
-| FR-12-3 | 非 TTY + `--auto-approve` なしの deploy は AWS 前に `CliUsageError` で exit 1 | `FR-12-3: 非 TTY の deploy(--auto-approve なし)は AWS クライアントを 1 度も生成せず CliUsageError で exit 1` / `FR-12-3: 非 TTY でも deploy --dry-run と plan はエラーにならない` |
-| FR-12-6c | 拒否時 JSON は `cancelled: true` 付き deploy report ちょうど 1 個で exit 0 | `FR-12-6c(JSONキャンセル): 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0` / `FR-12-6c(textキャンセル): text 選択では stderr に Deployment cancelled. を出し stdout に report を出して exit 0` |
-| FR-12-6c(非拒否) | 拒否していない実行の JSON に `cancelled` を含めない | `FR-12-6c: 成功した deploy の JSON に cancelled フィールドが存在しない(既存 schema 互換)` |
-| FR-12-8 | `deploy` だけが `--auto-approve`(`-y`)を提供し、`--confirm` は廃止 | `FR-12-8: deploy の help にだけ --auto-approve/-y があり plan の help にはない` / `FR-12-8: --confirm は CliUsageError で exit 1` |
-| FR-5-15 | 依存先がこの実行で新規作成される場合も Phase A で変更セットを事前作成する | `FR-5-15: この実行で create される依存先の Export を参照する対象も Phase A で CreateChangeSet され、承認は 1 回で済む` |
-| FR-5-15(保留値) | `{{changeSet:KNOWN_AFTER_APPLY}}` はそのまま提示し独自解決しない | `FR-5-15: 保留値 {{changeSet:KNOWN_AFTER_APPLY}} を承認要約と差分出力へそのまま出し、cfnsync 側で解決・補完しない` |
+| FR-5-14a | 承認待ちの間ステートロックを保持する | `FR-5-14a: approve 呼び出し中にロックが保持されており release がまだ呼ばれていない` |
+| FR-5-14b | 承認時点の差分と実行時点の実状態の一致を保証しない | (仕様明記 + FR-5-17 の防御で担保。FR-5-17a〜d の各テストが実体) |
+| FR-5-15a | 依存先がこの実行で新規作成される場合も Phase A で変更セットを作成する | `FR-5-15a: この実行で create される依存先の Export を参照する対象も Phase A で CreateChangeSet され、承認は 1 回で済む` |
+| FR-5-15b | `{{changeSet:KNOWN_AFTER_APPLY}}` はそのまま提示し独自解決しない | `FR-5-15b: 保留値 {{changeSet:KNOWN_AFTER_APPLY}} を承認要約と差分出力へそのまま出し、cfnsync 側で解決・補完しない` |
 | FR-5-16 | 2 フェーズ化で JSON の既存フィールドの構造・順序を変えない | `FR-5-16: --auto-approve の deploy JSON が 2 フェーズ化前のベースラインと connection/diffs/events/result で一致する` |
+| FR-5-17a | 実行直前に自変更セットの name / ARN 一致と他主体の不在を再検査する | `FR-5-17a: 承認後・実行前に他主体の変更セットが現れたら ExecuteChangeSet を呼ばず停止する` |
+| FR-5-17b | 実行直前に `stackId` を state と再照合する | `FR-5-17b: 承認待ち中にスタックが差し替えられ stackId が変わったら UPDATE を実行せず停止する` |
+| FR-5-17c | 実行直前に `*_IN_PROGRESS` でないことを再確認する | `FR-5-17c: 承認待ち中に対象スタックが UPDATE_IN_PROGRESS になったら実行せず停止する` |
+| FR-5-17d | 実行直前にロック所有権を再検証する | `FR-5-17d: 承認待ち中に force-unlock され所有権を失ったら以降の副作用を行わず中断する` |
+| FR-3-7a | 承認要約は差分本体と同じ色付け・無色化の規則に従う | `FR-3-7a: 承認要約は既定で ANSI 色付き、--no-color / NO_COLOR で無色化される` |
+| FR-3-7b | `--output json` でも承認要約は stderr へ出し stdout の JSON を変えない | `FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
+| FR-11-10a | 同一 (リージョン, スタック名) へ解決される設定を AWS アクセス前に `ConfigError` で拒否する | `FR-11-10a: 同一リージョンで同じ stackName に解決される 2 スタックは対象キーを含む ConfigError で拒否される(AWS 呼び出し 0 回)` |
+| FR-11-10b | 変更検知後に同一物理スタックが二重に計画される場合も AWS 副作用前に拒否する | `FR-11-10b: テンプレートパス変更で旧 state と新 config が同一 (region, stackName) を指す場合、AWS 副作用前に fail-closed で拒否しリネーム移行を案内する` |
+| FR-12-3a | すべてのコマンドが TTY なしで動作する | `FR-12-3a: 非 TTY で status / plan / graph / import / force-unlock / deploy --auto-approve が完走する` |
+| FR-12-3b | 非 TTY + `--auto-approve` なしの deploy は AWS 前に `CliUsageError` で exit 1 | `FR-12-3b: 非 TTY の deploy(--auto-approve なし)は AWS クライアントを 1 度も生成せず CliUsageError で exit 1` / `FR-12-3b: 非 TTY でも deploy --dry-run と plan はエラーにならない` |
+| FR-12-3c | 変更 0 件の非 TTY 実行も同様にエラーになる | `FR-12-3c: 変更が 1 件もない非 TTY の deploy も --auto-approve なしでは CliUsageError で exit 1` |
+| FR-12-6c1 | JSON 選択の拒否は `cancelled: true` 付き deploy report を stdout へ 1 個、exit 0 | `FR-12-6c1: 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0(diffs と skipped を保持)` |
+| FR-12-6c2 | text 選択の拒否は stderr にキャンセル文 + stdout に deploy report、exit 0 | `FR-12-6c2: text 選択では stderr に Deployment cancelled. を出し stdout に report を出して exit 0` |
+| FR-12-6c3 | 旧専用 payload の `exitCode` / `message` は拒否 result に存在しない | `FR-12-6c3: 拒否実行の JSON に exitCode と message フィールドが存在しない` |
+| FR-5-16(cancelled) | 拒否していない実行の JSON に `cancelled` を含めない | `FR-5-16: 成功した deploy の JSON に cancelled フィールドが存在しない(既存 schema 互換)` |
+| FR-12-8a | `deploy --help` に `--auto-approve`(`-y`)を含める | `FR-12-8a: deploy の help に --auto-approve と -y が表示される` |
+| FR-12-8b | `--auto-approve` を他サブコマンドへ提供しない | `FR-12-8b: plan を含む他サブコマンドの help に --auto-approve がない` |
+| FR-12-8c | `--confirm` は廃止し `CliUsageError` にする | `FR-12-8c: --confirm は CliUsageError で exit 1` |
+| FR-12-4(穴埋め) | `-v` / `--version` が `package.json` の version を表示し exit 0(T-19 で未検証だった短縮形と値の一致) | `FR-12-4: -v と --version が package.json の version を表示して exit 0` |
 | §5.3.1(殻) | 承認拒否で残る `REVIEW_IN_PROGRESS` の殻へ `DeleteStack` を呼ばない | `§5.3.1: CREATE 対象の承認拒否後も DeleteStack が呼ばれず、次回実行の prepareStack が殻を回収して収束する` |
+| §5.3.3(収束) | 承認拒否を挟んでも再同期による自動収束が完了する | `§5.3.3: AWS 操作成功・state 保存失敗の状態から、承認拒否を挟む実行でも再同期が保存され次回実行が unchanged になる` |
 
 ## 10. テスト対象外(ドキュメント・構造で満たす)受け入れ基準の一覧
 
@@ -448,7 +515,7 @@ TDD 手順(red → green → refactor):
 | FR-11-4 | 構造的要件: YAML 採用 |
 | FR-9-3 | 設計制約: 直列実行+順序付き計画構造(T-07 で構造のみ確認) |
 | FR-2-11(運用規約部分) / FR-1-9(仕様明記部分) | requirements.md / design.md に明記済み + T-20(README) |
-| FR-5-14(TOCTOU の仕様明記部分) | requirements.md FR-5-14 / design.md §5.3 に明記済み + T-20(README。承認待ち中のロック保持と残余リスク) |
+| FR-5-14b(TOCTOU の仕様明記部分) | requirements.md FR-5-14b / design.md §5.3 に明記済み + T-20(README。承認待ち中のロック保持と残余リスク) |
 | NFR-1 / NFR-6 | アーキテクチャ(§3)で構造的に満足。NFR-1 の出力分離のみ T-19 でテスト |
 | NFR-5(規模) | 数十テンプレート規模の fixture で全体テストが実用時間内に完走することを CI で観測(専用テストは設けない) |
 
