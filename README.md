@@ -14,7 +14,7 @@
 ## なぜ cfnsync か
 
 - **テンプレートをそのまま** — 生の CloudFormation を対象とし、書き換えや移行は不要です。
-- **設定値まで確認できる安全な Change Set** — すべてのデプロイは Change Set を経由し、CloudFormation が返すプロパティの変更前後値を実行前に確認できます。
+- **設定値まで確認できる安全な Change Set** — すべてのデプロイは Change Set を経由し、CloudFormation が返すプロパティの変更前後値を実行前に確認できます。`deploy` は全差分を提示してから 1 回の承認を求め、承認後にだけ実行します（`terraform apply` 相当）。
 - **依存関係を解決** — `Export` / `Fn::ImportValue` と明示的な `dependsOn` から順序を解決し、デプロイ・削除に反映します。
 - **CI ファースト** — 非対話で、CI が分岐に使える安定した[終了コード契約](#終了コード)を持ちます。
 - **Fail-closed** — 変更系操作は STS で照合するアカウント / リージョンの許可リストを要求し、検証できない状況は続行せず中断します。
@@ -60,7 +60,7 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
    ```sh
    cfnsync status   # added / modified / deleted / unchanged
    cfnsync plan     # Change Set を作成し差分を表示（差分ありなら終了コード 2）
-   cfnsync deploy   # 依存順に実行
+   cfnsync deploy   # 全差分を表示し、1 回の承認を経て依存順に実行
    ```
 
 ## コマンド
@@ -71,14 +71,34 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 |---|---|
 | `status` | ステートとローカルのテンプレートを比較し、`added` / `modified` / `deleted` / `unchanged` を表示します。 |
 | `plan` | Change Set を作成して差分を表示し、実行せず終了します。差分があると終了コードは `2`。 |
-| `deploy` | 変更検知・順序解決・Change Set の作成/差分/実行を非対話で行います。 |
+| `deploy` | 変更検知・順序解決を行い、全対象の Change Set を作成して差分を表示し、1 回の承認を経て依存順に実行します。CI では `--auto-approve` が必須です。 |
 | `graph` | Export/Import と `dependsOn` から得たリージョンごとの依存グラフを表示します。 |
 | `import` | 既存スタックを設定・テンプレート・ステートへ取り込みます（AWS へは読み取り専用）。 |
 | `force-unlock <runId>` | 指定した実行 ID が所有する残存 S3 ステートロックを条件付きで解除します。 |
 
 `plan` / `deploy` の人間向け差分は、CI やリダイレクトを含めて既定で ANSI 色付きです。Add は緑、Modify は黄、Remove は赤、置換は太字の赤で表示します。色を無効にするには `--no-color` を指定するか、`NO_COLOR` 環境変数を設定してください（空文字も設定済みとして扱います）。JSON 出力は常に無色です。
 
-主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`）、`--confirm`（TTY で実行前に確認）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。
+主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--auto-approve` / `-y`（承認プロンプトを省略してそのまま実行。**CI では必須**）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`。**実行段階の失敗にのみ適用**）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。
+
+### `deploy` の承認フロー
+
+`deploy` は既定で「全差分の確定 → 1 回の承認 → 一括実行」で動作します。
+
+1. **計画段階** — 実行対象すべてについて Change Set を作成し、差分を確定します。この段階では `ExecuteChangeSet` も `DeleteStack` も行いません。
+2. **承認** — 接続先（アカウント・リージョン）と全差分の要約を標準エラーへ表示し、**実行全体で 1 回だけ** `Do you want to perform these actions? [y/N]` と尋ねます。`y` / `yes` 以外はすべて拒否です。
+3. **実行段階** — 承認された場合にだけ、依存順に Change Set を実行します。
+
+実行予定が 0 件（全対象が変更なし）の場合は承認を求めません。承認を拒否した場合は、計画段階で作成した Change Set をすべて削除し、未実行のスタックを `skipped` として報告して終了コード `0` で終了します。
+
+計画段階で 1 件でも失敗した場合は、承認を求めずに実行全体を中断します（終了コード `1`）。`--on-failure continue` は**実行段階の失敗にのみ**適用され、計画段階の失敗には効きません。
+
+`--auto-approve`（`-y`）を指定すると承認を求めずに実行します。**TTY のない環境（CI など）では必須**で、指定せずに `deploy` を実行すると AWS へ一切アクセスせずエラー（終了コード `1`）になります。**変更が 1 件もない実行でも同じくエラー**になります（TTY の判定を変更検知より前に行うためです）。`deploy --dry-run` と `plan` は承認を求めないため対象外です。
+
+#### 承認フローの運用上の注意
+
+- **承認待ちの間、ステートロックを保持し続けます。** `s3` バックエンドでは、その間ほかの実行はブロックされます。つまりロックの保持時間が実行時間ではなく人間の応答時間に依存します（承認待ちのタイムアウトはありません）。対話的な承認を伴う運用ではこの点に注意してください。
+- **承認時点の差分と、実行時点の実状態が一致することは保証しません。** Change Set は作成時点のスナップショットであり、承認待ちの間に他の主体がスタックを変更しうるためです。防御は実行直前の再検査（自 Change Set の name / ARN 一致と他主体の Change Set 不在、`stackId` の再照合、スタック状態の allowlist 検査、ロック所有権の再検証）に限られます。これらは競合窓を狭めますが排除はせず、cfnsync はそれ以上の保証を主張しません。
+- **この実行で新規作成される Export を参照するプロパティは、承認時点で最終値が確定しません。** `Fn::ImportValue` は Change Set の作成時に解決されず、`{{changeSet:KNOWN_AFTER_APPLY}}` として保留されます（既に存在する Export を参照する場合は作成時に実値へ解決されます）。cfnsync はこの保留値をそのまま提示し、独自に解決・補完しません。terraform の "known after apply" と同じ性質です。
 
 ## 設定
 
@@ -90,7 +110,7 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 ## CI での利用（GitHub Actions）
 
-`s3` バックエンドを使用し、ステートを Git へ書き戻さないでください。環境ごとに `concurrency.group` と S3 の state key を分離し、並行トリガーを競合ではなく待機にします。
+`s3` バックエンドを使用し、ステートを Git へ書き戻さないでください。環境ごとに `concurrency.group` と S3 の state key を分離し、並行トリガーを競合ではなく待機にします。CI には TTY がないため、`deploy` には **`--auto-approve` が必須**です（指定しないと承認できないままエラーで停止します）。
 
 ```yaml
 name: cfnsync deploy
@@ -112,7 +132,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx @tarahi/cfnsync deploy --no-color
+      - run: npx @tarahi/cfnsync deploy --auto-approve --no-color
         working-directory: templates
 ```
 
@@ -160,6 +180,10 @@ codex plugin add cfnsync@cfnsync
 - 管理対象スタックに他主体の Change Set があると実行を停止します（Change Set 実行は他の Change Set を暗黙削除するため）。上書きせず fail-closed で止まります。
 
 cfnsync 管理対象スタックへ、手動または他ツールで Change Set を作成しないでください。詳細な根拠は [`docs/spec/design.md`](./docs/spec/design.md) と [`docs/spec/requirements.md`](./docs/spec/requirements.md) にあります。
+
+## 変更履歴
+
+破壊的変更と移行手順を含む全リリースの履歴は [CHANGELOG.md](./CHANGELOG.md) にあります。`deploy` の既定挙動を承認フローへ変更した際の破壊的変更（`--confirm` の廃止、非 TTY での `--auto-approve` 必須化、承認拒否時の JSON 契約、`--on-failure` の適用範囲、CREATE 復旧の fail-closed 化）は、**アップグレード前に必ず確認してください**。
 
 ## コントリビュート
 

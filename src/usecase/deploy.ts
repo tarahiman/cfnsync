@@ -25,6 +25,7 @@ import {
 import {
   CfnSyncError,
   ConfigError,
+  GuardError,
   InvariantError,
   LockError,
   StackStateError,
@@ -68,12 +69,16 @@ import type {
   StsGateway,
 } from '../ports/index.js';
 import {
+  type ApprovalRequest,
+  buildApprovalSummary,
   buildStackDiff,
   type ConnectionInfo,
   type DeployReport,
   type ProgressEvent,
   type ProgressPhase,
+  type ReconciliationRecord,
   redactReportMessages,
+  type StackDiff,
   type StackEventLine,
   type StackResult,
 } from '../report/index.js';
@@ -119,6 +124,9 @@ export interface DeployDeps {
   /** FR-5-4: スタック単位の進捗マイルストーンの逐次出力先(標準エラー想定)。
    *  最終 report(標準出力)には一切含めない独立チャネル。 */
   onProgress?: (event: ProgressEvent) => void;
+  /** FR-5-2a: 実行全体で最大 1 回だけ呼ばれる承認ポート。true = 承認。
+   *  usecase は TTY・プロンプト・入力ストリームを一切知らない(design §5.3.2)。 */
+  approve?: (request: ApprovalRequest) => Promise<boolean>;
 }
 
 export interface DeployOptions {
@@ -127,6 +135,8 @@ export interface DeployOptions {
   onFailure?: 'stop' | 'continue';
   /** JSON 出力など、最終 report にイベント列を含める場合だけ true。既定 true。 */
   collectEvents?: boolean;
+  /** FR-5-2b: true なら approve を呼ばずに実行する。 */
+  autoApprove?: boolean;
 }
 
 export interface DeployResult {
@@ -169,6 +179,50 @@ interface OperationResult {
   failed?: boolean;
 }
 
+/** Phase A の結果。承認後(Phase B)に実行する副作用があれば `pending` に載せる。 */
+interface PhaseAResult {
+  hasDiff: boolean;
+  pending?: PendingAction;
+}
+
+/** 承認後に `ExecuteChangeSet` するために Phase A が保持した変更セット(FR-5-5a)。 */
+interface PendingChangeSetExecution {
+  kind: 'execute';
+  operation: PlannedOperation;
+  target: ResolvedStackTarget;
+  entry: DetectedEntry;
+  analysis: TemplateAnalysis;
+  /** fencing 付き gateway。Phase B の副作用もこれを経由する。 */
+  cfn: CloudFormationGateway;
+  executor: ExecutorContext;
+  changeSetKind: 'create' | 'update';
+  changeSet: { name: string; id: string };
+  /** FR-5-17b / FR-5-17c2: 実行直前に照合する対象スタックの不変 ARN(判明している場合)。 */
+  expectedStackId?: string;
+}
+
+/** 承認後に `DeleteStack` する削除対象(FR-5-5a)。 */
+interface PendingStackDeletion {
+  kind: 'delete';
+  operation: PlannedOperation;
+  stateEntry: StackEntry;
+  diff: StackDiff;
+  cfn: CloudFormationGateway;
+  /** リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。 */
+  preserveStateEntry: boolean;
+}
+
+type PendingAction = PendingChangeSetExecution | PendingStackDeletion;
+
+/** FR-5-17c1: 承認待ちを挟んだ後に UPDATE を実行してよい終端ステータスの allowlist。 */
+const UPDATE_EXECUTABLE_STATUSES = new Set([
+  'CREATE_COMPLETE',
+  'UPDATE_COMPLETE',
+  'UPDATE_ROLLBACK_COMPLETE',
+  'IMPORT_COMPLETE',
+  'IMPORT_ROLLBACK_COMPLETE',
+]);
+
 /** ExecuteChangeSet 後に観測した構造化 rollback 情報を report 境界まで保持する。 */
 class StackExecutionFailure extends StackStateError {
   constructor(
@@ -203,6 +257,25 @@ export async function deploy(input: {
     accountId: '(unresolved)',
     regions: targetRegions,
   };
+
+  // FR-5-13 / design §5.3.4: 承認が必要なのに承認手段が注入されていない場合、
+  // STS・ステートバックエンド・CloudFormation へ一切アクセスせず fail-closed に停止する。
+  // CLI 境界の非 TTY チェック(§9)と重複するが、埋め込み利用も守る多層防御。
+  if (
+    options.dryRun !== true &&
+    options.autoApprove !== true &&
+    deps.approve === undefined
+  ) {
+    return failedBeforeLock(
+      connection,
+      required,
+      targets,
+      new GuardError(
+        '承認手段が与えられていないため deploy を実行できません。' +
+          '非対話環境では --auto-approve を指定するか、--dry-run で差分確認だけを行ってください',
+      ),
+    );
+  }
 
   // design §5.3 / guard JSDoc: ロック前に 1 → 2 → account → regions の順で fail-closed。
   try {
@@ -264,6 +337,11 @@ export async function deploy(input: {
 // ロック配下の本体
 // ===========================================================================
 
+/**
+ * design §5.3: deploy 本体。承認を境に Phase A(全対象の差分確定)と
+ * Phase B(依存順の一括実行)へ分割する。Phase A は `ExecuteChangeSet` /
+ * `DeleteStack` を一切行わず(FR-5-5a)、承認は実行全体で 1 回だけ求める(FR-5-2a)。
+ */
 async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   const prepared = prepareExecutionPlan(ctx);
 
@@ -275,66 +353,41 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     ...plannedRegions,
   ]);
 
-  // 同一物理スタック(同一リージョン内では stackName が物理的な一意識別子)を
-  // 現在も管理し続ける対象の集合。パス変更や別テンプレートによる衝突で、
-  // まだ管理対象のスタックが `deleted` 側から削除されるのを防ぐ(fail-closed)。
-  const survivingPhysicalIds = new Set<string>();
-  for (const target of ctx.targets) {
-    survivingPhysicalIds.add(physicalId(target.region, target.stackName));
-  }
-
-  const resultStacks = requiredResults(ctx.required, ctx.targets);
   const report: DeployReport = {
     connection: ctx.connection,
     diffs: [],
     ...(ctx.options.collectEvents !== false ? { events: [] } : {}),
-    result: { stacks: resultStacks },
   };
-  const results = resultStacks;
-  let hasDiff = false;
-  let hasError = ctx.required.size > 0;
-  let ownershipLost = false;
-  const skipped = new Set<StackKey>();
+  const requiredStacks = requiredResults(ctx.required, ctx.targets);
+  const unchangedStacks: StackResult[] = [];
+  /** スタック操作に紐づかない付帯的な失敗(変更セットの後始末失敗等)。 */
+  const extraStacks: StackResult[] = [];
+  // FR-5-16: result.stacks の要素順を 2 フェーズ化で変えないため、操作ごとの結果を
+  // 計画順の索引として保持し、最後に [必須値不足 → unchanged → 計画順] で組み立てる。
+  const resultByOperation = new Map<PlannedOperation, StackResult>();
+  const reconciliations: ReconciliationRecord[] = [];
+  const redact = (stackKey: string, text: string): string =>
+    (prepared.redactors.get(stackKey) ?? identityRedactor)(text);
 
-  // FR-9-2: __REQUIRED__ は AWS 副作用前に確定した計画上の失敗として伝播する。
-  for (const failedStackKey of ctx.required.keys()) {
-    const decision = computeSkips({
-      plan: prepared.plan,
-      failedStackKey,
-      mergedGraphs: prepared.mergedGraphs,
-      onFailure: ctx.options.onFailure ?? 'stop',
-      failureKind: 'deploy',
-      collectContinued: false,
-    });
-    for (const key of decision.skipped) skipped.add(key);
-  }
-
-  // FR-6-5: 依存メタデータ自体が unknown/incomplete の削除は、provider を特定できない。
-  // その対象より前に並んだ削除も含め、同じ削除バッチの他対象を事前に止める。
-  if (ctx.options.allowDelete && !ctx.options.dryRun) {
-    const deleteOperations = prepared.plan.regions.flatMap((region) =>
-      region.operations.filter((operation) => operation.kind === 'delete'),
-    );
-    const unsafeDependencyKeys = new Set(
-      deleteOperations
-        .filter((operation) =>
-          hasUnsafeDependencyMetadata(operation.entry.stateEntry),
-        )
-        .map((operation) => operation.stackKey),
-    );
-    if (unsafeDependencyKeys.size > 0) {
-      for (const operation of deleteOperations) {
-        if (!unsafeDependencyKeys.has(operation.stackKey)) {
-          skipped.add(operation.stackKey);
-        }
-      }
-    }
-  }
-
-  // 将来並列化メモ: AWS ワーカーは state delta / report fragment を返し、このループの
-  // 単一コミットキューが直列マージしてスタックごとに CAS 保存する形へ分離する。
-  // 現状は fencing・失敗スキップ・即時 CAS の境界が密結合なため、挙動を変えない本バッチでは
-  // 共有 state/report への書き込み分離を大改修せず、直列実行とスタックごとの保存を維持する。
+  const finalize = (exitCode: 0 | 1 | 2, hasDiff: boolean): DeployResult => {
+    report.result = {
+      stacks: [
+        ...requiredStacks,
+        ...unchangedStacks,
+        ...prepared.plan.index.flattened
+          .map((operation) => resultByOperation.get(operation))
+          .filter((result): result is StackResult => result !== undefined),
+        ...extraStacks,
+      ],
+    };
+    // FR-5-18c: 再同期が 0 件の実行には開示フィールドを追加しない。
+    if (reconciliations.length > 0) report.reconciliations = reconciliations;
+    return {
+      exitCode,
+      report: redactReportMessages(report, redact),
+      hasDiff,
+    };
+  };
 
   // detect 段階で unchanged のスタックは CloudFormation に一切触れず明示的に報告する。
   for (const entry of prepared.detection.entries) {
@@ -353,7 +406,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         noEchoParams: prepared.analyses.get(entry.stackKey)?.noEchoParams ?? [],
       }),
     );
-    results.push(stackResult(entry.target, 'no-change'));
+    unchangedStacks.push(stackResult(entry.target, 'no-change'));
     emitProgress(
       ctx.deps,
       entry.stackKey,
@@ -363,96 +416,418 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     );
   }
 
-  for (const regionPlan of prepared.plan.regions) {
-    for (const operation of regionPlan.operations) {
-      if (skipped.has(operation.stackKey)) {
-        results.push(resultForOperation(operation, 'skipped'));
+  // ---------------------------------------------------------------------
+  // 計画段階の失敗(AWS 副作用ゼロ。FR-5-12a / FR-9-2 / FR-11-10b)
+  // ---------------------------------------------------------------------
+  const planningFailures = findPhysicalStackConflicts(ctx, prepared.plan);
+  if (planningFailures.size > 0 || ctx.required.size > 0) {
+    for (const operation of prepared.plan.index.flattened) {
+      const message = planningFailures.get(operation.stackKey);
+      if (message === undefined) {
+        resultByOperation.set(
+          operation,
+          resultForOperation(operation, 'skipped'),
+        );
         emitProgress(
           ctx.deps,
           operation.stackKey,
           operation.region,
           'skipped',
-          '依存関係の失敗によりスキップしました',
+          '計画段階の失敗により実行全体を中断しました',
         );
         continue;
       }
-
-      try {
-        const operationResult =
-          operation.kind === 'delete'
-            ? await processDeleted(ctx, operation, report, survivingPhysicalIds)
-            : await processCreateOrUpdate(
-                ctx,
-                operation,
-                prepared.analyses,
-                prepared.redactors,
-                prepared.parsedTemplates,
-                report,
-              );
-        hasDiff ||= operationResult.hasDiff;
-        hasError ||= operationResult.failed === true;
-        if (operationResult.failed) {
-          const skipDecision = computeSkips({
-            plan: prepared.plan,
-            failedStackKey: operation.stackKey,
-            mergedGraphs: prepared.mergedGraphs,
-            onFailure: ctx.options.onFailure ?? 'stop',
-            failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
-            collectContinued: false,
-          });
-          for (const key of skipDecision.skipped) skipped.add(key);
-        }
-      } catch (error) {
-        hasError = true;
-        // NFR-4: failedOperationResult が構成した redactor 適用済み errorMessage を
-        // そのまま progress へ再利用する(独立に redact し直さない = 単一の redaction 経路)。
-        const failure = failedOperationResult(
-          operation,
-          error,
-          prepared.redactors.get(operation.stackKey),
-        );
-        results.push(failure);
-        emitProgress(
-          ctx.deps,
-          operation.stackKey,
-          operation.region,
-          'failed',
-          failure.errorMessage ?? '失敗しました',
-        );
-
-        // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
-        if (
-          error instanceof LockError ||
-          error instanceof StatePersistenceError
-        ) {
-          ownershipLost = true;
-          break;
-        }
-
-        const skipDecision = computeSkips({
-          plan: prepared.plan,
-          failedStackKey: operation.stackKey,
-          mergedGraphs: prepared.mergedGraphs,
-          onFailure: ctx.options.onFailure ?? 'stop',
-          failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
-          collectContinued: false,
-        });
-        for (const key of skipDecision.skipped) skipped.add(key);
-      }
+      const failure = resultForOperation(operation, 'failed');
+      failure.errorMessage = message;
+      failure.rolledBack = false;
+      resultByOperation.set(operation, failure);
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'failed',
+        message,
+      );
     }
-    if (ownershipLost) break;
+    return finalize(1, false);
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase A(承認前): 全対象の差分を確定させる。変更セットは保持する。
+  // ---------------------------------------------------------------------
+  const pending: PendingAction[] = [];
+  let hasDiff = false;
+  let phaseAFailed = false;
+  // §8.3 / FR-6-5: 依存メタデータ自体が unknown/incomplete の削除は provider を特定できない。
+  // その対象より前に並んだ削除も含め、同じ削除バッチの他対象を副作用前に止める。
+  const unsafeDeleteKeys = findUnsafeDeleteKeys(ctx, prepared.plan);
+
+  for (const operation of prepared.plan.index.flattened) {
+    if (
+      operation.kind === 'delete' &&
+      unsafeDeleteKeys.size > 0 &&
+      !unsafeDeleteKeys.has(operation.stackKey)
+    ) {
+      resultByOperation.set(
+        operation,
+        resultForOperation(operation, 'skipped'),
+      );
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'skipped',
+        '依存関係の失敗によりスキップしました',
+      );
+      continue;
+    }
+    try {
+      const outcome =
+        operation.kind === 'delete'
+          ? await planDeletion(
+              ctx,
+              operation,
+              report,
+              resultByOperation,
+              reconciliations,
+            )
+          : await planCreateOrUpdate(
+              ctx,
+              operation,
+              prepared,
+              report,
+              resultByOperation,
+              reconciliations,
+            );
+      hasDiff ||= outcome.hasDiff;
+      if (outcome.pending) pending.push(outcome.pending);
+    } catch (error) {
+      // NFR-4: failedOperationResult が構成した redactor 適用済み errorMessage を
+      // そのまま progress へ再利用する(独立に redact し直さない = 単一の redaction 経路)。
+      const failure = failedOperationResult(
+        operation,
+        error,
+        prepared.redactors.get(operation.stackKey),
+      );
+      resultByOperation.set(operation, failure);
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'failed',
+        failure.errorMessage ?? '失敗しました',
+      );
+      phaseAFailed = true;
+      break;
+    }
   }
 
   hasDiff ||= report.diffs.some((diff) => diff.operation !== 'no-change');
+
+  if (phaseAFailed) {
+    // FR-5-12a / FR-5-12b: --on-failure の値にかかわらず承認を求めず実行全体を中断する。
+    markUnprocessedAsSkipped(
+      ctx,
+      prepared,
+      resultByOperation,
+      '計画段階の失敗により実行全体を中断しました',
+    );
+    // FR-5-12c: 事前作成した自身の変更セットをすべて削除する。
+    await cleanupPendingChangeSets(ctx, pending, extraStacks);
+    return finalize(1, hasDiff);
+  }
+
+  // ---------------------------------------------------------------------
+  // 承認(FR-5-2a): Phase B に実行予定がある場合にだけ 1 回だけ求める。
+  // ---------------------------------------------------------------------
+  if (pending.length > 0 && ctx.options.autoApprove !== true) {
+    const approve = ctx.deps.approve;
+    if (approve === undefined) {
+      // FR-5-13(多層防御): 入口検証を通過していれば到達しない。
+      throw new GuardError(
+        '承認手段が与えられていないため実行できません。--auto-approve を指定してください',
+      );
+    }
+    const approved = await approve({
+      connection: report.connection,
+      // FR-5-6g / NFR-4: report と同一の redactor を通してから承認手段へ渡す。
+      diffs: redactReportMessages(
+        { connection: report.connection, diffs: report.diffs },
+        redact,
+      ).diffs,
+      summary: buildApprovalSummary(report.diffs),
+      allowDelete: ctx.options.allowDelete === true,
+    });
+    if (!approved) {
+      // FR-5-10a〜c: 変更セットを全削除し、未実行は skipped、終了コードは 0。
+      report.cancelled = true;
+      for (const action of pending) {
+        resultByOperation.set(
+          action.operation,
+          resultForOperation(action.operation, 'skipped'),
+        );
+        emitProgress(
+          ctx.deps,
+          action.operation.stackKey,
+          action.operation.region,
+          'skipped',
+          '承認が得られなかったため実行しませんでした',
+        );
+      }
+      const cleanupFailed = await cleanupPendingChangeSets(
+        ctx,
+        pending,
+        extraStacks,
+      );
+      // FR-5-11: クリーンアップ失敗のみ exit 1(残存は次回の残存回収で収束する)。
+      return finalize(cleanupFailed ? 1 : 0, hasDiff);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Phase B(承認後): 依存順に実行する。
+  // ---------------------------------------------------------------------
+  let hasError = false;
+  let ownershipLost = false;
+  const skipped = new Set<StackKey>();
+  const unexecuted = new Set<PendingAction>(pending);
+
+  const propagateFailure = (operation: PlannedOperation): void => {
+    const decision = computeSkips({
+      plan: prepared.plan,
+      failedStackKey: operation.stackKey,
+      mergedGraphs: prepared.mergedGraphs,
+      onFailure: ctx.options.onFailure ?? 'stop',
+      failureKind: operation.kind === 'delete' ? 'delete' : 'deploy',
+      collectContinued: false,
+    });
+    for (const key of decision.skipped) skipped.add(key);
+  };
+
+  for (const action of pending) {
+    const operation = action.operation;
+    if (skipped.has(operation.stackKey)) {
+      resultByOperation.set(
+        operation,
+        resultForOperation(operation, 'skipped'),
+      );
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'skipped',
+        '依存関係の失敗によりスキップしました',
+      );
+      continue;
+    }
+
+    unexecuted.delete(action);
+    try {
+      const outcome =
+        action.kind === 'execute'
+          ? await executeApprovedChangeSet(
+              ctx,
+              action,
+              report,
+              resultByOperation,
+            )
+          : await deleteApprovedStack(ctx, action, resultByOperation);
+      if (outcome.failed === true) {
+        hasError = true;
+        propagateFailure(operation);
+      }
+    } catch (error) {
+      hasError = true;
+      const failure = failedOperationResult(
+        operation,
+        error,
+        prepared.redactors.get(operation.stackKey),
+      );
+      resultByOperation.set(operation, failure);
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'failed',
+        failure.errorMessage ?? '失敗しました',
+      );
+
+      // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
+      if (
+        error instanceof LockError ||
+        error instanceof StatePersistenceError
+      ) {
+        ownershipLost = true;
+        break;
+      }
+      propagateFailure(operation);
+    }
+  }
+
+  markUnprocessedAsSkipped(
+    ctx,
+    prepared,
+    resultByOperation,
+    ownershipLost
+      ? 'ロックの所有権を失ったため以降の処理を中断しました'
+      : '依存関係の失敗によりスキップしました',
+  );
+
+  // design §5.3: 失敗・スキップで実行されなかった対象の変更セットも後始末する。
+  // 所有権を失った場合は副作用を行わない(次回実行の残存回収に委ねる)。
+  if (!ownershipLost && unexecuted.size > 0) {
+    const cleanupFailed = await cleanupPendingChangeSets(
+      ctx,
+      [...unexecuted],
+      extraStacks,
+    );
+    hasError ||= cleanupFailed;
+  }
+
   const exitCode: 0 | 1 | 2 = hasError
     ? 1
     : ctx.options.dryRun && hasDiff
       ? 2
       : 0;
-  const redactedReport = redactReportMessages(report, (stackKey, text) =>
-    (prepared.redactors.get(stackKey) ?? identityRedactor)(text),
+  return finalize(exitCode, hasDiff);
+}
+
+/**
+ * FR-11-10b / FR-6: 同一の (リージョン, スタック名) を指す操作の組を、AWS への
+ * 副作用より前に fail-closed で拒否する。削除側は「現に管理対象である物理スタック」
+ * との衝突(テンプレートのパス変更等)も対象とする。いずれも delete 同士や
+ * 異なる物理スタックは拒否しない(FR-11-10c)。
+ */
+function findPhysicalStackConflicts(
+  ctx: LockedRunContext,
+  plan: ExecutionPlan,
+): Map<StackKey, string> {
+  const failures = new Map<StackKey, string>();
+  const targetByPhysicalId = new Map<string, ResolvedStackTarget>();
+  for (const target of ctx.targets) {
+    targetByPhysicalId.set(physicalId(target.region, target.stackName), target);
+  }
+
+  const mutationByPhysicalId = new Map<string, PlannedOperation>();
+  for (const operation of plan.index.flattened) {
+    if (operation.kind === 'delete') {
+      const stateEntry = operation.entry.stateEntry;
+      // リネーム(同一スタックキーで stackName 変更)の削除は旧名を指すため衝突しない。
+      if (!stateEntry || operation.entry.renamedTo !== undefined) continue;
+      const surviving = targetByPhysicalId.get(
+        physicalId(operation.region, stateEntry.stackName),
+      );
+      if (surviving === undefined || surviving.stackKey === operation.stackKey)
+        continue;
+      failures.set(
+        operation.stackKey,
+        `スタック '${stateEntry.stackName}'(${operation.region})は別のテンプレートパス ` +
+          `'${surviving.stackKey}' で現在も管理対象です。同一物理スタックを指す削除と作成/更新が` +
+          `同一実行に含まれるため、AWS への副作用を行わず中断します。` +
+          `テンプレートのパス変更(リネーム)は state 移行で扱ってください`,
+      );
+      continue;
+    }
+
+    const target = operation.entry.target;
+    if (!target) continue;
+    const key = physicalId(operation.region, target.stackName);
+    const previous = mutationByPhysicalId.get(key);
+    if (previous !== undefined) {
+      const message =
+        `スタック '${target.stackName}'(${operation.region})を ` +
+        `'${previous.stackKey}' と '${operation.stackKey}' の 2 つが作成/更新しようとしています。` +
+        `同一物理スタックへの二重操作を避けるため、AWS への副作用を行わず中断します`;
+      failures.set(previous.stackKey, message);
+      failures.set(operation.stackKey, message);
+      continue;
+    }
+    mutationByPhysicalId.set(key, operation);
+  }
+
+  return failures;
+}
+
+/**
+ * §8.3 / FR-6-5: 依存メタデータが unknown / incomplete で provider を特定できない
+ * 削除対象のスタックキー。1 件でもあれば、同じ削除バッチの他対象は副作用前に止める。
+ */
+function findUnsafeDeleteKeys(
+  ctx: LockedRunContext,
+  plan: ExecutionPlan,
+): Set<StackKey> {
+  if (!ctx.options.allowDelete || ctx.options.dryRun) return new Set();
+  return new Set(
+    plan.index.flattened
+      .filter(
+        (operation) =>
+          operation.kind === 'delete' &&
+          hasUnsafeDependencyMetadata(operation.entry.stateEntry),
+      )
+      .map((operation) => operation.stackKey),
   );
-  return { exitCode, report: redactedReport, hasDiff };
+}
+
+/** まだ結果の付いていない計画上の操作を skipped として記録する。 */
+function markUnprocessedAsSkipped(
+  ctx: LockedRunContext,
+  prepared: PreparedPlan,
+  resultByOperation: Map<PlannedOperation, StackResult>,
+  message: string,
+): void {
+  for (const operation of prepared.plan.index.flattened) {
+    if (resultByOperation.has(operation)) continue;
+    resultByOperation.set(operation, resultForOperation(operation, 'skipped'));
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'skipped',
+      message,
+    );
+  }
+}
+
+/**
+ * §5.3.3: 事前作成した**自身の**変更セットを、作成時に保持した ARN で削除する。
+ * 他主体・別ステートの変更セットには触れない。失敗は警告として報告し(FR-5-11)、
+ * 残存は次回実行の残存回収(§7)へ委ねる。戻り値は「削除に失敗したものがあるか」。
+ */
+async function cleanupPendingChangeSets(
+  ctx: LockedRunContext,
+  actions: PendingAction[],
+  extraStacks: StackResult[],
+): Promise<boolean> {
+  const failures: string[] = [];
+  for (const action of actions) {
+    if (action.kind !== 'execute') continue;
+    try {
+      await action.cfn.deleteChangeSet(
+        action.target.stackName,
+        action.changeSet.id,
+      );
+    } catch (error) {
+      failures.push(
+        `${action.operation.stackKey}: ${publicErrorMessage(
+          error,
+          '変更セットの削除に失敗しました',
+        )}`,
+      );
+    }
+  }
+  if (failures.length === 0) return false;
+
+  extraStacks.push({
+    stackKey: '(cleanup)',
+    region: ctx.connection.regions[0] ?? '(none)',
+    stackName: '(cleanup)',
+    outcome: 'failed',
+    errorMessage:
+      `事前作成した変更セットの削除に失敗しました: ${failures.join(' / ')}。` +
+      `残存した変更セットは次回実行の残存回収で回収されます`,
+    rolledBack: false,
+  });
+  return true;
 }
 
 function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
@@ -550,14 +925,19 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
 // 1 スタックの処理
 // ===========================================================================
 
-async function processCreateOrUpdate(
+/**
+ * Phase A(承認前): 変更セットを作成して差分を確定させるところまで行う。
+ * `ExecuteChangeSet` / `DeleteStack` は行わず、作成した変更セットは**削除せず保持**して
+ * `PendingAction` として返す(FR-5-5a)。ステート保存は FR-5-5b の再同期に限る。
+ */
+async function planCreateOrUpdate(
   ctx: LockedRunContext,
   operation: PlannedOperation,
-  analyses: Map<StackKey, TemplateAnalysis>,
-  redactors: Map<StackKey, TextRedactor>,
-  parsedTemplates: Map<string, unknown>,
+  prepared: PreparedPlan,
   report: DeployReport,
-): Promise<OperationResult> {
+  resultByOperation: Map<PlannedOperation, StackResult>,
+  reconciliations: ReconciliationRecord[],
+): Promise<PhaseAResult> {
   const target = operation.entry.target;
   if (!target)
     throw new InvariantError(
@@ -565,13 +945,13 @@ async function processCreateOrUpdate(
       { stackKey: operation.stackKey, region: operation.region },
     );
   const source = requiredTemplate(ctx.templates, target.templatePath);
-  const analysis = analyses.get(operation.stackKey);
+  const analysis = prepared.analyses.get(operation.stackKey);
   if (!analysis)
     throw new InvariantError(
       `内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`,
       { stackKey: operation.stackKey, region: operation.region },
     );
-  const redact = redactors.get(operation.stackKey) ?? identityRedactor;
+  const redact = prepared.redactors.get(operation.stackKey) ?? identityRedactor;
 
   const rawCfn = ctx.deps.cfnFactory(operation.region);
   const cfn = fencedGateway(rawCfn, ctx.deps.backend, ctx.lock);
@@ -600,14 +980,16 @@ async function processCreateOrUpdate(
         ctx,
         target,
         source,
-        parsedTemplates.get(target.templatePath),
+        prepared.parsedTemplates.get(target.templatePath),
         analysis,
         operation.entry.templateHash,
         operation.entry.inputsHash,
         existing,
         cfn,
         report,
+        reconciliations,
       );
+      resultByOperation.set(operation, stackResult(target, 'no-change'));
       return { hasDiff: false };
     }
   }
@@ -620,20 +1002,20 @@ async function processCreateOrUpdate(
     now: ctx.deps.now,
     redact,
   };
-  const prepared = await prepareStack(executor, target.stackName, knownSummary);
-  if (prepared.kind === 'update') {
+  const stack = await prepareStack(executor, target.stackName, knownSummary);
+  if (stack.kind === 'update') {
     await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
   }
   // REVIEW_IN_PROGRESS は prepareStack 内で回収済み。
   // スタックが実在しない(真の新規 CREATE)場合、ListChangeSets 自体が CloudFormation の
-  // 実エラー("Stack ... does not exist")を返すため呼んではならない。prepared.stackStatus は
+  // 実エラー("Stack ... does not exist")を返すため呼んではならない。stack.stackStatus は
   // DescribeStacks が結果を返した(＝スタックが実在する)場合のみ設定される。
   // 実在し REVIEW_IN_PROGRESS でもない通常パス(update)のみ明示回収する。
-  if (prepared.stackStatus !== undefined && !prepared.reviewInProgress)
+  if (stack.stackStatus !== undefined && !stack.reviewInProgress)
     await reclaimStaleChangeSets(executor, target.stackName);
 
   // UPDATE の副作用(CreateChangeSet)直前にも再取得し、同名差し替えを fail-closed にする。
-  if (prepared.kind === 'update') {
+  if (stack.kind === 'update') {
     await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
   }
 
@@ -647,7 +1029,7 @@ async function processCreateOrUpdate(
   const created = await createManagedChangeSet(executor, {
     target,
     templateBody: source,
-    kind: prepared.kind,
+    kind: stack.kind,
   });
 
   if (created.noChanges) {
@@ -660,7 +1042,7 @@ async function processCreateOrUpdate(
     });
     diff.warnings.push(...analysis.warnings);
     report.diffs.push(diff);
-    report.result?.stacks.push(stackResult(target, 'no-change'));
+    resultByOperation.set(operation, stackResult(target, 'no-change'));
     emitProgress(
       ctx.deps,
       operation.stackKey,
@@ -669,7 +1051,7 @@ async function processCreateOrUpdate(
       '変更セットが空のため変更なしとして扱います',
     );
     const stackId =
-      prepared.kind === 'update'
+      stack.kind === 'update'
         ? (
             await requireManagedStackIdentity(
               cfn,
@@ -678,13 +1060,21 @@ async function processCreateOrUpdate(
             )
           ).stackId
         : await requireExistingStackId(cfn, target);
+    // FR-5-5b1: CloudFormation 自身が実パラメータ(NoEcho 含む)で比較した結果であり、
+    // 既成事実の記録として承認前に保存してよい。
     await saveSuccessfulEntry(
       ctx,
       operation.entry,
       analysis,
-      prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+      stack.kind === 'create' ? 'CREATE' : 'UPDATE',
       stackId,
     );
+    reconciliations.push({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      kind: 'empty-change-set',
+      stateUpdated: true,
+    });
     return { hasDiff: false };
   }
 
@@ -692,7 +1082,7 @@ async function processCreateOrUpdate(
     stackKey: operation.stackKey,
     region: operation.region,
     stackName: target.stackName,
-    operation: prepared.kind,
+    operation: stack.kind,
     detail: created.detail,
     noEchoParams: analysis.noEchoParams,
     redact,
@@ -708,11 +1098,93 @@ async function processCreateOrUpdate(
   );
 
   if (ctx.options.dryRun) {
-    // design §5.2: DescribeChangeSet 済みの変更セットを後始末する。proxy が直前 fencing を担う。
+    // FR-5-9b: --dry-run は plan と同一経路とし、describe 直後に自身の変更セットを削除する。
     await cfn.deleteChangeSet(target.stackName, created.id);
-    report.result?.stacks.push(stackResult(target, 'skipped'));
+    resultByOperation.set(operation, stackResult(target, 'skipped'));
     return { hasDiff: true };
   }
+
+  return {
+    hasDiff: true,
+    pending: {
+      kind: 'execute',
+      operation,
+      target,
+      entry: operation.entry,
+      analysis,
+      cfn,
+      executor,
+      changeSetKind: stack.kind,
+      changeSet: { name: created.name, id: created.id },
+      // update では requireManagedStackIdentity が stackId の存在を保証済み。
+      expectedStackId: operation.entry.stateEntry?.stackId ?? undefined,
+    },
+  };
+}
+
+/**
+ * FR-5-17c: 承認待ちの間に対象スタックが実行不能な状態へ遷移していないかを、
+ * `ExecuteChangeSet` の前に確認する(FR-5-17e 手順 1)。
+ * `*_IN_PROGRESS` の否定だけでは `ROLLBACK_COMPLETE` 等を通してしまうため allowlist で判定する。
+ */
+async function assertExecutableStackState(
+  action: PendingChangeSetExecution,
+): Promise<void> {
+  const { target, cfn, operation } = action;
+  const summary = await cfn.describeStack(target.stackName);
+  const context = { stackKey: operation.stackKey, region: operation.region };
+
+  if (action.changeSetKind === 'update') {
+    // FR-5-17b: 不変 ARN の再照合。expectedStackId 未確定のまま通過させない(fail-closed)。
+    if (
+      action.expectedStackId === undefined ||
+      !summary ||
+      summary.stackId !== action.expectedStackId
+    ) {
+      throw new StackStateError(
+        `スタック '${target.stackName}' の stackId(ARN) が承認前と一致しません。` +
+          `同名スタックが差し替えられた可能性があるため実行を中止します。cfnsync import を実行してください`,
+        context,
+      );
+    }
+    // FR-5-17c1: 実行可能な終端状態の allowlist。
+    if (!UPDATE_EXECUTABLE_STATUSES.has(summary.status)) {
+      throw new StackStateError(
+        `スタック '${target.stackName}' は承認後に ${summary.status} へ遷移しました。` +
+          `実行可能な状態(${[...UPDATE_EXECUTABLE_STATUSES].join(' / ')})ではないため実行を中止します`,
+        context,
+      );
+    }
+    return;
+  }
+
+  // FR-5-17c2: CREATE は「未作成」または「自身の変更セットに対応する REVIEW_IN_PROGRESS の殻」。
+  if (summary !== undefined && summary.status !== 'REVIEW_IN_PROGRESS') {
+    throw new StackStateError(
+      `スタック '${target.stackName}' は承認後に ${summary.status} で実在しています。` +
+        `CREATE 対象として期待する状態(未作成または REVIEW_IN_PROGRESS)ではないため実行を中止します`,
+      context,
+    );
+  }
+}
+
+/**
+ * Phase B(承認後): Phase A が保持した変更セットを実行し、完了まで待機してステートを保存する。
+ * 副作用の直前に FR-5-17e の順序で再検査する:
+ * (1) DescribeStacks による存在・stackId・状態の確認 → (2) ListChangeSets 全ページによる
+ * 自変更セットの一意性確認 → (3) fencing(fencedGateway) → (4) ExecuteChangeSet。
+ */
+async function executeApprovedChangeSet(
+  ctx: LockedRunContext,
+  action: PendingChangeSetExecution,
+  report: DeployReport,
+  resultByOperation: Map<PlannedOperation, StackResult>,
+): Promise<OperationResult> {
+  const { operation, target, cfn, executor, analysis } = action;
+  const redact = executor.redact ?? identityRedactor;
+
+  // FR-5-17e 手順 1。
+  await assertExecutableStackState(action);
 
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
@@ -725,18 +1197,19 @@ async function processCreateOrUpdate(
     'execute-start',
     '変更セットを実行しています',
   );
+  // FR-5-17e 手順 2〜4。ListChangeSets 再検査 → beforeExecute → ExecuteChangeSet。
   await executeWithReinspection(
     executor,
     target.stackName,
-    created.name,
-    created.id,
-    prepared.kind === 'update'
+    action.changeSet.name,
+    action.changeSet.id,
+    action.changeSetKind === 'update'
       ? async () => {
           // UPDATE の実副作用直前: 変更セット再検査後にも不変 ARN を再照合する。
           await requireManagedStackIdentity(
             cfn,
             target,
-            operation.entry.stateEntry,
+            action.entry.stateEntry,
           );
         }
       : undefined,
@@ -806,8 +1279,8 @@ async function processCreateOrUpdate(
     );
   }
   if (
-    prepared.kind === 'update' &&
-    operation.entry.stateEntry?.stackId !== final.stackId
+    action.changeSetKind === 'update' &&
+    action.entry.stateEntry?.stackId !== final.stackId
   ) {
     throw new StackStateError(
       `スタック '${target.stackName}' の stackId(ARN) が UPDATE 中に変化しました。state を更新せず cfnsync import を案内します`,
@@ -818,12 +1291,12 @@ async function processCreateOrUpdate(
   // FR-1-9: waitForStack 完了後、CAS 保存直前に saveSuccessfulEntry が再 fencing する。
   await saveSuccessfulEntry(
     ctx,
-    operation.entry,
+    action.entry,
     analysis,
-    prepared.kind === 'create' ? 'CREATE' : 'UPDATE',
+    action.changeSetKind === 'create' ? 'CREATE' : 'UPDATE',
     final.stackId,
   );
-  report.result?.stacks.push(stackResult(target, 'succeeded'));
+  resultByOperation.set(operation, stackResult(target, 'succeeded'));
   emitProgress(
     ctx.deps,
     operation.stackKey,
@@ -834,12 +1307,18 @@ async function processCreateOrUpdate(
   return { hasDiff: true };
 }
 
-async function processDeleted(
+/**
+ * Phase A(承認前)の削除計画。`DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。
+ * 実スタックが既に存在しない場合の再同期(FR-5-5b2)だけは承認前に保存してよい。
+ * `DeleteStack` は行わず `PendingAction` として返す。
+ */
+async function planDeletion(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   report: DeployReport,
-  survivingPhysicalIds: Set<string>,
-): Promise<OperationResult> {
+  resultByOperation: Map<PlannedOperation, StackResult>,
+  reconciliations: ReconciliationRecord[],
+): Promise<PhaseAResult> {
   const stateEntry = operation.entry.stateEntry;
   if (!stateEntry)
     throw new InvariantError(
@@ -847,43 +1326,9 @@ async function processDeleted(
       { stackKey: operation.stackKey, region: operation.region },
     );
 
-  // 同一物理スタック(region + stackName)を現在も別スタックキーで管理し続ける
-  // 場合(テンプレートのパス変更・別テンプレートによる衝突)、この削除は
-  // 「まだ管理対象の実スタック」を破壊する。fail-closed で拒否しリネーム移行を案内する。
+  // 同一物理スタックを指す削除と作成/更新の衝突は findPhysicalStackConflicts が
+  // AWS 副作用前に fail-closed で止めるため、ここには到達しない(FR-11-10b)。
   const rename = operation.entry.renamedTo;
-  if (
-    rename === undefined &&
-    survivingPhysicalIds.has(physicalId(operation.region, stateEntry.stackName))
-  ) {
-    const diff = buildStackDiff({
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: stateEntry.stackName,
-      operation: 'delete',
-      noEchoParams: [],
-    });
-    diff.warnings.push(
-      `スタック '${stateEntry.stackName}'(${operation.region})は別のテンプレートパスで現在も管理対象です。` +
-        `同一物理スタックの削除を拒否します。テンプレートのパス変更(リネーム)は state 移行で扱ってください`,
-    );
-    report.diffs.push(diff);
-    report.result?.stacks.push({
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: stateEntry.stackName,
-      outcome: 'failed',
-      errorMessage: diff.warnings[diff.warnings.length - 1],
-      rolledBack: false,
-    });
-    emitProgress(
-      ctx.deps,
-      operation.stackKey,
-      operation.region,
-      'failed',
-      diff.warnings[diff.warnings.length - 1],
-    );
-    return { hasDiff: true, failed: true };
-  }
   const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
     stackKey: operation.stackKey,
@@ -893,24 +1338,24 @@ async function processDeleted(
     noEchoParams: [],
   });
   report.diffs.push(diff);
-  emitProgress(
-    ctx.deps,
-    operation.stackKey,
-    operation.region,
-    'delete-start',
-    'スタックを削除しています',
-  );
 
   const existing = await cfn.describeStack(stateEntry.stackName);
   if (!existing || existing.status === 'DELETE_COMPLETE') {
-    // design §7: DELETE 成功後・state 保存前の中断からの再同期。
+    // design §7 / FR-5-5b2: DELETE 成功後・state 保存前の中断からの再同期。
+    // 実スタックの不在は DescribeStacks が返さないという事実であり、承認前に保存してよい。
     // リネーム対の削除では、同一スタックキーの create が既に新エントリを保存済み。
     // state からエントリを除去すると新スタックの記録まで消えるため保存しない。
     if (rename === undefined) {
       const next = removeStackEntry(ctx.state.state, operation.stackKey);
       await saveState(ctx, next);
     }
-    report.result?.stacks.push({
+    reconciliations.push({
+      stackKey: operation.stackKey,
+      region: operation.region,
+      kind: 'deleted-absent',
+      stateUpdated: rename === undefined,
+    });
+    resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
       stackName: stateEntry.stackName,
@@ -932,7 +1377,7 @@ async function processDeleted(
         ? 'dry-run のため削除を実行しません'
         : '削除対象です。実削除には --allow-delete が必要です',
     );
-    report.result?.stacks.push({
+    resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
       stackName: stateEntry.stackName,
@@ -948,6 +1393,35 @@ async function processDeleted(
     return { hasDiff: true };
   }
 
+  return {
+    hasDiff: true,
+    pending: {
+      kind: 'delete',
+      operation,
+      stateEntry,
+      diff,
+      cfn,
+      // リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。
+      preserveStateEntry: rename !== undefined,
+    },
+  };
+}
+
+/** Phase B(承認後)のスタック削除。削除保護・依存情報欠落の拒否は delete usecase が担う。 */
+async function deleteApprovedStack(
+  ctx: LockedRunContext,
+  action: PendingStackDeletion,
+  resultByOperation: Map<PlannedOperation, StackResult>,
+): Promise<OperationResult> {
+  const { operation, stateEntry, diff, cfn } = action;
+  emitProgress(
+    ctx.deps,
+    operation.stackKey,
+    operation.region,
+    'delete-start',
+    'スタックを削除しています',
+  );
+
   const deleted = await deleteManagedStack({
     target: {
       stackKey: operation.stackKey,
@@ -959,21 +1433,19 @@ async function processDeleted(
     lock: ctx.lock,
     state: ctx.state.state,
     version: ctx.state.version,
-    knownSummary: existing,
-    // リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。
-    preserveStateEntry: rename !== undefined,
+    preserveStateEntry: action.preserveStateEntry,
   });
 
   if (deleted.outcome === 'refused') {
     diff.warnings.push(
       deleted.errorMessage ?? '安全装置により削除を拒否しました',
     );
-    report.result?.stacks.push({
+    resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
       stackName: stateEntry.stackName,
       outcome: 'failed',
-      errorMessage: deleted.errorMessage,
+      errorMessage: deleted.errorMessage ?? '安全装置により削除を拒否しました',
       rolledBack: false,
     });
     emitProgress(
@@ -988,7 +1460,7 @@ async function processDeleted(
 
   ctx.state.state = deleted.state;
   ctx.state.version = deleted.version;
-  report.result?.stacks.push({
+  resultByOperation.set(operation, {
     stackKey: operation.stackKey,
     region: operation.region,
     stackName: stateEntry.stackName,
@@ -1021,7 +1493,34 @@ async function recoverExistingCreate(
   >,
   cfn: CloudFormationGateway,
   report: DeployReport,
+  reconciliations: ReconciliationRecord[],
 ): Promise<void> {
+  // FR-5-5b4: 管理タグは「自ステート由来」であることしか証明せず、どの入力で作成された
+  // かは証明しない。NoEcho の実値と dependsOn は AWS 側と照合できないため、これらが
+  // 存在する対象を「事実確認済み」として再同期すると、未適用の希望値を適用済みとして
+  // 記録し変更が失われる(虚偽収束)。入力同一性を証明できない場合は fail-closed とする。
+  const unverifiable: string[] = [];
+  if (analysis.noEchoParams.length > 0) {
+    unverifiable.push(
+      `NoEcho パラメータ(${analysis.noEchoParams.join(', ')})の実値は AWS から取得できません`,
+    );
+  }
+  if (target.dependsOn.length > 0) {
+    unverifiable.push(
+      `明示 dependsOn(${target.dependsOn.join(', ')})は実スタックと照合できません`,
+    );
+  }
+  if (unverifiable.length > 0) {
+    throw new StackStateError(
+      `同名スタック '${target.stackName}' の入力同一性を証明できないため、再同期を拒否します(fail-closed)。` +
+        `${unverifiable.join(' / ')}。` +
+        `復旧手順: 設定ファイルを退避 → cfnsync import --reconcile local を実行 → ` +
+        `import が __REQUIRED__ へ書き換えた NoEcho パラメータを退避した希望値へ戻す → ` +
+        `cfnsync plan で差分を確認して deploy`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+
   const deployedTemplate = await cfn.getTemplate(target.stackName, 'Original');
   const stateId = ctx.deps.backend.stateId();
   const desiredTags = { ...target.tags, [MANAGEMENT_TAG_KEY]: stateId };
@@ -1073,17 +1572,9 @@ async function recoverExistingCreate(
     operation: 'no-change',
     noEchoParams: analysis.noEchoParams,
   });
+  // FR-5-5b3: ここへ到達するのは NoEcho も dependsOn も持たない対象だけであり、
+  // inputsHash の全構成要素を AWS 側と照合できている(比較から除外した項目はない)。
   diff.warnings.push(...analysis.warnings);
-  if (analysis.noEchoParams.length > 0) {
-    diff.warnings.push(
-      `CREATE 復旧の比較から除外した NoEcho パラメータ: ${analysis.noEchoParams.join(', ')}`,
-    );
-  }
-  if (target.dependsOn.length > 0) {
-    diff.warnings.push(
-      `CREATE 復旧の比較から除外した dependsOn: ${target.dependsOn.join(', ')}`,
-    );
-  }
   report.diffs.push(diff);
 
   if (!templateHash || !inputsHash) {
@@ -1100,7 +1591,12 @@ async function recoverExistingCreate(
     inputsHash,
   };
   await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
-  report.result?.stacks.push(stackResult(target, 'no-change'));
+  reconciliations.push({
+    stackKey: target.stackKey,
+    region: target.region,
+    kind: 'create-recovery',
+    stateUpdated: true,
+  });
   emitProgress(
     ctx.deps,
     target.stackKey,

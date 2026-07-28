@@ -1,6 +1,7 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
+import { renderApprovalSummary } from '../report/index.js';
 import {
   type CfnSyncConfig,
   renderDeploy,
@@ -185,28 +186,44 @@ export async function runDeployment(
     dryRun?: boolean;
     allowDelete?: boolean;
     onFailure?: 'stop' | 'continue';
+    autoApprove?: boolean;
     color?: boolean;
+    /** FR-5-2a: 承認プロンプト。TTY 実装は CLI 側で注入する(design §5.3.2)。 */
+    prompt?: (question: string) => Promise<boolean>;
   },
 ): Promise<0 | 1 | 2> {
   const input = loadInputs(ctx, options);
+  const color = options.color !== false && !Object.hasOwn(ctx.env, 'NO_COLOR');
+  const prompt = options.prompt ?? defaultConfirm;
   const result = await ctx.deps.deploy({
     config: input.config,
     templates: input.templates,
-    deps: deploymentDeps(ctx, input),
+    deps: {
+      ...deploymentDeps(ctx, input),
+      // FR-3-7b / FR-5-6f: 承認要約もプロンプトも標準エラーへ出し、
+      // 標準出力の単一 JSON document 契約(FR-12-6a/b)を壊さない。
+      approve: async (request) => {
+        writeLine(ctx.io.stderr, renderApprovalSummary(request, { color }));
+        return prompt('Do you want to perform these actions?');
+      },
+    },
     options: {
       dryRun: options.dryRun === true,
       allowDelete: options.allowDelete === true,
       onFailure: options.onFailure ?? 'stop',
       collectEvents: options.output === 'json',
+      autoApprove: options.autoApprove === true,
     },
   });
+  // FR-12-6c2: text 選択時は標準エラーへキャンセル診断を出し、report は従来どおり
+  // 標準出力へ出す。JSON 選択時は report に cancelled: true が載るため診断は出さない
+  // (標準出力の単一 JSON document 契約を保つ)。
+  if (result.report.cancelled === true && options.output !== 'json') {
+    writeLine(ctx.io.stderr, 'Deployment cancelled.');
+  }
   writeLine(
     ctx.io.stdout,
-    renderDeploy(
-      result.report,
-      options.output === 'json',
-      options.color !== false && !Object.hasOwn(ctx.env, 'NO_COLOR'),
-    ),
+    renderDeploy(result.report, options.output === 'json', color),
   );
   return result.exitCode;
 }

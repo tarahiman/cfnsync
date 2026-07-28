@@ -106,7 +106,7 @@ function setup(initial: CfnSyncState, config = emptyConfig()) {
       configDir: '/repo',
       templates: new Map(),
       deps: { cfnFactory, sts, backend, now: FIXED_NOW, runId: () => 'run15' },
-      options,
+      options: { autoApprove: true, ...options },
     });
   return { timeline, backend, cfn, run };
 }
@@ -167,7 +167,9 @@ describe('delete / deploy integration — T-15', () => {
     expect(
       apply.cfn.callsOf('waitForStack').map((call) => call.args[0]),
     ).toEqual([entry('A').stackId]);
-    expect(apply.cfn.callsOf('describeStack')).toHaveLength(1);
+    // Phase A の存在確認と、承認後 Phase B の DeleteStack 直前の再確認で 2 回。
+    // 承認待ちの間に実スタックが変化しうるため、不可逆な削除の直前に取り直す。
+    expect(apply.cfn.callsOf('describeStack')).toHaveLength(2);
     expect(
       apply.backend.stored?.state.stacks['a.yaml@ap-northeast-1'],
     ).toBeUndefined();

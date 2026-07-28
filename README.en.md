@@ -14,7 +14,7 @@ It is deliberately **not** a new IaC abstraction: no CDK/SAM-style template gene
 ## Why cfnsync
 
 - **Your templates, unchanged** — operates on raw CloudFormation; nothing to rewrite or migrate.
-- **Safe, value-aware change sets** — every deploy goes through a change set you can inspect before execution, including the property before/after values returned by CloudFormation.
+- **Safe, value-aware change sets** — every deploy goes through a change set you can inspect before execution, including the property before/after values returned by CloudFormation. `deploy` shows every diff first, asks for a single approval, and only then executes (like `terraform apply`).
 - **Dependency-aware** — resolves order from `Export` / `Fn::ImportValue` plus explicit `dependsOn`, and deploys/deletes accordingly.
 - **CI-first** — non-interactive, with a stable [exit-code contract](#exit-codes) CI can branch on.
 - **Fail-closed** — mutations require an account/region allow-list verified against STS; unverifiable situations abort instead of guessing.
@@ -60,7 +60,7 @@ The npm package is scoped (`@tarahi/cfnsync`), but the installed command is `cfn
    ```sh
    cfnsync status   # added / modified / deleted / unchanged
    cfnsync plan     # create change sets and print the diff (exit 2 if there is a diff)
-   cfnsync deploy   # execute in dependency order
+   cfnsync deploy   # show every diff, ask once for approval, execute in dependency order
    ```
 
 ## Commands
@@ -71,14 +71,34 @@ Every subcommand accepts the common options `--config <path>` (default `./cfnsyn
 |---|---|
 | `status` | Compare state with local templates and print `added` / `modified` / `deleted` / `unchanged`. |
 | `plan` | Create change sets, print the diff, and exit without executing. Exit code `2` when a diff exists. |
-| `deploy` | Detect changes, resolve order, create/diff/execute change sets non-interactively. |
+| `deploy` | Detect changes, resolve order, create change sets for every target and print the diff, then execute in dependency order after a single approval. `--auto-approve` is required in CI. |
 | `graph` | Print the per-region dependency graph derived from Exports/Imports and `dependsOn`. |
 | `import` | Adopt existing stacks into config, templates, and state (read-only against AWS). |
 | `force-unlock <runId>` | Conditionally release a stale S3 state lock owned by the given run ID. |
 
 Human-readable diffs from `plan` and `deploy` use ANSI colors by default, including in CI and redirected output: Add is green, Modify yellow, Remove red, and replacements are bold red. Use `--no-color` or set `NO_COLOR` (an empty value also counts) to disable ANSI output. JSON output is always uncolored.
 
-Key `deploy` flags: `--dry-run` (create and diff only), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`), `--confirm` (prompt before executing on a TTY), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list.
+Key `deploy` flags: `--dry-run` (create and diff only), `--auto-approve` / `-y` (skip the approval prompt and apply directly — **required in CI**), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`; **applies to execution-stage failures only**), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list.
+
+### The `deploy` approval flow
+
+By default, `deploy` runs as "finalize every diff → one approval → execute everything".
+
+1. **Planning stage** — create a change set for every target and finalize its diff. Neither `ExecuteChangeSet` nor `DeleteStack` runs at this point.
+2. **Approval** — print the connection (account, regions) and a summary of every diff to stderr, then ask `Do you want to perform these actions? [y/N]` **exactly once for the whole run**. Anything other than `y` / `yes` is a rejection.
+3. **Execution stage** — only once approved, execute the change sets in dependency order.
+
+If nothing is scheduled for execution (every target is unchanged), no approval is requested. If you reject the approval, cfnsync deletes every change set it created during planning, reports the unexecuted stacks as `skipped`, and exits `0`.
+
+If even one target fails during planning, the entire run aborts without asking for approval (exit code `1`). `--on-failure continue` applies **only to execution-stage failures**; it has no effect on planning-stage failures.
+
+Pass `--auto-approve` (`-y`) to apply without being asked. It is **required wherever there is no TTY (CI in particular)**: running `deploy` without it in such an environment fails (exit code `1`) without touching AWS at all. **A run with no changes at all fails the same way**, because the TTY check happens before change detection. `deploy --dry-run` and `plan` never ask for approval and are therefore exempt.
+
+#### Operational notes on the approval flow
+
+- **The state lock is held for the entire time you are being asked to approve.** With the `s3` backend, other runs are blocked meanwhile — the lock's hold time depends on a human's response time rather than on execution time (there is no approval timeout). Keep this in mind for interactive approval workflows.
+- **The diff you approved is not guaranteed to match the actual state at execution time.** A change set is a snapshot taken at creation time, and another actor may change the stack while you are deciding. The defenses are limited to the re-checks performed immediately before execution (own change set's name/ARN still match and no foreign change set exists, `stackId` re-verified against state, stack status checked against an allowlist, lock ownership re-verified). These narrow the race window but do not close it, and cfnsync claims nothing stronger.
+- **Properties that reference an Export created by this very run do not have a final value at approval time.** `Fn::ImportValue` is not resolved when the change set is created; it is held as `{{changeSet:KNOWN_AFTER_APPLY}}` (references to an Export that already exists do resolve to the real value at creation time). cfnsync presents that pending marker as-is and never resolves or fills it in itself. This is the same property as terraform's "known after apply".
 
 ## Configuration
 
@@ -90,7 +110,7 @@ State defaults to the `local` backend (`cfnsync.state.json` next to the config).
 
 ## Using in CI (GitHub Actions)
 
-Use the `s3` backend and never write state back to Git. Give each environment its own `concurrency.group` and S3 state key so concurrent triggers queue instead of racing.
+Use the `s3` backend and never write state back to Git. Give each environment its own `concurrency.group` and S3 state key so concurrent triggers queue instead of racing. CI has no TTY, so **`deploy` requires `--auto-approve`** — without it the run stops with an error because approval is impossible.
 
 ```yaml
 name: cfnsync deploy
@@ -112,7 +132,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx @tarahi/cfnsync deploy --no-color
+      - run: npx @tarahi/cfnsync deploy --auto-approve --no-color
         working-directory: templates
 ```
 
@@ -160,6 +180,10 @@ Several invariants come out of adversarial review and are load-bearing; do not w
 - A foreign change set on a managed stack blocks execution (executing a change set implicitly deletes the others), so cfnsync stops rather than clobbering it.
 
 Do not create change sets on cfnsync-managed stacks manually or with other tools. Full rationale is in [`docs/spec/design.md`](./docs/spec/design.md) and [`docs/spec/requirements.md`](./docs/spec/requirements.md).
+
+## Changelog
+
+Every release, including breaking changes and their migration steps, is recorded in [CHANGELOG.en.md](./CHANGELOG.en.md). **Read it before upgrading** across the release that made the approval flow the default for `deploy` — it removes `--confirm`, requires `--auto-approve` without a TTY, changes the JSON contract for a rejected approval, narrows the scope of `--on-failure`, and makes CREATE recovery fail-closed.
 
 ## Contributing
 

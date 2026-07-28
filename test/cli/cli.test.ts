@@ -205,19 +205,57 @@ describe('T-19 cli', () => {
     const deps = dependencies({
       deploy: vi.fn(async () => ({ exitCode: code, report, hasDiff: false })),
     });
-    expect(await runCli(['deploy'], { deps })).toBe(code);
+    expect(await runCli(['deploy', '--auto-approve'], { deps })).toBe(code);
   });
 
-  it('FR-12-3: 非 TTY は --confirm 指定時もプロンプトなしで完走する', async () => {
+  it('FR-12-3b: 非 TTY の deploy は --auto-approve なしなら AWS へ触れる前に exit 1', async () => {
+    const deps = dependencies();
     const prompt = vi.fn(async () => true);
+    const out = capture();
+
     expect(
-      await runCli(['deploy', '--confirm'], {
-        deps: dependencies(),
-        isTTY: false,
-        prompt,
-      }),
-    ).toBe(0);
+      await runCli(['deploy'], { deps, io: out.io, isTTY: false, prompt }),
+    ).toBe(1);
+    // config 読込より前に CLI 境界で止めるため、usecase へも AWS クライアント生成へも到達しない。
+    expect(deps.deploy).not.toHaveBeenCalled();
+    expect(deps.createSts).not.toHaveBeenCalled();
+    expect(deps.createCfn).not.toHaveBeenCalled();
     expect(prompt).not.toHaveBeenCalled();
+    expect(out.stderr()).toContain('--auto-approve');
+  });
+
+  it('FR-12-3b(JSON): 非 TTY の deploy 拒否は stdout の単一 CliUsageError で exit 1', async () => {
+    const out = capture();
+
+    expect(
+      await runCli(['deploy', '--output', 'json'], {
+        deps: dependencies(),
+        io: out.io,
+        isTTY: false,
+      }),
+    ).toBe(1);
+    expect(JSON.parse(out.stdout())).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: {
+        type: 'CliUsageError',
+        message: expect.stringContaining('--auto-approve'),
+      },
+    });
+  });
+
+  it('FR-12-3c: 非 TTY でも deploy --dry-run と plan は承認不要でエラーにならない', async () => {
+    for (const argv of [['deploy', '--dry-run'], ['plan']]) {
+      const deps = dependencies({
+        deploy: vi.fn(async () => ({
+          exitCode: 2 as const,
+          report,
+          hasDiff: true,
+        })),
+      });
+      expect(await runCli(argv, { deps, isTTY: false })).toBe(2);
+      expect(deps.deploy).toHaveBeenCalled();
+    }
   });
 
   it('FR-7-1〜3: CLI の profile/region を AWS 依存へ伝播する', async () => {
@@ -228,9 +266,19 @@ describe('T-19 cli', () => {
         return { exitCode: 0, report, hasDiff: false };
       },
     );
-    await runCli(['deploy', '--profile', 'work', '--region', 'us-west-2'], {
-      deps,
-    });
+    await runCli(
+      [
+        'deploy',
+        '--auto-approve',
+        '--profile',
+        'work',
+        '--region',
+        'us-west-2',
+      ],
+      {
+        deps,
+      },
+    );
     expect(deps.createCfn).toHaveBeenCalledWith({
       region: 'us-west-2',
       profile: 'work',
@@ -260,7 +308,10 @@ describe('T-19 cli', () => {
     const deps = dependencies({ loadConfig: vi.fn(() => overridden) });
     const out = capture();
     expect(
-      await runCli(['deploy', '--region', 'us-east-1'], { deps, io: out.io }),
+      await runCli(['deploy', '--auto-approve', '--region', 'us-east-1'], {
+        deps,
+        io: out.io,
+      }),
     ).toBe(1);
     expect(out.stderr()).toContain('network.yaml@us-east-1');
     expect(deps.deploy).not.toHaveBeenCalled();
@@ -276,7 +327,7 @@ describe('T-19 cli', () => {
         return { exitCode: 0, report, hasDiff: false };
       },
     );
-    await runCli(['deploy'], { deps });
+    await runCli(['deploy', '--auto-approve'], { deps });
     expect(deps.createCfn).toHaveBeenCalledTimes(1);
   });
 
@@ -290,7 +341,7 @@ describe('T-19 cli', () => {
         return { exitCode: 0, report, hasDiff: false };
       },
     );
-    await runCli(['deploy'], { deps });
+    await runCli(['deploy', '--auto-approve'], { deps });
     expect(deps.createCfn).toHaveBeenCalledWith({
       region: 'eu-west-1',
       profile: 'environment-profile',
@@ -301,15 +352,63 @@ describe('T-19 cli', () => {
     });
   });
 
-  it('FR-5-2: --confirm 指定かつ TTY の場合だけ確認する', async () => {
+  it('FR-5-2a: TTY の deploy は approve を注入し、承認要約を stderr へ出してプロンプトする', async () => {
+    const deps = dependencies();
     const prompt = vi.fn(async () => true);
-    await runCli(['deploy'], { deps: dependencies(), isTTY: true, prompt });
-    await runCli(['deploy', '--confirm'], {
-      deps: dependencies(),
-      isTTY: true,
-      prompt,
-    });
+    const out = capture();
+    (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
+      async (input) => {
+        // usecase 側が承認を求める経路を模す(実行全体で 1 回)。
+        await input.deps.approve({
+          connection: report.connection,
+          diffs: report.diffs,
+          summary: {
+            create: 1,
+            update: 0,
+            delete: 0,
+            replacements: 0,
+            resourcelessChanges: 0,
+          },
+          allowDelete: false,
+        });
+        return { exitCode: 0 as const, report, hasDiff: true };
+      },
+    );
+
+    expect(
+      await runCli(['deploy'], { deps, io: out.io, isTTY: true, prompt }),
+    ).toBe(0);
     expect(prompt).toHaveBeenCalledTimes(1);
+    // FR-3-7b / FR-5-6f: 承認要約は標準エラーへ出し、標準出力を汚さない。
+    expect(out.stderr()).toContain('== 実行内容の確認 ==');
+    expect(deps.deploy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ autoApprove: false }),
+      }),
+    );
+  });
+
+  it('FR-5-2b: --auto-approve は autoApprove を立ててプロンプトしない', async () => {
+    const deps = dependencies();
+    const prompt = vi.fn(async () => true);
+
+    expect(
+      await runCli(['deploy', '--auto-approve'], { deps, isTTY: true, prompt }),
+    ).toBe(0);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(deps.deploy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ autoApprove: true }),
+      }),
+    );
+  });
+
+  it('FR-12-8: --confirm は廃止され未知オプションとして exit 1', async () => {
+    const deps = dependencies();
+    expect(await runCli(['deploy', '--confirm'], { deps, isTTY: true })).toBe(
+      1,
+    );
+    expect(deps.deploy).not.toHaveBeenCalled();
   });
 
   it('FR-5-2: deploy オプションを usecase に渡す', async () => {
@@ -325,10 +424,15 @@ describe('T-19 cli', () => {
           allowDelete: true,
           onFailure: 'continue',
           collectEvents: false,
+          autoApprove: false,
         },
       }),
     );
   });
+
+  // deploy は非 TTY では --auto-approve が必須(FR-12-3b)。plan は対象外(FR-12-3c)。
+  const withApproval = (command: 'plan' | 'deploy'): string[] =>
+    command === 'deploy' ? [command, '--auto-approve'] : [command];
 
   it.each([
     'plan',
@@ -343,7 +447,7 @@ describe('T-19 cli', () => {
     });
     const out = capture();
 
-    await runCli([command], {
+    await runCli(withApproval(command), {
       deps,
       io: out.io,
       env: {},
@@ -355,9 +459,9 @@ describe('T-19 cli', () => {
 
   it.each([
     ['plan --no-color', ['plan', '--no-color'], {}],
-    ['deploy --no-color', ['deploy', '--no-color'], {}],
+    ['deploy --no-color', ['deploy', '--auto-approve', '--no-color'], {}],
     ['plan NO_COLOR', ['plan'], { NO_COLOR: '1' }],
-    ['deploy 空 NO_COLOR', ['deploy'], { NO_COLOR: '' }],
+    ['deploy 空 NO_COLOR', ['deploy', '--auto-approve'], { NO_COLOR: '' }],
   ] as const)('FR-3-5: %s は text 差分の ANSI 色を無効化する', async (_label, args, env) => {
     const deps = dependencies({
       deploy: vi.fn(async () => ({
@@ -387,7 +491,7 @@ describe('T-19 cli', () => {
     });
     const out = capture();
 
-    await runCli([command, '--output', 'json'], {
+    await runCli([...withApproval(command), '--output', 'json'], {
       deps,
       io: out.io,
       env: {},
@@ -630,45 +734,62 @@ describe('T-19 cli', () => {
     expect(out.stderr()).toContain(`(cause: ${cause})`);
   });
 
-  it('FR-12(JSONキャンセル): deploy --confirm の拒否は単一キャンセル result を stdout に出して exit 0', async () => {
-    const deps = dependencies();
+  /** 承認が拒否された usecase の戻り値を模す(FR-5-10 / FR-12-6c1)。 */
+  const cancelledDeploy = () =>
+    vi.fn(async (input: Parameters<CliDependencies['deploy']>[0]) => {
+      await input.deps.approve?.({
+        connection: report.connection,
+        diffs: report.diffs,
+        summary: {
+          create: 1,
+          update: 0,
+          delete: 0,
+          replacements: 0,
+          resourcelessChanges: 0,
+        },
+        allowDelete: false,
+      });
+      return {
+        exitCode: 0 as const,
+        report: { ...report, cancelled: true as const },
+        hasDiff: true,
+      };
+    });
+
+  it('FR-12-6c1(JSONキャンセル): 承認拒否は cancelled 付き deploy report を stdout に 1 個出して exit 0', async () => {
+    const deps = dependencies({ deploy: cancelledDeploy() });
     const prompt = vi.fn(async () => false);
     const out = capture();
 
     expect(
-      await runCli(['deploy', '--confirm', '--output', 'json'], {
+      await runCli(['deploy', '--output', 'json'], {
         deps,
         io: out.io,
         isTTY: true,
         prompt,
       }),
     ).toBe(0);
-    expect(JSON.parse(out.stdout())).toEqual({
-      exitCode: 0,
-      cancelled: true,
-      message: 'Deployment cancelled.',
-    });
-    expect(out.stderr()).toBe('');
+    const payload = JSON.parse(out.stdout());
+    // 旧専用ペイロード({exitCode,cancelled,message})は廃止。差分と結果を保持した
+    // deploy report の既存 schema に cancelled: true を足す(破壊的変更)。
+    expect(payload.cancelled).toBe(true);
+    expect(payload.exitCode).toBeUndefined();
+    expect(payload.message).toBeUndefined();
+    expect(payload.connection).toBeDefined();
+    expect(payload.diffs).toBeDefined();
     expect(prompt).toHaveBeenCalledTimes(1);
-    expect(deps.deploy).not.toHaveBeenCalled();
   });
 
-  it('FR-12(textキャンセル): deploy --confirm の拒否は stderr に診断を出して exit 0', async () => {
-    const deps = dependencies();
+  it('FR-12-6c2(textキャンセル): 承認拒否は stderr に診断を出し stdout に report を出して exit 0', async () => {
+    const deps = dependencies({ deploy: cancelledDeploy() });
     const prompt = vi.fn(async () => false);
     const out = capture();
 
     expect(
-      await runCli(['deploy', '--confirm'], {
-        deps,
-        io: out.io,
-        isTTY: true,
-        prompt,
-      }),
+      await runCli(['deploy'], { deps, io: out.io, isTTY: true, prompt }),
     ).toBe(0);
-    expect(out.stdout()).toBe('');
-    expect(out.stderr()).toBe('Deployment cancelled.\n');
-    expect(deps.deploy).not.toHaveBeenCalled();
+    expect(out.stderr()).toContain('Deployment cancelled.');
+    expect(out.stdout()).toContain('== 接続先 ==');
   });
 
   it.each([
@@ -1033,7 +1154,10 @@ describe('T-19 cli', () => {
       }),
     });
     const out = capture();
-    await runCli(['deploy', '--output', 'json'], { deps, io: out.io });
+    await runCli(['deploy', '--auto-approve', '--output', 'json'], {
+      deps,
+      io: out.io,
+    });
     expect(JSON.parse(out.stdout()).connection.accountId).toBe('123456789012');
     expect(out.stderr()).toContain('CREATE_IN_PROGRESS');
     expect(out.stdout()).not.toContain('CREATE_IN_PROGRESS');
@@ -1064,7 +1188,10 @@ describe('T-19 cli', () => {
       }),
     });
     const out = capture();
-    await runCli(['deploy', '--output', 'json'], { deps, io: out.io });
+    await runCli(['deploy', '--auto-approve', '--output', 'json'], {
+      deps,
+      io: out.io,
+    });
     // stdout は最終 report の JSON のみ(進捗が混入しない)。
     expect(() => JSON.parse(out.stdout())).not.toThrow();
     expect(JSON.parse(out.stdout()).connection.accountId).toBe('123456789012');
