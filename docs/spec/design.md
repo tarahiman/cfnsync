@@ -60,8 +60,8 @@ graph TD
 | `ports` | `CloudFormationGateway` / `StsGateway` / `StateBackend` インターフェース定義 | NFR-2, FR-1 |
 | `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド | NFR-3, FR-1 |
 | `backend` | `StateBackend` の `local` 実装(原子的ファイル置換・`.bak` 保持) | FR-1 |
-| `report` | 人間可読テキスト / コマンド固有 JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4)。成功時および usecase が result を生成した失敗時の既存 JSON schema を維持する | FR-3, NFR-4 |
-| `cli` | Commander 定義、終了コード、stdout/stderr 境界。result 生成前の例外を §9 の共通エラー JSON へ変換し、有効な `--output json` では単一 JSON document を stdout へ出す | FR-12, NFR-1 |
+| `report` | 人間可読テキスト / コマンド固有 JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4)、承認要求・要約の型と整形(ApprovalRequest / `renderApprovalSummary`。FR-5-6)。成功時および usecase が result を生成した失敗時の既存 JSON schema を維持する | FR-3, FR-5, NFR-4 |
+| `cli` | Commander 定義、終了コード、stdout/stderr 境界、TTY プロンプトの `approve` 実装の注入。result 生成前の例外を §9 の共通エラー JSON へ変換し、有効な `--output json` では単一 JSON document を stdout へ出す | FR-12, NFR-1 |
 
 依存方向: `cli → usecase → core / ports / report`。`aws` / `backend` は `ports` を実装する。`core` はどこにも依存しない。
 
@@ -70,6 +70,13 @@ cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、
 (FR-12-5)。
 `plan` / `deploy` だけはサブコマンドオプション `--no-color` を持つ。これを共通オプションにはせず、
 status / graph / import / force-unlock の出力契約を変更しない(FR-12-7)。
+`deploy` だけがサブコマンドオプション `--auto-approve`(短縮形 `-y`)を持つ(FR-12-8)。従来の `--confirm` は
+削除する — 差分表示より前に確認を求める実装であり、承認の判断材料を提示できていなかったためである。0.x
+リリースのため破壊的変更を許容し、`--confirm` は Commander の未知オプション(`CliUsageError`)となる。
+CLI は `deploy`(`--dry-run` を伴わない)で `--auto-approve` がなく TTY でもない場合、usecase を呼ばずに
+`CliUsageError` で exit 1 とする(FR-12-3)。この判定は AWS・ステートバックエンドへの一切のアクセスより前に
+行い、変更セットを作ってから落ちて後始末が必要になる事態を構造的に避ける。TTY 判定は
+`process.stdin.isTTY && process.stderr.isTTY` を用いる(要約とプロンプトの出力先が stderr のため)。
 CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。事前 parser は Commander と同じく値を取るグローバル／サブコマンドオプション(`--config` / `--profile` / `--region` / `--output` / `--on-failure` / `--reconcile`)の arity を解釈し、他オプションの値として消費された `--output=json` を選択と誤認しない。サブコマンド前後のグローバルオプションを同様に扱う。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
 
 ## 4. データ設計
@@ -201,8 +208,9 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 2. state 読込 → 変更分類 → 依存グラフ構築(新旧統合)→ 実行計画立案
 3. `added` / `modified` の各スタックキーに対し変更セットを作成 → `DescribeChangeSet` で差分取得 → **describe 後に変更セットを削除**(残骸を残さない。クラッシュ時の残骸は §7 の残存回収が拾う)
 4. `deleted` は削除プレビューとして差分出力に含める(FR-6)
-5. 差分を出力(リージョン明示・Replacement 警告・NoEcho マスク)
+5. 差分を出力(リージョン明示・Replacement 警告・NoEcho マスク)。リソース差分 0 件で成功した変更セットは「変更あり」として扱う(§5.3.1、FR-5-7)
 6. 終了コード: 差分あり 2 / なし 0 / エラー 1
+7. `plan` は何も実行しないため承認を求めない(FR-5-9)
 
 各スタックの変更セット作成開始・差分確定は `DeployDeps.onProgress`(FR-5-4)を通じてスタックキー付きで標準エラーへ逐次通知する。差分確定後に意図どおり停止すること自体は `skipped` 進捗として通知しない。依存失敗等による実際のスキップ通知は維持する。CFN リソースイベント(`onEvent`、FR-4-1)とは独立したチャネルであり、差分・結果の最終 report(標準出力)には一切含まれない。
 人間可読な text 差分は端末判定を行わず ANSI 色を既定で有効にし、リソース行の
@@ -214,21 +222,119 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
 
 ### 5.3 `cfnsync deploy`
 
-1. config 検証 → AccountGuard → ステートロック取得 → state 読込(世代 / ETag 記録)
+`deploy` は既定で `terraform apply` 相当の「全差分の確定 → 1 回の承認 → 一括実行」フローとする(FR-5-2)。実行は承認を境に **Phase A(承認前)** と **Phase B(承認後)** の 2 フェーズへ分割する。
+
+1. config 検証 → 承認手段の存在検証(§5.3.4)→ AccountGuard → ステートロック取得 → state 読込(世代 / ETag 記録)
 2. 変更分類 → 依存グラフ → 実行計画
-3. 各スタックキーについて順に:
-   - スタック状態ガード(§7)→ 残存変更セット回収 → 変更セット作成
-   - 空変更セット → 変更セット削除、ステート更新(unchanged 扱いで記録)、次へ
-   - 差分出力 → `ExecuteChangeSet` → イベントをポーリングして逐次出力 → 完了待機
+3. **Phase A(承認前)**: 実行計画の順に各スタックキーについて:
+   - create/update: スタック状態ガード(§7)→ 残存変更セット回収 → 変更セット作成 → `DescribeChangeSet` で差分確定。**変更セットは削除せず保持する**(plan / `--dry-run` との差)
+   - 変更セット作成に失敗した場合は §5.3.1 に従い fail-closed に中断する
+   - リソース差分 0 件だが成功した変更セット(Outputs / Export のみの変更): **「変更あり」として実行対象に含める**(§5.3.1)
+   - 空変更セット(既知の「変更なし」定型文で `FAILED`): 変更セットを削除し、「変更なし」として差分へ積む。**ステート保存は Phase B へ繰り延べる**
+   - CREATE 復旧(§7、`added` だが同名スタックが実在し全一致): 比較までを行い「変更なし」として差分へ積む。**ステート再同期の保存は Phase B へ繰り延べる**
+   - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合の**ステート除去も Phase B へ繰り延べる**
+   - Phase A の副作用は「自ステートの残存変更セットの回収」と「変更セットの作成」だけであり、`ExecuteChangeSet` / `DeleteStack` / `StateBackend.save` は一切行わない(FR-5-5)
+   - Phase A で 1 件でも失敗した場合、承認を求めず §5.3.3 のクリーンアップを行って exit 1(FR-5-12。`--on-failure continue` でも同じ)
+4. **承認**(FR-5-2): Phase B に `ExecuteChangeSet` または `DeleteStack` が 1 件以上予定されている場合にだけ、`DeployDeps.approve`(§5.3.2)を**実行全体で 1 回だけ**呼ぶ。`--auto-approve` 指定時、`--dry-run` 時、および実行予定が 0 件の場合は呼ばない(FR-5-8 / FR-5-9)
+   - 拒否された場合は §5.3.3
+5. **Phase B(承認後)**: 実行計画の順(FR-9 の依存順)に:
+   - `ExecuteChangeSet` → イベントをポーリングして逐次出力 → 完了待機。差分は Phase A で確定済みであり、Phase B で変更セットを新規作成することはない
    - **成功のたびに fencing 検証(§4.5)の上でステートを更新・保存(CAS)**。失敗したスタックのステートは更新しない(FR-1)。これにより途中失敗後の再実行は成功済み分をスキップできる(NFR-3)
-   - 失敗時: 依存する後続スタックを中止。独立スタックの扱いは `--on-failure stop|continue`(既定 `stop`)(FR-9)
+   - Phase A で繰り延べた空変更セット / CREATE 復旧 / 削除済み同期のステート保存もここで行う
+   - 失敗時: 依存する後続スタックを中止。独立スタックの扱いは `--on-failure stop|continue`(既定 `stop`)(FR-9)。**`--on-failure` は Phase B の失敗にのみ適用する**
+   - 失敗・スキップにより実行されなかった対象が Phase A で作成済みの変更セットを持つ場合、§5.3.3 と同じ手順で削除する
 
    各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの公開本文を再利用する。`CfnSyncError` は `publicMessage` だけを入力とし、stackKey / region は stack entry の構造化フィールドへ分離する。内部 cause は保持しても report / progress / JSON へ昇格させず、分類不能な例外は固定の安全な文言に置換する。これにより NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
-4. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)
-5. `--dry-run` は plan と同一動作(FR-5)
+   2 フェーズ化により、**あるスタックについての phase の相対順序は変わらない**(`changeset-create-start` → `diff-ready` → `execute-start` → `done`)が、複数スタックがある場合は全対象の `diff-ready` が最初の `execute-start` に先行する。承認そのものには `ProgressPhase` を追加しない — `ProgressEvent` は stackKey / region を必須とするスタック単位の契約であり、実行全体で 1 回の承認は該当しないためである。承認要求の発生は `approve` ポートの呼び出しとして観測でき、拒否後の未実行対象は既存の `skipped` phase で通知される。
+6. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)。削除の安全装置(削除保護・依存情報の欠落)による拒否は Phase B の失敗として扱う — 拒否は不可逆な副作用を伴わないため、条件を Phase A へ二重実装せず、`DeleteStack` 直前の fail-closed 再検証に一本化する
+7. `--dry-run` は Phase A だけを実行し、差分確定後に作成した変更セットをすべて削除する(= plan と同一動作。FR-5-3 / FR-5-9)
 
 人間可読な text 差分の色と無色化の優先順位は plan と同じとする(FR-3-4 / FR-3-5)。
-deploy report を生成できた場合は、fail-closed の失敗 report を含めて既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用し、成功・失敗 report を `{ok,data}` で包み直さない。
+deploy report を生成できた場合は、fail-closed の失敗 report および承認拒否 report を含めて既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用し、成功・失敗 report を `{ok,data}` で包み直さない。
+
+**承認待ち中のロックと TOCTOU**: 承認待ちの間、ステートロック(§4.5)は保持し続ける(FR-5-14)。`s3` バックエンドでは他の実行がその間ブロックされるため、人間の承認を伴う運用ではロック保持時間が実行時間ではなく利用者の応答時間に依存することを README に記載する(承認待ちのタイムアウトは初期リリースでは設けない)。承認待ちの間に他主体が実スタックを変更しうるため、Phase A で作成した変更セットは**作成時点のスナップショット**であり、承認時点の差分と実行時点の実状態の一致は保証しない。防御は既存の多層防御に限る: 実行直前の変更セット再検査(§7)、`stackId`(ARN)の再照合(§4.3)、`*_IN_PROGRESS` ガード(§7)、fencing(§4.5)。これらは競合窓を排除しないため、**それ以上の保証を主張しない**。なお CloudFormation は、他スタックが `Fn::ImportValue` で使用中の Export の値変更・削除を拒否する。**これは変更セットを事前作成する本設計にとって重要な保護である** — consumer 側の変更セットを Phase A で先に作っておいても、provider 側の Phase B 実行によってその Export が「古い値」へ差し替わる事象は CloudFormation 側で構造的に防がれる。provider 側に許されるのは新しい Export 名の追加だけであり、それは §5.3.1 の `KNOWN_AFTER_APPLY` の仕組みで正しく扱われる。
+
+#### 5.3.1 Phase A の失敗・`KNOWN_AFTER_APPLY`・リソース差分 0 件
+
+**Phase A の失敗はすべて fail-closed に中断する**(FR-5-12)。まだ何一つ実行していない段階であり、安全側へ倒す余地が最大だからである。差分が不完全な計画に対して不可逆な操作の承認を求めることはしない。`--on-failure continue` は Phase B(実行中)の失敗伝播にのみ適用し、Phase A では効かない。中断時は §5.3.3 のクリーンアップを行い exit 1 とする。
+
+**`Fn::ImportValue` は変更セット作成時に解決されない(FR-5-15)**: CloudFormation は `CreateChangeSet` の時点で `Fn::ImportValue` を解決せず、対象プロパティを `{{changeSet:KNOWN_AFTER_APPLY}}` として保留する。**Export の実在も検証しない。** 生 AWS CLI による独立検証(cfnsync 非経由)で、スタックが一切存在しない状態(`ValidationError: Stack ... does not exist`)かつ参照先 Export も存在しない状態(`list-exports` が空)で `--change-set-type CREATE` を実行しても、`Status: CREATE_COMPLETE` / `ExecutionStatus: AVAILABLE` / `StatusReason: null` となり、解決後のプロパティ値が `{{changeSet:KNOWN_AFTER_APPLY}}` になることを確認済みである(CREATE / UPDATE の双方)。
+
+したがって**依存先スタックがこの実行で初めて作られる場合でも、Phase A で全対象の変更セットを事前作成できる**。値は Phase B の実行時に解決され、実行は依存順(FR-9)であるため、その時点で先行スタックの Export は実在する。
+
+この性質の帰結として、**承認時点では `Fn::ImportValue` 由来のプロパティの最終値が確定していない**。承認要約・差分出力には CloudFormation が返した `{{changeSet:KNOWN_AFTER_APPLY}}` をそのまま提示し、cfnsync 側で解決・補完しない(FR-3: CloudFormation が返さない値を独自に補完・推測してはならない)。これは terraform の "known after apply" と同じ性質であり、利用者向けの既知の性質として README に記載する(T-20)。
+
+事前判定・遅延実行(deferred)の機構は**持たない**。当初は「依存先の Export が未作成だと変更セット作成が失敗する」という想定で静的判定機構を検討したが、上記の実機検証によりその前提が成立しないことが確定したため採用しない。万一 `CreateChangeSet` が別の理由で失敗した場合は、FR-5-12 の Phase A 失敗として fail-closed に中断する。
+
+**リソース差分 0 件の変更セット(FR-5-7)**: Outputs / Export のみを追加・変更した場合、`inputsHash` が変わるため `modified` と判定される一方、変更セットのリソース差分は 0 件になる。**これを「変更なし」として扱って実行を省略してはならない** — 実行しなければ Export が作成されず、それを `Fn::ImportValue` する後続スタックの実行が失敗する。判定は既存の `createManagedChangeSet` の契約どおりとする: `noChanges: true`(= 変更なし)となるのは **Status が `FAILED` かつ既知の「変更なし」定型文かつ changes 0 件**のすべてを満たす場合だけであり(§7)、**成功した 0 件変更セットは通常どおり実行対象**である。承認要約・text 差分では「変更あり」として扱いつつ、リソース差分行が 0 件であることを明示する(例: `[update] app.yaml@ap-northeast-1 (リソース差分なし / Outputs 等の変更)`)。空変更セットの `no-change` 表示と紛らわしい文言にしない。この区別は `StackDiff.operation !== 'no-change' && resources.length === 0` から導出でき、`StackDiff` への新フィールド追加は不要である(FR-5-16 の JSON 非回帰を維持する)。
+
+**`REVIEW_IN_PROGRESS` の殻**: 新規スタックに対する CREATE 型変更セットを作成すると、CloudFormation は `REVIEW_IN_PROGRESS` 状態のスタックの殻を作る。承認拒否・Phase A 失敗で変更セットを削除しても、この殻は AWS 上に残る。これは現行 `plan` でも発生する既存挙動だが、2 フェーズ化と既定承認により**発生頻度が上がる**。殻は次回実行時に `prepareStack`(§7)が回収し、その上に CREATE 型変更セットを再作成して続行するため、状態は収束する。**安全不変条件どおり、殻に対して `DeleteStack` を呼んではならない**(§7 / §8: 検証と削除の間の競合窓で他主体の変更セットを巻き込む余地を構造的に排除するため)。
+
+#### 5.3.2 承認ポート `DeployDeps.approve`
+
+承認は `onEvent` / `onProgress` と同じ注入パターンのポートとして `DeployDeps` へ追加する。usecase は TTY・プロンプト・入力ストリームを一切知らない。CLI が TTY プロンプト実装を注入し、テストは fake を注入する(NFR-2)。
+
+```ts
+// src/report/index.ts(出力契約)
+export interface ApprovalSummary {
+  create: number;
+  update: number;
+  delete: number;
+  /** 置換(Replacement)が発生するリソースの総数。 */
+  replacements: number;
+}
+
+export interface ApprovalRequest {
+  connection: ConnectionInfo;
+  /** Phase A で確定した全差分。redaction 適用済み。 */
+  diffs: StackDiff[];
+  summary: ApprovalSummary;
+}
+
+/** FR-5-6 / FR-3-7: 承認要約を人間可読テキストへ整形する(標準エラーへ出す想定)。 */
+export function renderApprovalSummary(
+  request: ApprovalRequest,
+  options: { color: boolean },
+): string;
+
+// src/usecase/deploy.ts
+export interface DeployDeps {
+  // ...既存
+  /** FR-5-2: 実行全体で最大 1 回だけ呼ばれる。true = 承認。 */
+  approve?: (request: ApprovalRequest) => Promise<boolean>;
+}
+
+export interface DeployOptions {
+  // ...既存
+  /** FR-5-2: true なら approve を呼ばず実行する。 */
+  autoApprove?: boolean;
+}
+```
+
+- `ApprovalRequest.diffs` は、report へ格納するのと同じ多層 redaction(`redactReportMessages` 相当)を適用してから `approve` へ渡す(NFR-4 / FR-5-6)。usecase 側で秘匿値が承認要約経由で漏れないことを redaction の単一経路で担保する。
+- CLI は `renderApprovalSummary` の結果を**標準エラー**へ書き出し、続けてプロンプトを提示する(FR-3-7)。色付け・無色化は差分本体と同じ規則に従う。
+- プロンプトは既存の `runtime.prompt`(y/N)を用い、質問文は `Do you want to perform these actions? (y/N)` とする。空入力・不正入力は **No**(fail-closed)。
+- 最終 report(標準出力)の schema と内容は承認の有無で変えない。したがって text 出力かつ対話承認を行った場合、差分は承認要約(標準エラー)と最終 report(標準出力)の 2 箇所に現れる。これは「標準出力は承認経路によらず一定の結果チャネル」「標準エラーは対話チャネル」という既存の出力境界(NFR-1)を維持するための意図的なトレードオフであり、JSON 出力を承認経路で分岐させないことを優先した結果である。
+
+#### 5.3.3 承認拒否と Phase A 失敗時のクリーンアップ
+
+承認拒否(FR-5-10)および Phase A 失敗(FR-5-12)では、Phase A で作成した**自身の**変更セットを、作成時に保持した ARN で `DeleteChangeSet` する(fencing 付き gateway 経由。他主体・別ステートの変更セットには触れない — §7 の所有権規則は変えない)。
+
+| | 承認拒否(FR-5-10) | Phase A 失敗(FR-5-12) |
+|---|---|---|
+| 事前作成した変更セット | 全削除 | 全削除 |
+| `ExecuteChangeSet` / `DeleteStack` / state 保存 | ゼロ | ゼロ |
+| 未実行スタックの outcome | `skipped` | 失敗した対象は `failed`、他は `skipped` |
+| report の `cancelled` | `true` | 付与しない |
+| 終了コード | 0(クリーンアップ失敗時のみ 1。FR-5-11) | 1 |
+
+クリーンアップに失敗しても残存変更セットは次回実行の残存回収(§7)が自ステート ID のものとして回収するため、状態は収束する。したがって拒否時のクリーンアップ失敗は警告として報告し(exit 1)、それ以上の復旧は試みない。
+
+#### 5.3.4 承認手段の検証(fail-closed)
+
+`options.dryRun !== true` かつ `options.autoApprove !== true` かつ `deps.approve === undefined` の場合、usecase は **STS・ステートバックエンド・CloudFormation への一切のアクセスの前に** `GuardError` で fail-closed に停止し、AWS 副作用ゼロの失敗 report(exit 1)を返す(FR-5-13)。承認手段の欠如は「承認の可否を検証できない状況」であり、警告して続行してはならない。
+
+これは CLI 境界の非 TTY チェック(§9)と重複するが、多層防御として両方を維持する — CLI 境界のチェックは利用者への明確な案内、usecase のチェックは埋め込み利用も含めた不変条件である。
 
 ### 5.4 `cfnsync import`
 
@@ -301,7 +407,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 
 ### 8.2 NoEcho マスク(NFR-4)
 
-テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。usecase はテンプレートの scalar な `Parameters.<name>.Default` を基底とし、対象スタックの設定上の明示パラメータ値で上書きした redaction 専用の実効値から共通 redactor を構成する。この補完は redaction 入力だけに閉じ、設定オブジェクトおよび `inputsHash` の parameter 部分は変更しない。生値に加えて `JSON.stringify` のエスケープ表現と `encodeURIComponent` 表現も置換対象にする。イベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、`DescribeChangeSet(IncludePropertyValues=true)` が返す `BeforeValue` / `AfterValue` / `BeforeContext` / `AfterContext`、AWS 例外メッセージ、最終 `errorMessage` を逐次通知・report 格納の前に通す。`CausingEntity` が NoEcho パラメータ名と一致する変更詳細の前後値は、既知の実値との一致にかかわらず `****` とする。そのような詳細を1件でも含むリソースでは、現在の実効値から復元できない旧秘密値が context に含まれ得るため、`BeforeContext` / `AfterContext` 全体を `****` とする。report は格納済みのイベント・エラー文字列にも同じ redactor を適用して多層防御とする。空文字および 4 文字未満の値は誤マスクを避けるため置換しない。NoEcho 実効値が予約済み `REQUIRED_PLACEHOLDER`(`__REQUIRED__`)と完全一致する場合は既知の非秘匿 sentinel なので raw value の段階で置換候補から除外し、JSON escaped / URI encoded variant も生成しない。したがって必須値不足の診断は literal `__REQUIRED__` と対象名を表示する。部分一致する値と他の NoEcho 実値は従来どおりマスクする。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックを計画上の失敗として AWS 副作用前に依存下流を skipped とし、独立スタックだけを `--on-failure` に従わせる。
+テンプレートの `Parameters` で `NoEcho: true` のキーは、差分出力・ログ・JSON のすべてで値を `****` にマスクする。usecase はテンプレートの scalar な `Parameters.<name>.Default` を基底とし、対象スタックの設定上の明示パラメータ値で上書きした redaction 専用の実効値から共通 redactor を構成する。この補完は redaction 入力だけに閉じ、設定オブジェクトおよび `inputsHash` の parameter 部分は変更しない。生値に加えて `JSON.stringify` のエスケープ表現と `encodeURIComponent` 表現も置換対象にする。イベントの `ResourceStatusReason`、スタック/変更セットの `StatusReason`、`DescribeChangeSet(IncludePropertyValues=true)` が返す `BeforeValue` / `AfterValue` / `BeforeContext` / `AfterContext`、AWS 例外メッセージ、最終 `errorMessage` を逐次通知・report 格納の前に通す。`CausingEntity` が NoEcho パラメータ名と一致する変更詳細の前後値は、既知の実値との一致にかかわらず `****` とする。そのような詳細を1件でも含むリソースでは、現在の実効値から復元できない旧秘密値が context に含まれ得るため、`BeforeContext` / `AfterContext` 全体を `****` とする。report は格納済みのイベント・エラー文字列にも同じ redactor を適用して多層防御とする。空文字および 4 文字未満の値は誤マスクを避けるため置換しない。NoEcho 実効値が予約済み `REQUIRED_PLACEHOLDER`(`__REQUIRED__`)と完全一致する場合は既知の非秘匿 sentinel なので raw value の段階で置換候補から除外し、JSON escaped / URI encoded variant も生成しない。したがって必須値不足の診断は literal `__REQUIRED__` と対象名を表示する。部分一致する値と他の NoEcho 実値は従来どおりマスクする。設定ファイルに `__REQUIRED__` プレースホルダが残っている場合、当該スタックを計画上の失敗として AWS 副作用前に依存下流を skipped とする。この失敗は承認より前(Phase A、§5.3)に確定するため、`deploy` では FR-5-12 に従い承認を求めず実行全体を中断する(`--on-failure continue` でも独立スタックを実行しない)。`--on-failure` の選択は Phase B の失敗にのみ適用する。
 
 コマンド固有 result の warning へ例外を変換する場合も、`CfnSyncError` は `publicMessage` だけを使用する。分類不能な例外は固定の安全な文言に置換し、SDK 例外の message や内部 cause を warning / JSON へ昇格させない。
 
@@ -350,15 +456,20 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - text 出力時のエラー診断は従来どおり stderr とする。Commander の usage / help-after-error も stderr に出してよい。JSON 本体を stderr へ移さず、action catch と Commander catch は同じ renderer を共有して二重 JSON を防ぐ。
 - 成功 JSON、および deploy/import/force-unlock が生成した既存 result JSON は `{ok,data}` で包み直さず、その schema と終了コードを維持する。`--help` / `--version` は従来の text 出力、exit 0 とする。`--output bogus` は有効な JSON 選択が成立しないため共通 JSON エラー契約の対象外とする。
 - `plan` / `deploy` の `--output json` は ANSI 色の既定値、`--no-color`、`NO_COLOR` の状態にかかわらず ANSI エスケープシーケンスを含めず、stdout 上の単一 JSON document 契約と既存 schema を維持する(FR-3-6)。
-- TTY 上の `deploy --confirm` を拒否した場合、text 選択では stderr の `Deployment cancelled.` と exit 0 を維持する。有効な JSON 選択では stdout に次の専用 result を 1 個出力し、同じく exit 0 とする。
+- `deploy` の承認(FR-5-2)を拒否した場合、text 選択では stderr へ `Deployment cancelled.` を出したうえで deploy report を stdout へ出力し、exit 0 とする。有効な JSON 選択では **deploy report の既存 schema に `cancelled: true` を加えた単一 document** を stdout へ出力し、同じく exit 0 とする。従来の専用ペイロード `{ "exitCode": 0, "cancelled": true, "message": "Deployment cancelled." }` は廃止する(破壊的変更。差分情報が失われるため)。`cancelled` は `report.diffs` / `report.result` と併存し、Phase A で確定した差分と `skipped` 結果を保持する。
 
 ```json
 {
-  "exitCode": 0,
+  "connection": { "accountId": "123456789012", "regions": ["ap-northeast-1"] },
   "cancelled": true,
-  "message": "Deployment cancelled."
+  "diffs": [ "...Phase A で確定した差分..." ],
+  "result": { "stacks": [ { "stackKey": "app.yaml@ap-northeast-1", "outcome": "skipped", "...": "..." } ] }
 }
 ```
+
+`renderJson` は許可フィールドだけを明示的に再構築する多層防御であるため、`cancelled` を出力するには whitelist へ明示追加する必要がある。**承認拒否時にだけ `cancelled: true` を含める**。`cancelled` が JSON schema への唯一の追加であり、`connection` / `diffs` / `events` / `result` の構造・要素順序は 2 フェーズ化によって変えない(FR-5-16)。したがって拒否していない実行の JSON は従来と同一のままであり、QA が取得したベースライン JSON がそのまま回帰判定に使える。
+- `deploy` の承認要約(FR-5-6)とプロンプトは常に stderr へ出す。有効な JSON 選択の有無で要約の出力先を変えず、stdout の単一 JSON document 契約(FR-12-6a / FR-12-6b)を維持する。
+- 非 TTY かつ `--auto-approve` なしの `deploy`(`--dry-run` なし)は、CLI 境界で `CliUsageError` として §9 の共通エラー schema を stdout(JSON 選択時)へ 1 個出力し exit 1 とする(FR-12-3)。usecase へ到達しないため deploy report は生成されない。
 
 - AWS API のスロットリングは SDK v3 の adaptive retry mode + 指数バックオフで吸収(NFR-3)。
 - デプロイ失敗時は失敗リソースの `ResourceStatusReason` をスタックイベントから抽出して表示し、ロールバックの発生と結果を報告する(FR-4)。
@@ -373,6 +484,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - **障害注入シナリオ**: AWS 操作成功直後・ステート保存前の中断を CREATE / UPDATE / DELETE それぞれで注入し、再実行が自動収束すること(FR-1、§7 の復旧分岐)を検証する。CREATE 復旧では「タグのみ異なる同名管理外スタック」「Capabilities のみ異なる同名管理外スタック」「NoEcho 実値のみ異なる(=管理タグを持たない)同名管理外スタック」を含め、一致条件を満たさないスタックが再同期されずインポート案内付きで停止することも検証する。また `REVIEW_IN_PROGRESS` スタックに対して `DeleteStack` が一切呼ばれないこと(自変更セットの個別削除のみが行われること)、他主体の変更セットが存在する場合・所有権確認直後に並行追加された場合のいずれも、実行直前の再検査(§7)により `ExecuteChangeSet` が呼ばれず他主体の変更セットが暗黙削除されないことも検証する。
 - **ports 実装(aws/・backend/)**: `aws-sdk-client-mock` で SDK レスポンスをスタブし、変更セットの状態遷移(空変更セット判定・所有権判定つき残存回収・IN_PROGRESS ガード)を検証する。S3 バックエンドの条件付き書き込み・ロック競合(`PreconditionFailed`)・`If-Match` 条件付きロック解除(所有者交代時は削除しない)も同様に検証する。`backend/` の local バックエンドは、原子的置換(保存途中の中断で元ファイルが無傷・`.bak` 保持)と保存直前の世代比較 CAS をテンポラリディレクトリで検証する。
 - **usecase/**: ゲートウェイをインメモリのフェイクに差し替えたシナリオテスト(「plan → deploy → 再実行で変更なし」の冪等性、途中失敗 → 再実行の継続性、完了待機中に force-unlock された場合のステート保存直前 fencing 中断、fencing 検証と副作用の間で所有権交代が起きた競合窓シナリオでも CAS 失敗と `*_IN_PROGRESS` ガードにより正本が分岐しないこと)。
+- **承認フロー(§5.3)**: `approve` に fake を注入し、呼び出し順序の記録によって次を検証する — 承認が実行全体で高々 1 回であること、`approve` 呼び出し時点で全対象の `CreateChangeSet` が完了し `ExecuteChangeSet` / `DeleteStack` / `StateBackend.save` が 1 度も呼ばれていないこと、拒否時に事前作成した変更セットが**すべて** `DeleteChangeSet` され不可逆な副作用がゼロであること、`approve` 呼び出し中もロックが保持されていること、Phase A 失敗時に `--on-failure continue` でも `approve` が呼ばれず変更セットが後始末されること、リソース差分 0 件で成功した変更セットが実行対象に含まれること(§5.3.1)、`REVIEW_IN_PROGRESS` の殻へ `DeleteStack` が呼ばれないこと。
 - 実 AWS を使う E2E は初期リリースのスコープ外(手動検証手順を README に記載)。
 
 ディレクトリ構成:
@@ -414,12 +526,14 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::123456789012:role/cfnsync-deploy
           aws-region: ap-northeast-1
-      - run: npx @tarahi/cfnsync deploy
+      - run: npx @tarahi/cfnsync deploy --auto-approve
         working-directory: templates
 ```
 
+- `deploy` は既定で承認を求めるため、CI では `--auto-approve` が**必須**である(FR-12-3)。指定がない非 TTY 実行は AWS へ接続する前に exit 1 で停止する。
 - ステートは `s3` バックエンド(§4.5)に保存されるため、ワークフローは git への書き戻しを行わない。排他はツールのステートロックが保証し、`concurrency` グループは待ち時間の体験改善のための推奨構成に留まる(設定漏れでも安全性は損なわれない)。
 - **運用規約**(README に記載): cfnsync 管理対象のスタックに手動・他ツールで変更セットを作成しない。存在する場合、cfnsync は暗黙削除を避けるため fail-closed で停止する(§7)。
+- **承認待ちとロック**(README に記載): 人間の承認を待つ間、ステートロックは保持され続ける(§5.3)。`s3` バックエンドを共有する他の実行はその間ロック取得に失敗する。長時間の承認待ちを避け、CI では常に `--auto-approve` を用いること。
 - **復旧手順**(README に記載): デプロイ途中失敗 → そのまま再実行(成功済みスタックは変更なしとしてスキップ。CREATE / DELETE が成功しステート保存のみ失敗した場合も、実スタックとの突合(§7)で自動収束する)。ロック残存 → 旧実行(CI ジョブ)の終了を確認した上で `cfnsync force-unlock <実行ID>` を実行し、再実行。ステート破損 → S3 バージョニングから直前版を復元して再実行。
 
 ## 12. 要件トレーサビリティ
@@ -430,7 +544,7 @@ jobs:
 | FR-2 変更セット作成 | usecase/executor, §7 |
 | FR-3 差分表示 | report, §5.2 |
 | FR-4 デプロイ実行 | usecase/executor, §5.3, §9 |
-| FR-5 一括実行 | usecase(deploy = plan+apply), §5.3 |
+| FR-5 一括実行・承認 | usecase(deploy = plan+approve+apply), §5.3, §5.3.1〜§5.3.4, report(ApprovalRequest) |
 | FR-6 削除 | §8.3, core/graph(旧グラフ統合) |
 | FR-7 認証・誤接続防止 | usecase/guard, §8.1 |
 | FR-8 依存マッピング | core/template, core/graph, §6 |
