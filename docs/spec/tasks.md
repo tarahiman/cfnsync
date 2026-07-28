@@ -18,9 +18,9 @@ T-22(deploy 承認フロー)は既存 ID の**意味を変える**変更を含�
 | FR-5-2 | 既定で**非対話**完走。確認プロンプトはオプトイン | FR-5-2a / FR-5-2b | **意味が反転**。既定が「1 回承認」になり、非対話は `--auto-approve` のオプトインになった |
 | FR-5-3 | `--dry-run` は差分表示までで停止 | FR-5-3 | 変更なし。ただし変更セットライフサイクルの規定を FR-5-9b として新設 |
 | FR-5-4 | 進捗をスタックキー付きで stderr へ逐次出力 | FR-5-4 | **追記**(承認を挟んでもスタックごとの段階の相対順序を変えない、という条項を追加) |
-| (なし) | — | FR-5-5a〜c / FR-5-6a〜g / FR-5-7a〜d / FR-5-8a〜b / FR-5-9a〜b / FR-5-10a〜c / FR-5-11 / FR-5-12a〜c / FR-5-13 / FR-5-14a〜b / FR-5-15a〜b / FR-5-16 / FR-5-17a〜d | 新設 |
+| (なし) | — | FR-5-5a / FR-5-5b / FR-5-5b1〜b6 / FR-5-5c / FR-5-6a〜g / FR-5-7a〜d / FR-5-8a〜b / FR-5-9a〜b / FR-5-10a〜c / FR-5-11 / FR-5-12a〜c / FR-5-13 / FR-5-14a〜b / FR-5-15a〜b / FR-5-16 / FR-5-17a1〜a3 / FR-5-17b / FR-5-17c1〜c2 / FR-5-17d / FR-5-17e / FR-5-18a〜d | 新設 |
 | (なし) | — | FR-3-7a / FR-3-7b | 新設(承認要約の色・出力先) |
-| (なし) | — | FR-11-10a / FR-11-10b | 新設((リージョン, スタック名)の一意性) |
+| (なし) | — | FR-11-10a / FR-11-10b / FR-11-10c | 新設((リージョン, スタック名)の一意性と、正常系を拒否しない保証) |
 | FR-12-3 | すべてのコマンドは TTY なしで動作する | FR-12-3a | **意味を保存**(FR-12-3a が旧 FR-12-3 と同義) |
 | (なし) | — | FR-12-3b / FR-12-3c | 新設(非 TTY の `deploy` は `--auto-approve` 必須。変更 0 件でもエラー) |
 | FR-12-6c | 拒否は専用キャンセル payload を stdout へ 1 個、exit 0 | FR-12-6c1 / FR-12-6c2 / FR-12-6c3 | **契約が置換**。payload が deploy report + `cancelled: true` になり、`exitCode` / `message` フィールドは消滅 |
@@ -386,8 +386,8 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 | §10 | 実 AWS を使う手動検証手順(E2E はスコープ外のため) |
 | FR-12-2 | 終了コード表 |
 | FR-5-2a / FR-12-3b / FR-12-3c / FR-12-8c | `deploy` の既定は「差分表示 → 承認 → 実行」。CI(非 TTY)では `--auto-approve` が必須で、変更 0 件の実行も未指定ではエラーになること。`--confirm` 廃止と承認拒否時の出力契約の置換を含む破壊的変更の一覧(リリースノートにも掲載) |
-| FR-1 / FR-5-5b(iii) | **CREATE 復旧の fail-closed 化**。NoEcho パラメータまたは `dependsOn` を持つスタックは、CREATE 成功後・ステート保存前の中断から自動復旧せず `cfnsync import` が必要になること。従来は警告のうえ再同期していたこと(README・リリースノート双方の必須記載事項) |
-| FR-5-18 | 承認拒否時にも再同期によりステートが変わりうること。`reconciliations` フィールドで何が変わったかを確認できること |
+| FR-1 / FR-5-5b4 | **CREATE 復旧の fail-closed 化**。NoEcho パラメータまたは `dependsOn` を持つスタックは、CREATE 成功後・ステート保存前の中断から自動復旧しないこと。従来は警告のうえ再同期していたこと。**正確な復旧手順**(設定を退避 → `cfnsync import --reconcile local` → `__REQUIRED__` を希望する秘密値へ戻す → `plan` / `deploy`)と、**手動の秘密値復元が必要**という既知の制限(README・リリースノート双方の必須記載事項) |
+| FR-5-18a / FR-5-18b | 承認拒否時にも再同期によりステートが変わりうること。JSON の `reconciliations` フィールドと text の専用セクションで何が変わったかを確認できること |
 | FR-5-12b | **`--on-failure` の適用範囲を計画段階から取り除く互換性破壊**。従来は `__REQUIRED__` 残存等の計画上の失敗でも独立スタックは `--on-failure continue` に従って実行された(変更前 design.md §8.2)。今後は Phase A の失敗を値にかかわらず実行全体の中断とすること(README・リリースノート双方の必須記載事項) |
 | FR-5-14a / FR-5-14b / §5.3 | 人間の承認を待つ間ステートロックを保持し続けること。承認時点の差分と実行時点の実状態の一致は保証されず、防御は FR-5-17 の実行直前再検査(変更セット再検査・stackId 再照合・`*_IN_PROGRESS` ガード・fencing)に限ること |
 | FR-5-15b / §5.3.1 | 既知の性質: **この実行で新規作成される Export** を参照するプロパティは承認時点で最終値が確定せず `{{changeSet:KNOWN_AFTER_APPLY}}` と表示されること(terraform の "known after apply" と同じ)。既存 Export を参照するプロパティは作成時に実値へ解決されること。AWS 公式文書はこの挙動を契約として保証しておらず、実測に基づく設計判断であること |
@@ -433,7 +433,7 @@ TDD 手順(red → green → refactor):
 - **`--on-failure` の適用範囲を計画段階から取り除く互換性破壊**(FR-5-12b)。従来は `__REQUIRED__` 残存等の計画上の失敗でも、依存下流を skipped としたうえで独立スタックは `--on-failure continue` に従って実行された(変更前 design.md §8.2 の「独立スタックだけを `--on-failure` に従わせる」を今回削除)。今後は Phase A の失敗を `--on-failure` の値にかかわらず実行全体の中断とする
 - リソース差分 0 件の `create` / `update` のテキスト表示が `(変更なし)` から変わる(FR-5-7b)
 - 同一リージョンで同一スタック名へ解決される設定が `ConfigError` になる(FR-11-10a)
-- **CREATE 復旧の fail-closed 化**(FR-1 / FR-5-5b(iii))。従来は NoEcho・`dependsOn` を比較から除外し、警告のうえローカルの希望値で再同期していた。今後は検証不能な入力が 1 つでも残る場合(テンプレートに NoEcho パラメータがある、または `dependsOn` が空でない)は再同期せず失敗させ、`cfnsync import` を案内する。従来の挙動には、未適用の NoEcho 値を「適用済み」として記録し変更を永久に失う経路があった
+- **CREATE 復旧の fail-closed 化**(FR-1 / FR-5-5b4)。従来は NoEcho・`dependsOn` を比較から除外し、警告のうえローカルの希望値で再同期していた。今後は検証不能な入力が 1 つでも残る場合(テンプレートに NoEcho パラメータがある、または `dependsOn` が空でない)は再同期せず失敗させる。復旧には「設定を退避 → `cfnsync import --reconcile local` → `__REQUIRED__` を希望する秘密値へ戻す → `plan` / `deploy`」という手順と手動の秘密値復元が必要になる(design §7)。従来の挙動には、未適用の NoEcho 値を「適用済み」として記録し変更を永久に失う経路があった
 
 **更新が必要な既存テスト**(新設計と矛盾するもの):
 
@@ -449,8 +449,8 @@ TDD 手順(red → green → refactor):
 | `test/cli/cli.test.ts` `FR-12(JSONキャンセル)` / `FR-12(textキャンセル)` | FR-12-6c1 / FR-12-6c2 / FR-12-6c3 の新契約へ書き換え |
 | `test/report/report.test.ts` のテキスト差分ゴールデン | FR-5-7b により 0 件 `create` / `update` の文言が変わる |
 | `test/usecase/executor.test.ts` `FR-2-11: 再検査(listChangeSets)が ExecuteChangeSet の直前に配置される` | FR-5-17e により規範順序が DescribeStacks → ListChangeSets → fencing → Execute になる。順序アサーションの更新が必要 |
-| `test/usecase/executor.test.ts` `FR-2-11(ARN再レビュー⑥): 同名でも ARN が差し替わっていれば実行を拒否する` | FR-5-17a(ARN)として維持。承認待ちを挟むシナリオを追加 |
-| `test/usecase/recovery.test.ts` `FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す` | **意味が反転**。FR-1 / FR-5-5b(iii) により再同期せず fail-closed で失敗するテストへ書き換える |
+| `test/usecase/executor.test.ts` `FR-2-11(ARN再レビュー⑥): 同名でも ARN が差し替わっていれば実行を拒否する` | FR-5-17a2 として維持。承認待ちを挟むシナリオを追加 |
+| `test/usecase/recovery.test.ts` `FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す` | **意味が反転**。FR-1 / FR-5-5b4 により再同期せず fail-closed で失敗するテストへ書き換える |
 | `test/usecase/recovery.test.ts` `FR-1-11(a): CREATE 成功+保存失敗後、全入力と管理タグが一致すれば再同期して state に記録する` | NoEcho / `dependsOn` を持たない fixture であることを明示し、検証可能な入力のみのケースとして維持 |
 | `test/usecase/recovery.test.ts` の Default 補完系 3 件 | 対象が NoEcho / `dependsOn` を持たないことを前提として維持(持つ場合は fail-closed 側へ移す) |
 
@@ -462,12 +462,12 @@ TDD 手順(red → green → refactor):
 | FR-5-3 | `--dry-run` は差分表示までで停止する | `FR-5-3: --dry-run は ExecuteChangeSet を呼ばずに差分を出して終了する` |
 | FR-5-4 | 進捗をスタックキー付きで stderr へ逐次出力し、承認を挟んでも相対順序を変えない | `FR-5-4: 2 スタックの承認フローで各スタックの phase 順序が維持され、全 diff-ready が最初の execute-start に先行する` |
 | FR-5-5a | Phase A では `ExecuteChangeSet` / `DeleteStack` を行わない | `FR-5-5a: approve 呼び出し時点で全対象の CreateChangeSet が完了し ExecuteChangeSet・DeleteStack が 0 回` |
-| FR-5-5b(i) | 空変更セットの再同期を Phase A で保存する | `FR-5-5b(i): 空変更セットの変更なし確認が Phase A で state へ再同期される` |
-| FR-5-5b(ii) | 削除済みスタックの不在確認を Phase A で保存する | `FR-5-5b(ii): 既に存在しない削除対象の state エントリ除去が Phase A で保存される` |
-| FR-5-5b(iii) | CREATE 復旧は検証不能な入力が無い場合にだけ Phase A で保存する | `FR-5-5b(iii): NoEcho なし・dependsOn 空の CREATE 復旧は Phase A で再同期される` |
-| FR-5-5b(iii) fail-closed | NoEcho または dependsOn がある CREATE 復旧は保存せず失敗させる | `FR-5-5b(iii) fail-closed: NoEcho を持つスタックの CREATE 復旧は state を保存せず import を案内して失敗する` / `FR-5-5b(iii) fail-closed: dependsOn を持つスタックの CREATE 復旧も同様に失敗する` |
-| FR-5-5b(fencing) | 再同期の保存も fencing 検証を経る | `FR-5-5b: 再同期の保存直前に fencing 検証が呼ばれ、所有権喪失時は保存されない` |
-| FR-5-5b(CAS) | 再同期の保存も CAS を使う | `FR-5-5b: 再同期の保存が CAS で行われ、世代競合時は保存されず StateConflictError になる` |
+| FR-5-5b1 | 空変更セットの再同期を Phase A で保存する | `FR-5-5b1: 空変更セットの変更なし確認が Phase A で state へ再同期される` |
+| FR-5-5b2 | 削除済みスタックの不在確認を Phase A で保存する | `FR-5-5b2: 既に存在しない削除対象の state エントリ除去が Phase A で保存される` |
+| FR-5-5b3 | CREATE 復旧は検証不能な入力が無い場合にだけ Phase A で保存する | `FR-5-5b3: NoEcho なし・dependsOn 空の CREATE 復旧は Phase A で再同期される` |
+| FR-5-5b4 | NoEcho または dependsOn がある CREATE 復旧は保存せず失敗させる | `FR-5-5b4: NoEcho を持つスタックの CREATE 復旧は state を保存せず import を案内して失敗する` / `FR-5-5b4: dependsOn を持つスタックの CREATE 復旧も同様に失敗する` |
+| FR-5-5b5 | 再同期の保存も fencing 検証を経る | `FR-5-5b5: 再同期の保存直前に fencing 検証が呼ばれ、所有権喪失時は保存されない` |
+| FR-5-5b6 | 再同期の保存も CAS を使う | `FR-5-5b6: 再同期の保存が CAS で行われ、世代競合時は保存されず StateConflictError になる` |
 | FR-5-5c | 実行の成功記録は Phase B でのみ保存する | `FR-5-5c: ExecuteChangeSet の成功記録は approve 前に保存されず承認後に保存される` |
 | FR-5-6a | 承認要求に接続先を含める | `FR-5-6a: ApprovalRequest.connection に accountId と regions が入る` |
 | FR-5-6b | 承認要求に操作種別を含める | `FR-5-6b: ApprovalRequest.diffs の各要素が create/update/delete の operation を持つ` |
@@ -496,39 +496,40 @@ TDD 手順(red → green → refactor):
 | FR-5-14b | 承認時点の差分と実行時点の実状態の一致を保証しない | (仕様明記 + FR-5-17 の防御で担保。FR-5-17a〜d の各テストが実体) |
 | FR-5-15a | 依存先がこの実行で新規作成される場合も Phase A で変更セットを作成する | `FR-5-15a: この実行で create される依存先の Export を参照する対象も Phase A で CreateChangeSet され、承認は 1 回で済む` |
 | FR-5-15b | `{{changeSet:KNOWN_AFTER_APPLY}}` はそのまま提示し独自解決しない | `FR-5-15b: 保留値 {{changeSet:KNOWN_AFTER_APPLY}} を承認要約と差分出力へそのまま出し、cfnsync 側で解決・補完しない` |
-| FR-5-18 | 再同期の発生を deploy report へ機械可読に開示する | `FR-5-18: 再同期が発生した実行の JSON に stackKey・種別・stateUpdated を持つ reconciliations が現れる` / `FR-5-18: 承認拒否時も発生した再同期が JSON から復元できる` |
-| FR-5-18(非発生) | 再同期が 0 件の実行には開示フィールドを含めない | `FR-5-18: 再同期が発生しない実行の JSON に reconciliations フィールドが存在しない` |
-| FR-5-18(境界) | 初回 accountId 記録は開示の対象外 | `FR-5-18: 初回 accountId binding は reconciliations に現れない` |
+| FR-5-18a | 再同期の発生を JSON へ機械可読に開示する | `FR-5-18a: 再同期が発生した実行の JSON に stackKey・種別・stateUpdated を持つ reconciliations が現れる` / `FR-5-18a: 承認拒否時も発生した再同期が JSON から復元できる` |
+| FR-5-18b | 再同期の発生を text report にも列挙する | `FR-5-18b: 通常終了で再同期が発生した実行の text 出力に stackKey・種別・state 更新有無が列挙される` / `FR-5-18b: 承認拒否時の text 出力にも再同期が列挙される` |
+| FR-5-18c | 再同期が 0 件の実行には JSON・text とも開示を追加しない | `FR-5-18c: 再同期が発生しない実行の JSON に reconciliations フィールドが存在しない` / `FR-5-18c: 再同期が発生しない実行の text 出力は従来と一致する` |
+| FR-5-18d | 初回 accountId 記録は開示の対象外 | `FR-5-18d: 初回 accountId binding は reconciliations にも text 開示にも現れない` |
 | FR-5-16 | 2 フェーズ化で JSON の既存フィールドの構造・順序を変えない | `FR-5-16: --auto-approve の deploy JSON が 2 フェーズ化前のベースラインと connection/diffs/events/result で一致する` |
-| FR-5-17a(name) | 実行直前に自変更セットの name 一致を再検査する | `FR-5-17a: 承認後に自変更セットの name が差し替わっていたら ExecuteChangeSet を呼ばず停止する` |
-| FR-5-17a(ARN) | 実行直前に自変更セットの ARN 一致を再検査する | `FR-5-17a: 承認後に同名で ARN が差し替わっていたら ExecuteChangeSet を呼ばず停止する` |
-| FR-5-17a(他主体) | 実行直前に他主体の変更セットが存在しないことを再検査する | `FR-5-17a: 承認後・実行前に他主体の変更セットが現れたら ExecuteChangeSet を呼ばず停止する` |
+| FR-5-17a1 | 実行直前に自変更セットの name 一致を再検査する | `FR-5-17a1: 承認後に自変更セットの name が差し替わっていたら ExecuteChangeSet を呼ばず停止する` |
+| FR-5-17a2 | 実行直前に自変更セットの ARN 一致を再検査する | `FR-5-17a2: 承認後に同名で ARN が差し替わっていたら ExecuteChangeSet を呼ばず停止する` |
+| FR-5-17a3 | 実行直前に他主体の変更セットが存在しないことを再検査する | `FR-5-17a3: 承認後・実行前に他主体の変更セットが現れたら ExecuteChangeSet を呼ばず停止する` |
 | FR-5-17b | 実行直前に `stackId` を state と再照合する | `FR-5-17b: 承認待ち中にスタックが差し替えられ stackId が変わったら UPDATE を実行せず停止する` |
-| FR-5-17c(UPDATE) | UPDATE は allowlist の実行可能終端状態であることを必須とする | `FR-5-17c: 承認待ち中に対象スタックが UPDATE_IN_PROGRESS になったら実行せず停止する` / `FR-5-17c: 承認待ち中に ROLLBACK_COMPLETE へ遷移したら allowlist 外として実行せず停止する` |
-| FR-5-17c(CREATE) | CREATE は自変更セットに対応する `REVIEW_IN_PROGRESS` の殻であることを必須とする | `FR-5-17c: 承認待ち中に CREATE の殻が別スタックへ差し替えられたら実行せず停止する` |
+| FR-5-17c1 | UPDATE は allowlist の実行可能終端状態であることを必須とする | `FR-5-17c1: 承認待ち中に対象スタックが UPDATE_IN_PROGRESS になったら実行せず停止する` / `FR-5-17c1: 承認待ち中に ROLLBACK_COMPLETE へ遷移したら allowlist 外として実行せず停止する` |
+| FR-5-17c2 | CREATE は自変更セットに対応する `REVIEW_IN_PROGRESS` の殻であることを必須とする | `FR-5-17c2: 承認待ち中に CREATE の殻が別スタックへ差し替えられたら実行せず停止する` |
 | FR-5-17e | 再検査は DescribeStacks → ListChangeSets → fencing → ExecuteChangeSet の順で行う | `FR-5-17e: 実行直前の呼び出し順序が DescribeStacks → ListChangeSets → verifyLock → ExecuteChangeSet に固定される` |
 | FR-5-17d | 実行直前にロック所有権を再検証する | `FR-5-17d: 承認待ち中に force-unlock され所有権を失ったら以降の副作用を行わず中断する` |
 | FR-3-7a | 承認要約は差分本体と同じ色付け・無色化の規則に従う | `FR-3-7a: 承認要約は既定で ANSI 色付き、--no-color / NO_COLOR で無色化される` |
 | FR-3-7b | `--output json` でも承認要約は stderr へ出し stdout の JSON を変えない | `FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
 | FR-11-10a | 同一 (リージョン, スタック名) へ解決される設定を AWS アクセス前に `ConfigError` で拒否する | `FR-11-10a: 同一リージョンで同じ stackName に解決される 2 スタックは対象キーを含む ConfigError で拒否される(AWS 呼び出し 0 回)` |
-| FR-11-10b(delete+create) | delete と create が同一物理スタックを指す場合に拒否する | `FR-11-10b: テンプレートパス変更で delete(旧 state)+create(新 config)が同一 (region, stackName) を指す場合、AWS 副作用前に fail-closed で拒否しリネーム移行を案内する` |
-| FR-11-10b(正常系: 異名) | 異なるスタック名へのリネームは拒否しない | `FR-11-10b(正常系): 異名リネーム(delete 旧名 + create 新名)は拒否されない` |
-| FR-11-10b(正常系: 多region) | 同一スタック名を複数リージョンへ配る構成は拒否しない | `FR-11-10b(正常系): 同一 stackName を 3 リージョンへ配る構成は拒否されない` |
-| FR-11-10b(正常系: override) | `--region` 上書き後の再検証で正常系を誤判定しない | `FR-11-10b(正常系): --region による既定リージョン上書き後も正常な構成は拒否されない` |
-| FR-11-10b(正常系: prefix) | `stackNamePrefix` 由来の導出でも正常系を誤判定しない | `FR-11-10b(正常系): stackNamePrefix から導出した異なるスタック名は拒否されない` |
+| FR-11-10b | delete と create が同一物理スタックを指す場合に拒否する | `FR-11-10b: テンプレートパス変更で delete(旧 state)+create(新 config)が同一 (region, stackName) を指す場合、AWS 副作用前に fail-closed で拒否しリネーム移行を案内する` |
+| FR-11-10c | 異なるスタック名へのリネームは拒否しない | `FR-11-10c: 異名リネーム(delete 旧名 + create 新名)は拒否されない` |
+| FR-11-10c | 同一スタック名を複数リージョンへ配る構成は拒否しない | `FR-11-10c: 同一 stackName を 3 リージョンへ配る構成は拒否されない` |
+| FR-11-10c | `--region` 上書き後の再検証で正常系を誤判定しない | `FR-11-10c: --region による既定リージョン上書き後も正常な構成は拒否されない` |
+| FR-11-10c | `stackNamePrefix` 由来の導出でも正常系を誤判定しない | `FR-11-10c: stackNamePrefix から導出した異なるスタック名は拒否されない` |
 | FR-12-3a | すべてのコマンドが TTY なしで動作する | `FR-12-3a: 非 TTY で status / plan / graph / import / force-unlock / deploy --auto-approve が完走する` |
 | FR-12-3b | 非 TTY + `--auto-approve` なしの deploy は AWS 前に `CliUsageError` で exit 1 | `FR-12-3b: 非 TTY の deploy(--auto-approve なし)は AWS クライアントを 1 度も生成せず CliUsageError で exit 1` / `FR-12-3b: 非 TTY でも deploy --dry-run と plan はエラーにならない` |
 | FR-12-3c | 変更 0 件の非 TTY 実行も同様にエラーになる | `FR-12-3c: 変更が 1 件もない非 TTY の deploy も --auto-approve なしでは CliUsageError で exit 1` |
 | FR-12-6c1 | JSON 選択の拒否は `cancelled: true` 付き deploy report を stdout へ 1 個、exit 0 | `FR-12-6c1: 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0(diffs と skipped を保持)` |
 | FR-12-6c2 | text 選択の拒否は stderr にキャンセル文 + stdout に deploy report、exit 0 | `FR-12-6c2: text 選択では stderr に Deployment cancelled. を出し stdout に report を出して exit 0` |
 | FR-12-6c3 | 旧専用 payload の `exitCode` / `message` は拒否 result に存在しない | `FR-12-6c3: 拒否実行の JSON に exitCode と message フィールドが存在しない` |
-| FR-5-16(cancelled) | 拒否していない実行の JSON に `cancelled` を含めない | `FR-5-16: 成功した deploy の JSON に cancelled フィールドが存在しない(既存 schema 互換)` |
+| FR-5-16 | 拒否していない実行の JSON に `cancelled` を含めない | `FR-5-16: 成功した deploy の JSON に cancelled フィールドが存在しない(既存 schema 互換)` |
 | FR-12-8a | `deploy --help` に `--auto-approve`(`-y`)を含める | `FR-12-8a: deploy の help に --auto-approve と -y が表示される` |
 | FR-12-8b | `--auto-approve` を他サブコマンドへ提供しない | `FR-12-8b: plan を含む他サブコマンドの help に --auto-approve がない` |
 | FR-12-8c | `--confirm` は廃止し `CliUsageError` にする | `FR-12-8c: --confirm は CliUsageError で exit 1` |
-| FR-12-4(穴埋め) | `-v` / `--version` が `package.json` の version を表示し exit 0(T-19 で未検証だった短縮形と値の一致) | `FR-12-4: -v と --version が package.json の version を表示して exit 0` |
+| FR-12-4 | `-v` / `--version` が `package.json` の version を表示し exit 0(T-19 で未検証だった短縮形と値の一致) | `FR-12-4: -v と --version が package.json の version を表示して exit 0` |
 | §5.3.1(殻) | 承認拒否で残る `REVIEW_IN_PROGRESS` の殻へ `DeleteStack` を呼ばない | `§5.3.1: CREATE 対象の承認拒否後も DeleteStack が呼ばれず、次回実行の prepareStack が殻を回収して収束する` |
-| §5.3.3(収束) | 承認拒否を挟んでも再同期による自動収束が完了する | `§5.3.3: AWS 操作成功・state 保存失敗の状態から、承認拒否を挟む実行でも再同期が保存され次回実行が unchanged になる` |
+| FR-5-5b | 承認拒否によって再同期を取り消さず、自動収束を完了させる | `FR-5-5b: AWS 操作成功・state 保存失敗の状態から、承認拒否を挟む実行でも再同期が保存され次回実行が unchanged になる` |
 
 ## 10. テスト対象外(ドキュメント・構造で満たす)受け入れ基準の一覧
 

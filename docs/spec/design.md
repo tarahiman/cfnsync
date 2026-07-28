@@ -232,17 +232,17 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
    - create/update: スタック状態ガード(§7)→ 残存変更セット回収 → 変更セット作成 → `DescribeChangeSet` で差分確定。**変更セットは削除せず保持する**(FR-5-5a)。`--dry-run` の場合だけは保持せず、`plan` と同じく describe 直後に自身の変更セットを削除する(FR-5-9b、§5.2)
    - 変更セット作成に失敗した場合は §5.3.1 に従い fail-closed に中断する
    - リソース差分 0 件だが成功した変更セット(Outputs / Export のみの変更): **「変更あり」として実行対象に含める**(§5.3.1、FR-5-7a)
-   - 空変更セット(既知の「変更なし」定型文で `FAILED`): 変更セットを削除し、「変更なし」として差分へ積み、**再同期をここで保存する**(FR-5-5b)
-   - CREATE 復旧(§7、`added` だが同名スタックが実在し全一致): 比較の上「変更なし」として差分へ積む。**再同期をここで保存できるのは、検証不能な入力が存在しない場合(対象テンプレートに `NoEcho` パラメータがなく `dependsOn` も空)に限る**(FR-5-5b(iii))。検証不能な入力が残る場合は保存せず、当該対象を Phase A の失敗として扱い `cfnsync import` を案内する(§7 / FR-1)
-   - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合は**ステートからの除去をここで保存する**(FR-5-5b)
-   - Phase A が行う AWS の変更操作は「自ステートの残存変更セットの回収」と「変更セットの作成・削除」だけであり、`ExecuteChangeSet` / `DeleteStack` は行わない(FR-5-5a)。ステート保存は**既成事実の再同期に限り**許され(FR-5-5b)、実行の成功記録は行わない(FR-5-5c)
+   - 空変更セット(既知の「変更なし」定型文で `FAILED`): 変更セットを削除し、「変更なし」として差分へ積み、**再同期をここで保存する**(FR-5-5b1)
+   - CREATE 復旧(§7、`added` だが同名スタックが実在し全一致): 比較の上「変更なし」として差分へ積む。**再同期をここで保存できるのは、検証不能な入力が存在しない場合(対象テンプレートに `NoEcho` パラメータがなく `dependsOn` も空)に限る**(FR-5-5b3)。検証不能な入力が残る場合は保存せず、当該対象を Phase A の失敗として扱い `cfnsync import` を案内する(§7 / FR-1)
+   - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合は**ステートからの除去をここで保存する**(FR-5-5b2)
+   - Phase A が行う AWS の変更操作は「自ステートの残存変更セットの回収」と「変更セットの作成・削除」だけであり、`ExecuteChangeSet` / `DeleteStack` は行わない(FR-5-5a)。ステート保存は**既成事実の再同期に限り**許され(FR-5-5b1〜b3)、実行の成功記録は行わない(FR-5-5c)
    - Phase A で 1 件でも失敗した場合、承認を求めず §5.3.3 のクリーンアップを行って exit 1(FR-5-12a / FR-5-12b / FR-5-12c。`--on-failure continue` でも同じ)
 4. **承認**(FR-5-2a): Phase B に `ExecuteChangeSet` または `DeleteStack` が 1 件以上予定されている場合にだけ、`DeployDeps.approve`(§5.3.2)を**実行全体で 1 回だけ**呼ぶ。`--auto-approve` 指定時(FR-5-2b)、`--dry-run` 時(FR-5-9a)、および実行予定が 0 件の場合(FR-5-8a)は呼ばない
    - 拒否された場合は §5.3.3
 5. **Phase B(承認後)**: 実行計画の順(FR-9 の依存順)に:
    - **実行直前の再検査(FR-5-17)**: 承認待ちは任意長の競合窓であるため、Phase A の検査結果を再利用せず、各対象の実行直前に**次の順序で**再検査する(FR-5-17e。順序は規範であり、状態確認を先に置いて実行不能な状態を早期排除し、fencing を副作用の直前に置く):
-     1. `DescribeStacks`: スタックの存在と `stackId`(ARN)が state の記録に一致すること(§4.3、FR-5-17b)。加えて**実行可能な状態**であること(FR-5-17c) — `UPDATE` は allowlist(`CREATE_COMPLETE` / `UPDATE_COMPLETE` / `UPDATE_ROLLBACK_COMPLETE` / `IMPORT_COMPLETE` / `IMPORT_ROLLBACK_COMPLETE`)のいずれか、`CREATE` は自変更セットに対応する `REVIEW_IN_PROGRESS` の殻またはスタック未作成。`*_IN_PROGRESS` の否定だけでは不十分で、承認待ちの間に `ROLLBACK_COMPLETE` 等の実行不能な終端状態へ遷移した場合を取りこぼす
-     2. `ListChangeSets`(全ページ): 自変更セットの name と ARN が作成時の値に完全一致し、かつそれが唯一の未実行変更セットであること(§7、FR-5-17a)
+     1. `DescribeStacks`: スタックの存在と `stackId`(ARN)が state の記録に一致すること(§4.3、FR-5-17b)。加えて**実行可能な状態**であること(FR-5-17c1 / FR-5-17c2) — `UPDATE` は allowlist(`CREATE_COMPLETE` / `UPDATE_COMPLETE` / `UPDATE_ROLLBACK_COMPLETE` / `IMPORT_COMPLETE` / `IMPORT_ROLLBACK_COMPLETE`)のいずれか、`CREATE` は自変更セットに対応する `REVIEW_IN_PROGRESS` の殻またはスタック未作成。`*_IN_PROGRESS` の否定だけでは不十分で、承認待ちの間に `ROLLBACK_COMPLETE` 等の実行不能な終端状態へ遷移した場合を取りこぼす
+     2. `ListChangeSets`(全ページ): 自変更セットの name と ARN が作成時の値に完全一致し、かつそれが唯一の未実行変更セットであること(§7、FR-5-17a1 / FR-5-17a2 / FR-5-17a3)
      3. ロック所有権の検証(fencing、§4.5、FR-5-17d)
      4. `ExecuteChangeSet`
 
@@ -412,6 +412,8 @@ export interface DeployOptions {
 5. デプロイ済みテンプレートとローカルファイルを比較:
    - 一致 → ステートに `templateHash` / `inputsHash` / 依存辺を記録
    - 不一致 → 既定はエラー。`--reconcile remote`(デプロイ済み内容でローカルを上書き)or `--reconcile local`(ローカル維持。ステートにはデプロイ済み側のハッシュを記録し、次回 plan で差分が顕在化)
+
+**NoEcho 希望値の喪失に注意**: 手順 4 の書き戻しは、設定ファイルに既にあった NoEcho パラメータの値を**無条件に `__REQUIRED__` へ置き換える**(AWS はマスク値しか返さないため、実値を保持する手段がない)。したがって CREATE 復旧の fail-closed(§7)からの回復に import を使う場合は、**事前に `cfnsync.yaml` を退避し、import 後に `__REQUIRED__` を希望する秘密値へ戻す**必要がある。この手順を踏まないと、次の `deploy` は `__REQUIRED__` 残存の検査(§8.2)で停止する。正確な手順は §7 に規範として記載する。
    - ローカルファイルなし → `--write-template` でデプロイ済みテンプレートを書き出し
 6. 対応するスタックが存在しないテンプレートはそのまま(次回 `added` 扱い)
 
@@ -460,7 +462,16 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - **実スタックとの突合による復旧分岐**(FR-1。AWS 操作成功後・ステート保存前の中断からの自動収束):
   - `added` 分類だがスタックが既に存在する場合(過去実行の CREATE 成功後にステート保存だけが失敗したケース、または命名衝突): 実スタックから検証可能な入力の**すべて**を希望する内容と比較する — `GetTemplate`(`Original` ステージ)で取得したテンプレートのパース後同値比較、`DescribeStacks` で取得した実効パラメータ・タグ・Capabilities の完全一致。希望側の実効 parameters は、希望 template の scalar な `Parameters.<name>.Default` を `String(value)` で文字列化した値を基底とし、config の共通＋region override を解決済みの明示値で上書きする。Default がない未指定値は足さず、NoEcho は Default／明示値のどちらでも比較外とする。object・array・intrinsic の Default は推測も黙示無視もせず比較不能として再同期を拒否する(fail-closed)。Default 補完は復旧比較だけに用い、config object や `inputsHash` の parameter 部分は変更しない。一致条件には管理タグ(§8.4)による由来確認を含み、IF 管理タグが自ステート ID と一致しない(欠如を含む)場合、他がすべて一致しても再同期せずエラーとする(fail-closed。NoEcho 実値のように検証不能な入力があっても由来を確認できる)。**検証不能な入力が 1 つでも残る場合は再同期しない**(fail-closed): 対象テンプレートに `NoEcho` パラメータが宣言されている、または当該スタックに明示依存 `dependsOn` が 1 件以上ある場合、`GetTemplate` / `DescribeStacks` からは同値性を確認できない入力が残る。この場合は他のすべてが一致していてもステートを保存せず、当該対象を失敗として扱い `cfnsync import` を案内する。管理タグは「自ステートの実行が作成した」ことしか示さず、**どの入力値で作成されたか**は証明しないためである。したがって再同期してよいのは、検証可能な入力のすべてが一致し、**かつ NoEcho パラメータも `dependsOn` も存在しない**場合に限る。すべて満たした場合のみデプロイ成功として fencing 検証の上でステートに記録(再同期)して次へ進む。一つでも不一致がある場合は命名衝突または管理外スタックの可能性としてエラーとし、インポート(§5.4)を案内する
 
-    **この fail-closed 化は破壊的変更である**(従来は検証不能な入力を除外し、警告のうえローカルの希望値を `inputsHash` として記録して再同期していた)。破綻シナリオ: ①CREATE 成功 → ステート保存前に中断、②利用者が NoEcho 値を S1 から S2 へ変更、③再実行で管理タグ・テンプレート・可視パラメータ・タグ・Capabilities がすべて一致するため復旧経路に入り、**S2 を「適用済み」としてステートに保存**、④しかし `ExecuteChangeSet` は行われていないので AWS 上は S1 のまま、⑤次回検知は `unchanged` となり**変更が永久に失われる**。CLAUDE.md の安全不変条件「検証不能な状況は警告して続行せず中断する」に従い、警告付き続行をやめる。影響を受けるのは「NoEcho パラメータまたは `dependsOn` を持つスタックで、CREATE 成功後・ステート保存前に中断した」という限定的な復旧経路のみであり、その場合も `cfnsync import` で回復できる
+    **この fail-closed 化は破壊的変更である**(従来は検証不能な入力を除外し、警告のうえローカルの希望値を `inputsHash` として記録して再同期していた)。破綻シナリオ: ①CREATE 成功 → ステート保存前に中断、②利用者が NoEcho 値を S1 から S2 へ変更、③再実行で管理タグ・テンプレート・可視パラメータ・タグ・Capabilities がすべて一致するため復旧経路に入り、**S2 を「適用済み」としてステートに保存**、④しかし `ExecuteChangeSet` は行われていないので AWS 上は S1 のまま、⑤次回検知は `unchanged` となり**変更が永久に失われる**。CLAUDE.md の安全不変条件「検証不能な状況は警告して続行せず中断する」に従い、警告付き続行をやめる。影響を受けるのは「NoEcho パラメータまたは `dependsOn` を持つスタックで、CREATE 成功後・ステート保存前に中断した」という限定的な復旧経路のみである。
+
+    **正確な復旧手順**(規範): 単に `cfnsync import` を実行するだけでは回復しない — §5.4 手順 4 の import は既存の NoEcho 設定値を無条件に `__REQUIRED__` へ書き換えるため、利用者は希望していた秘密値を失い、次の `deploy` も `__REQUIRED__` 残存の検査(§8.2)で停止する。次の順序で案内すること:
+
+    1. `cfnsync.yaml` を退避する(NoEcho パラメータの希望値が失われるため)
+    2. `cfnsync import --reconcile local` を実行する(ローカルのテンプレートを維持し、ステートにはデプロイ済み側のハッシュを記録する)
+    3. 書き戻された `__REQUIRED__` を、退避した希望する秘密値へ戻す
+    4. `cfnsync plan` で差分を確認し、`cfnsync deploy` を実行する
+
+    **既知の制限**: この復旧には**手動の秘密値復元**が必要である。import が NoEcho の実値を取得できない(AWS がマスク値しか返さない)ことに起因する構造的な制約であり、自動化しない。`import` に「NoEcho の希望値を保持する」専用契約を設ける案は、既存の import セマンティクスを変える大きな変更のため採用しない
   - `deleted` 分類だがスタックが存在しない場合: 削除成功とみなし、ステートからエントリを除去して CAS 保存する
 
 ## 8. 安全装置
@@ -536,9 +547,9 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 }
 ```
 
-`renderJson` は許可フィールドだけを明示的に再構築する多層防御であるため、`cancelled` および `reconciliations` を出力するには whitelist へ明示追加する必要がある。JSON schema への追加はこの 2 つだけで、`connection` / `diffs` / `events` / `result` の構造・要素順序は 2 フェーズ化によって変えない(FR-5-16)。**いずれも該当する事象が発生した実行にのみ出力する** — `cancelled: true` は承認拒否時だけ、`reconciliations` は FR-5-5b の再同期が 1 件以上発生したときだけ。したがって拒否も再同期も起きなかった実行の JSON は従来と同一であり、QA が取得したベースライン JSON がそのまま回帰判定に使える。
+`renderJson` は許可フィールドだけを明示的に再構築する多層防御であるため、`cancelled` および `reconciliations` を出力するには whitelist へ明示追加する必要がある。JSON schema への追加はこの 2 つだけで、`connection` / `diffs` / `events` / `result` の構造・要素順序は 2 フェーズ化によって変えない(FR-5-16)。**いずれも該当する事象が発生した実行にのみ出力する** — `cancelled: true` は承認拒否時だけ、`reconciliations` は FR-5-5b の再同期が 1 件以上発生したときだけ(FR-5-18c)。したがって拒否も再同期も起きなかった実行の JSON は従来と同一であり、QA が取得したベースライン JSON がそのまま回帰判定に使える。
 
-- **再同期の開示**(FR-5-18): 承認拒否時にも `Deployment cancelled.` の裏で永続ステートが変わりうるため、何が変わったかを stdout から復元できなければ監査・障害解析ができない。`DeployReport` へ次を追加する。
+- **再同期の開示**(FR-5-18a / FR-5-18b): 承認拒否時にも `Deployment cancelled.` の裏で永続ステートが変わりうるため、何が変わったかを stdout から復元できなければ監査・障害解析ができない。`DeployReport` へ次を追加する。
 
 ```ts
 export interface ReconciliationRecord {
@@ -554,12 +565,14 @@ export interface DeployReport {
   // ...既存
   /** FR-5-10: 承認拒否時のみ true。 */
   cancelled?: true;
-  /** FR-5-18: 再同期が 1 件以上発生した実行にのみ含める。 */
+  /** FR-5-18a / FR-5-18c: 再同期が 1 件以上発生した実行にのみ含める。 */
   reconciliations?: ReconciliationRecord[];
 }
 ```
 
-  ステートへの初回 `accountId` 記録(§8.1 手順 3)は**この開示の対象外**である。それは変更検知の結果に基づく再同期ではなく、ロック区間内でステートをアカウントへ束縛する既存の安全保存であり、FR-5-5b の分類とは別種のものだからである。
+  ステートへの初回 `accountId` 記録(§8.1 手順 3)は**この開示の対象外**である(FR-5-18d)。それは変更検知の結果に基づく再同期ではなく、ロック区間内でステートをアカウントへ束縛する既存の安全保存であり、FR-5-5b の分類とは別種のものだからである。
+
+  **text 出力にも同じ内容を開示する**(FR-5-18b): `renderText` は再同期が 1 件以上ある場合に専用セクションを追加し、対象のスタックキー・種別・ステート更新の有無を列挙する。既定の出力形式は text であり、JSON だけに開示すると**既定の利用者が state の変化を観測できない**実装が仕様適合になってしまうためである。承認拒否時の text 出力(stderr の `Deployment cancelled.` + stdout の report)にもこのセクションを含める。再同期が 0 件の実行ではセクション自体を追加せず、既存の text 出力を変更しない(FR-5-18c)。
 - `deploy` の承認要約(FR-5-6a〜e)とプロンプトは常に stderr へ出す(FR-5-6f)。有効な JSON 選択の有無で要約の出力先を変えず、stdout の単一 JSON document 契約(FR-12-6a / FR-12-6b)を維持する。
 - 非 TTY かつ `--auto-approve` なしの `deploy`(`--dry-run` なし)は、CLI 境界で `CliUsageError` として §9 の共通エラー schema を stdout(JSON 選択時)へ 1 個出力し exit 1 とする(FR-12-3b)。usecase へ到達しないため deploy report は生成されない。
 
@@ -577,7 +590,7 @@ export interface DeployReport {
 - **ports 実装(aws/・backend/)**: `aws-sdk-client-mock` で SDK レスポンスをスタブし、変更セットの状態遷移(空変更セット判定・所有権判定つき残存回収・IN_PROGRESS ガード)を検証する。S3 バックエンドの条件付き書き込み・ロック競合(`PreconditionFailed`)・`If-Match` 条件付きロック解除(所有者交代時は削除しない)も同様に検証する。`backend/` の local バックエンドは、原子的置換(保存途中の中断で元ファイルが無傷・`.bak` 保持)と保存直前の世代比較 CAS をテンポラリディレクトリで検証する。
 - **usecase/**: ゲートウェイをインメモリのフェイクに差し替えたシナリオテスト(「plan → deploy → 再実行で変更なし」の冪等性、途中失敗 → 再実行の継続性、完了待機中に force-unlock された場合のステート保存直前 fencing 中断、fencing 検証と副作用の間で所有権交代が起きた競合窓シナリオでも CAS 失敗と `*_IN_PROGRESS` ガードにより正本が分岐しないこと)。
 - **承認フロー(§5.3)**: `approve` に fake を注入し、呼び出し順序の記録によって次を検証する — 承認が実行全体で高々 1 回であること、`approve` 呼び出し時点で全対象の `CreateChangeSet` が完了し `ExecuteChangeSet` / `DeleteStack` が 1 度も呼ばれていないこと、拒否時に事前作成した変更セットが**すべて** `DeleteChangeSet` されること、`approve` 呼び出し中もロックが保持されていること、Phase A 失敗時に `--on-failure continue` でも `approve` が呼ばれず変更セットが後始末されること、リソース差分 0 件で成功した変更セットが実行対象に含まれること(§5.3.1)、`REVIEW_IN_PROGRESS` の殻へ `DeleteStack` が呼ばれないこと。
-  **`StateBackend.save` の呼び出し回数は「0 回」で固定しない** — FR-5-5b の再同期と初回 `accountId` binding は Phase A でも許容されるためである。検証するのは「**実行成功記録の save が 0 回**であること」と、発生した save について**種別・順序・fencing 検証の先行・CAS の使用**が正しいことである。fencing 喪失時・CAS 競合時に保存されないことも別に検証する。
+  **`StateBackend.save` の呼び出し回数は「0 回」で固定しない** — FR-5-5b1〜b3 の再同期と初回 `accountId` binding は Phase A でも許容されるためである。検証するのは「**実行成功記録の save が 0 回**であること」と、発生した save について**種別・順序・fencing 検証の先行・CAS の使用**が正しいことである。fencing 喪失時・CAS 競合時に保存されないことも別に検証する。
 - 実 AWS を使う E2E は初期リリースのスコープ外(手動検証手順を README に記載)。
 
 ディレクトリ構成:
