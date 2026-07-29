@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in cfnsync. This project follows **spec-driven TDD**: the specs in `docs/spec/` are the source of truth, and each acceptance criterion maps 1:1 to a test case.
+Thanks for your interest in cfnsync. This project follows **spec-driven TDD**. Start with the [documentation map](./docs/README.md) and [specification governance guide](./docs/spec/README.md): requirements and design are the normative sources of truth, while traceability, decisions, change history, and work tracking have separate roles.
 
 ## Development
 
@@ -14,7 +14,8 @@ pnpm vitest run <file># run a single test file
 pnpm run lint         # Biome + control-char check
 pnpm run format       # Biome format
 pnpm run format:check # verify formatting without modifying files
-pnpm run quality:check# format check, lint, tests, and build
+pnpm run check:docs   # verify Markdown links, heading anchors, and requirements IDs
+pnpm run quality:check# skill/docs checks, format, lint, tests, and build
 ```
 
 Run the test suite before and after any change — it must stay green.
@@ -37,10 +38,12 @@ The setup script and hook support macOS, Linux, and Windows through WSL.
 Native Windows shells are not currently supported.
 
 Before every commit, the hook scans the staged patch with Gitleaks. If a staged
-path can affect the application, tests, build, or CI, it also runs the format
-check, lint, full unit test suite, and build against an isolated copy of the
-Git index. Unstaged files are neither checked nor modified. Documentation-only
-changes skip those four code checks, but never skip Gitleaks.
+path can affect the application, tests, build, or CI, it also runs repository
+documentation-link validation, the format check, lint, full unit test suite,
+and build against an isolated copy of the Git index. Unstaged files are neither
+checked nor modified. Documentation-only changes skip the staged quality gate
+(CI still validates documentation links and normative numbering/IDs), but never
+skip Gitleaks.
 
 If Gitleaks is already managed by your system, you may enable only the hook with
 `pnpm run hooks:install`; the hook prefers `GITLEAKS_BIN`, then the pinned
@@ -48,7 +51,7 @@ If Gitleaks is already managed by your system, you may enable only the hook with
 
 ## Making changes
 
-- **Specs first.** Any behavior change must be reflected in [`docs/spec/requirements.md`](./docs/spec/requirements.md) and [`docs/spec/design.md`](./docs/spec/design.md) *before* implementation, with a matching test.
+- **Specs first.** Follow the [specification change flow](./docs/spec/README.md#仕様変更の流れ). Any behavior change must be reflected in [`docs/spec/requirements.md`](./docs/spec/requirements.md) and [`docs/spec/design.md`](./docs/spec/design.md) *before* implementation, then propagated to traceability, tests, user documentation, and the changelog as applicable.
 - **Do not weaken the safety invariants** documented in the design spec and the README "Safety model" section (fail-closed guards, state compare-and-swap, change-set ownership). These came out of adversarial review and are load-bearing.
 - **User-facing CLI messages are English.** Keep help text and command output in English.
 
@@ -86,7 +89,7 @@ or when that version is already on the registry (`scripts/verify-release-tag.mjs
 checks run locally:
 
 ```sh
-pnpm run quality:check                              # gate: skill refs, format, lint, tests, build
+pnpm run quality:check                              # gate: skill/docs refs, format, lint, tests, build
 GITHUB_REF_NAME=v0.2.0 node scripts/verify-release-tag.mjs
 pnpm pack --pack-destination /tmp                   # optional: inspect the tarball
 ```

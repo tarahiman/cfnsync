@@ -220,6 +220,28 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
     ]);
   });
 
+  it('FR-5-17c2: createChangeSet は応答の StackId(CREATE 型が作る殻の ARN)を持ち帰る', async () => {
+    cfnMock.on(CreateChangeSetCommand).resolves({
+      Id: 'arn:aws:cloudformation:changeSet/abc',
+      StackId: 'arn:aws:cloudformation:ap-northeast-1:1:stack/stk/review',
+    });
+    const gateway = makeGateway();
+
+    const res = await gateway.createChangeSet({
+      stackName: 'stk',
+      changeSetName: 'cs',
+      changeSetType: 'CREATE',
+      templateBody: 'x',
+      parameters: {},
+      capabilities: [],
+      tags: {},
+    });
+
+    expect(res.stackId).toBe(
+      'arn:aws:cloudformation:ap-northeast-1:1:stack/stk/review',
+    );
+  });
+
   it('FR-2: createChangeSet は CREATE 型もそのまま渡す', async () => {
     cfnMock.on(CreateChangeSetCommand).resolves({ Id: 'arn:cs/create' });
     const gateway = makeGateway();

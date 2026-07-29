@@ -186,7 +186,7 @@ function setup(
         now: FIXED_NOW,
         runId: () => `recovery${++runNumber}`,
       },
-      options,
+      options: { autoApprove: true, ...options },
     });
   return { backend, cfn, run, timeline };
 }
@@ -507,7 +507,7 @@ describe('T-18 recovery', () => {
     expect(s.cfn.callsOf('createChangeSet')).toHaveLength(0);
   });
 
-  it('FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す', async () => {
+  it('FR-5-5b4 検証不能入力: dependsOn/NoEcho があると CREATE 復旧を拒否し希望 inputsHash を保存しない', async () => {
     const config = validateConfig({
       version: 1,
       defaultRegion: REGION,
@@ -542,17 +542,22 @@ describe('T-18 recovery', () => {
 
     const result = await s.run();
 
-    expect(result.exitCode).toBe(0);
+    // 実スタックの NoEcho 実値はローカルの希望値と異なるが、AWS からは取得できない
+    // ため cfnsync には判別できない。2 フェーズ化前はこれを比較から除外して希望
+    // inputsHash を保存しており、未適用の希望値が「適用済み」として記録され、次回
+    // 検知が unchanged になって変更が失われていた(虚偽収束)。
+    expect(result.exitCode).toBe(1);
     expect(
-      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'].inputsHash,
-    ).toBe(desiredInputsHash(config, templates, 'stack.yaml'));
-    const stackDiff = result.report.diffs.find(
-      (diff) => diff.stackKey === 'stack.yaml@ap-northeast-1',
+      s.backend.stored?.state.stacks['stack.yaml@ap-northeast-1'],
+    ).toBeUndefined();
+    const failure = result.report.result?.stacks.find(
+      (stack) => stack.stackKey === 'stack.yaml@ap-northeast-1',
     );
-    expect(stackDiff?.warnings.join('\n')).toMatch(
-      /NoEcho.*Secret|Secret.*NoEcho/,
-    );
-    expect(stackDiff?.warnings.join('\n')).toMatch(/dependsOn.*external\.yaml/);
+    expect(failure?.outcome).toBe('failed');
+    expect(failure?.errorMessage).toContain('入力同一性を証明できない');
+    expect(failure?.errorMessage).toContain('--reconcile local');
+    // NFR-4: NoEcho の実値を診断へ漏らさない。
+    expect(failure?.errorMessage).not.toContain('local-desired-secret');
   });
 
   it.each([

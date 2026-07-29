@@ -198,7 +198,7 @@ export function createCliProgram(
         .choices(['stop', 'continue'])
         .default('stop'),
     )
-    .option('--confirm', 'Prompt for confirmation before running (TTY only)')
+    .option('-y, --auto-approve', 'Skip the approval prompt and apply directly')
     .option('--no-color', 'Disable ANSI colors in the diff')
     .action(
       (
@@ -206,34 +206,37 @@ export function createCliProgram(
           dryRun?: boolean;
           allowDelete?: boolean;
           onFailure: 'stop' | 'continue';
-          confirm?: boolean;
+          autoApprove?: boolean;
           color?: boolean;
         },
         command,
       ) =>
         invoke(runtime, async () => {
+          // FR-12-3b: 承認を求められない非 TTY で --auto-approve がない deploy は、
+          // AWS・ステートバックエンドへ一切アクセスする前に CLI 境界で拒否する
+          // (fail-closed)。--dry-run は何も実行しないため対象外(FR-12-3c)。
           if (
-            local.confirm === true &&
-            runtime.isTTY &&
-            !(await runtime.prompt('Proceed with the deployment?'))
+            local.dryRun !== true &&
+            local.autoApprove !== true &&
+            !runtime.isTTY
           ) {
-            const message = 'Deployment cancelled.';
+            const message =
+              'deploy は既定で差分を表示して承認を求めますが、この環境には TTY がありません。' +
+              'CI など非対話環境では --auto-approve (-y) を指定してください';
+            runtime.errorEmitted = true;
             if (runtime.jsonRequested) {
               runtime.io.stdout(
-                `${JSON.stringify(
-                  { exitCode: 0, cancelled: true, message },
-                  null,
-                  2,
-                )}\n`,
+                `${renderCliError(new Error(message), 'CliUsageError')}\n`,
               );
             } else {
-              runtime.io.stderr(`${message}\n`);
+              runtime.io.stderr(`error: ${message}\n`);
             }
-            return 0;
+            return 1;
           }
           return runDeployment(runtime, {
             ...commonOptions(command),
             ...local,
+            prompt: runtime.prompt,
           });
         })(),
     );

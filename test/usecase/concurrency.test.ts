@@ -148,7 +148,7 @@ function setup(initial?: CfnSyncState) {
         now: FIXED_NOW,
         runId: () => `run${++nextRun}`,
       },
-      options: {},
+      options: { autoApprove: true },
     });
   return { config, templates, timeline, backend, cfn, run };
 }

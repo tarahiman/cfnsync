@@ -162,9 +162,35 @@ export function validateConfig(raw: unknown): CfnSyncConfig {
   return config;
 }
 
+/**
+ * FR-11-10a: 同一 (リージョン, スタック名) へ解決される対象が 2 つ以上ある設定を、
+ * AWS・ステートバックエンドへ触れる前に拒否する。同一リージョン内でスタック名は
+ * 物理スタックの一意識別子であり、複数のスタックキーが同一の物理スタックを指すと、
+ * 変更セットを事前作成する deploy(design §5.3 Phase A)で後続対象の残存回収が
+ * 先行対象の未実行変更セットを削除してしまう(design §4.2)。
+ * 同一スタック名を別リージョンへ配置する構成は正常であり拒否しない(FR-11-10c)。
+ */
+function assertUniquePhysicalStacks(targets: ResolvedStackTarget[]): void {
+  const byPhysicalId = new Map<string, ResolvedStackTarget>();
+  for (const target of targets) {
+    const physicalId = `${target.region}\u0000${target.stackName}`;
+    const previous = byPhysicalId.get(physicalId);
+    if (previous !== undefined) {
+      throw new ConfigError(
+        `スタック名 '${target.stackName}'(${target.region})へ解決される対象が複数あります: ` +
+          `'${previous.stackKey}' と '${target.stackKey}'。同一リージョン内でスタック名は物理スタックの` +
+          `一意識別子のため、いずれかの stackName を変更してください`,
+        { stackKey: target.stackKey, region: target.region },
+      );
+    }
+    byPhysicalId.set(physicalId, target);
+  }
+}
+
 /** CLI 上書きを含む実効設定のリージョン別依存を共通検証する。 */
 export function validateEffectiveConfig(config: CfnSyncConfig): void {
   const targets = resolveTargets(config);
+  assertUniquePhysicalStacks(targets);
   const managed = new Set(targets.map((target) => target.stackKey));
   for (const target of targets) {
     for (const rawDependency of target.dependsOn) {

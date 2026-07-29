@@ -146,6 +146,7 @@ describe('pre-commit staged snapshot isolation', () => {
     expect(readFileSync(sourcePath, 'utf8')).toBe('WORKTREE_INVALID\n');
     expect(readFileSync(hookLog, 'utf8').trim().split('\n')).toEqual([
       'gitleaks:local:git --pre-commit --staged --redact --no-banner',
+      'npm:run check:docs',
       'npm:run format:check',
       'npm:run lint',
       'npm:test',
