@@ -185,6 +185,20 @@ interface PhaseAResult {
   pending?: PendingAction;
 }
 
+/**
+ * FR-5-12c / design §5.3.3: Phase A が AWS 上に作成し、まだ実行も削除もしていない自変更セット。
+ * `CreateChangeSet` が ARN を返した**直後**に登録し、削除できた時点・`ExecuteChangeSet` の
+ * 送信を試みた時点で外す。これにより「作成済みなのに回収されない変更セット」を作らない。
+ */
+interface CreatedChangeSet {
+  operation: PlannedOperation;
+  /** fencing 付き gateway。回収の副作用もこれを経由する。 */
+  cfn: CloudFormationGateway;
+  stackName: string;
+  name: string;
+  id: string;
+}
+
 /** 承認後に `ExecuteChangeSet` するために Phase A が保持した変更セット(FR-5-5a)。 */
 interface PendingChangeSetExecution {
   kind: 'execute';
@@ -196,9 +210,14 @@ interface PendingChangeSetExecution {
   cfn: CloudFormationGateway;
   executor: ExecutorContext;
   changeSetKind: 'create' | 'update';
-  changeSet: { name: string; id: string };
-  /** FR-5-17b / FR-5-17c2: 実行直前に照合する対象スタックの不変 ARN(判明している場合)。 */
-  expectedStackId?: string;
+  /** Phase A が作成した自変更セット(回収集合の同一エントリを共有する)。 */
+  changeSet: CreatedChangeSet;
+  /**
+   * FR-5-17b / FR-5-17c2: 実行直前に照合する対象スタックの不変 ARN。
+   * `update` は state の記録、`create` は `CreateChangeSet` が作った
+   * `REVIEW_IN_PROGRESS` の殻の ARN。いずれも Phase A で確定できなければ fail-closed。
+   */
+  expectedStackId: string;
 }
 
 /** 承認後に `DeleteStack` する削除対象(FR-5-5a)。 */
@@ -456,6 +475,9 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   // Phase A(承認前): 全対象の差分を確定させる。変更セットは保持する。
   // ---------------------------------------------------------------------
   const pending: PendingAction[] = [];
+  // FR-5-12c: AWS 上に作成済みで未回収の自変更セット。作成の直後に登録されるため、
+  // 作成後の待機・検証で失敗した対象(PendingAction にならない対象)もここに載る。
+  const createdChangeSets = new Set<CreatedChangeSet>();
   let hasDiff = false;
   let phaseAFailed = false;
   // §8.3 / FR-6-5: 依存メタデータ自体が unknown/incomplete の削除は provider を特定できない。
@@ -498,6 +520,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
               report,
               resultByOperation,
               reconciliations,
+              createdChangeSets,
             );
       hasDiff ||= outcome.hasDiff;
       if (outcome.pending) pending.push(outcome.pending);
@@ -532,8 +555,9 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       resultByOperation,
       '計画段階の失敗により実行全体を中断しました',
     );
-    // FR-5-12c: 事前作成した自身の変更セットをすべて削除する。
-    await cleanupPendingChangeSets(ctx, pending, extraStacks);
+    // FR-5-12c: 事前作成した自身の変更セットをすべて削除する。失敗した対象自身が
+    // 作成済みの変更セット(待機・検証で失敗したもの)も createdChangeSets に載っている。
+    await cleanupCreatedChangeSets(ctx, createdChangeSets, extraStacks);
     return finalize(1, hasDiff);
   }
 
@@ -574,9 +598,9 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           '承認が得られなかったため実行しませんでした',
         );
       }
-      const cleanupFailed = await cleanupPendingChangeSets(
+      const cleanupFailed = await cleanupCreatedChangeSets(
         ctx,
-        pending,
+        createdChangeSets,
         extraStacks,
       );
       // FR-5-11: クリーンアップ失敗のみ exit 1(残存は次回の残存回収で収束する)。
@@ -590,7 +614,6 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   let hasError = false;
   let ownershipLost = false;
   const skipped = new Set<StackKey>();
-  const unexecuted = new Set<PendingAction>(pending);
 
   const propagateFailure = (operation: PlannedOperation): void => {
     const decision = computeSkips({
@@ -621,7 +644,10 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       continue;
     }
 
-    unexecuted.delete(action);
+    // design §5.3: 回収集合からの除外は「ExecuteChangeSet を送信した(かもしれない)」
+    // 時点で executeApprovedChangeSet が行う。実行前の fail-closed 拒否
+    // (状態不一致・変更セット差し替え・他主体検出)では未実行の自変更セットが
+    // 残るため、ここでは外さない。
     try {
       const outcome =
         action.kind === 'execute'
@@ -630,6 +656,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
               action,
               report,
               resultByOperation,
+              createdChangeSets,
             )
           : await deleteApprovedStack(ctx, action, resultByOperation);
       if (outcome.failed === true) {
@@ -675,10 +702,10 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
 
   // design §5.3: 失敗・スキップで実行されなかった対象の変更セットも後始末する。
   // 所有権を失った場合は副作用を行わない(次回実行の残存回収に委ねる)。
-  if (!ownershipLost && unexecuted.size > 0) {
-    const cleanupFailed = await cleanupPendingChangeSets(
+  if (!ownershipLost && createdChangeSets.size > 0) {
+    const cleanupFailed = await cleanupCreatedChangeSets(
       ctx,
-      [...unexecuted],
+      createdChangeSets,
       extraStacks,
     );
     hasError ||= cleanupFailed;
@@ -789,26 +816,25 @@ function markUnprocessedAsSkipped(
 }
 
 /**
- * §5.3.3: 事前作成した**自身の**変更セットを、作成時に保持した ARN で削除する。
- * 他主体・別ステートの変更セットには触れない。失敗は警告として報告し(FR-5-11)、
- * 残存は次回実行の残存回収(§7)へ委ねる。戻り値は「削除に失敗したものがあるか」。
+ * §5.3.3 / FR-5-12c: 事前作成した**自身の**変更セットを、作成時に保持した ARN で削除する。
+ * 対象は「AWS 上に作成済みで、まだ実行も削除もしていない」もの全件であり、`PendingAction`
+ * にならなかった対象(作成後の待機・検証で失敗したもの)も含む。他主体・別ステートの
+ * 変更セットには触れない。失敗は警告として報告し(FR-5-11)、残存は次回実行の残存回収(§7)
+ * へ委ねる。戻り値は「削除に失敗したものがあるか」。
  */
-async function cleanupPendingChangeSets(
+async function cleanupCreatedChangeSets(
   ctx: LockedRunContext,
-  actions: PendingAction[],
+  createdChangeSets: Set<CreatedChangeSet>,
   extraStacks: StackResult[],
 ): Promise<boolean> {
   const failures: string[] = [];
-  for (const action of actions) {
-    if (action.kind !== 'execute') continue;
+  for (const changeSet of [...createdChangeSets]) {
     try {
-      await action.cfn.deleteChangeSet(
-        action.target.stackName,
-        action.changeSet.id,
-      );
+      await changeSet.cfn.deleteChangeSet(changeSet.stackName, changeSet.id);
+      createdChangeSets.delete(changeSet);
     } catch (error) {
       failures.push(
-        `${action.operation.stackKey}: ${publicErrorMessage(
+        `${changeSet.operation.stackKey}: ${publicErrorMessage(
           error,
           '変更セットの削除に失敗しました',
         )}`,
@@ -937,6 +963,7 @@ async function planCreateOrUpdate(
   report: DeployReport,
   resultByOperation: Map<PlannedOperation, StackResult>,
   reconciliations: ReconciliationRecord[],
+  createdChangeSets: Set<CreatedChangeSet>,
 ): Promise<PhaseAResult> {
   const target = operation.entry.target;
   if (!target)
@@ -1026,13 +1053,37 @@ async function planCreateOrUpdate(
     'changeset-create-start',
     '変更セットを作成しています',
   );
+  // FR-5-12c: CreateChangeSet が ARN を返した直後に回収対象へ登録する。以降の待機例外・
+  // name/ARN 不一致・非空 FAILED はいずれも「AWS 上に変更セットが実在する」状態で throw
+  // されるため、成功復帰を待って登録すると回収漏れになる。
+  let createdChangeSet: CreatedChangeSet | undefined;
   const created = await createManagedChangeSet(executor, {
     target,
     templateBody: source,
     kind: stack.kind,
+    onCreated: (ref) => {
+      createdChangeSet = {
+        operation,
+        cfn,
+        stackName: target.stackName,
+        name: ref.name,
+        id: ref.id,
+      };
+      createdChangeSets.add(createdChangeSet);
+    },
   });
+  // 作成済みの変更セットは以後 createdChangeSet 経由でのみ追跡する(登録漏れを型で防ぐ)。
+  if (createdChangeSet === undefined) {
+    throw new InvariantError(
+      `内部エラー: ${operation.stackKey} の作成済み変更セットを追跡できていません`,
+      { stackKey: operation.stackKey, region: operation.region },
+    );
+  }
+  const changeSet: CreatedChangeSet = createdChangeSet;
 
   if (created.noChanges) {
+    // 空変更セットは createManagedChangeSet が削除済み(FR-2-3)。回収対象から外す。
+    createdChangeSets.delete(changeSet);
     const diff = buildStackDiff({
       stackKey: operation.stackKey,
       region: operation.region,
@@ -1100,8 +1151,27 @@ async function planCreateOrUpdate(
   if (ctx.options.dryRun) {
     // FR-5-9b: --dry-run は plan と同一経路とし、describe 直後に自身の変更セットを削除する。
     await cfn.deleteChangeSet(target.stackName, created.id);
+    createdChangeSets.delete(changeSet);
     resultByOperation.set(operation, stackResult(target, 'skipped'));
     return { hasDiff: true };
+  }
+
+  // FR-5-17b / FR-5-17c2: 承認待ちを挟んだ実行直前に照合する対象スタックの不変 ARN を
+  // ここで確定させる。update は state の記録(requireManagedStackIdentity が実スタックとの
+  // 一致を確認済み)、create は CreateChangeSet が作った REVIEW_IN_PROGRESS の殻の ARN。
+  // 殻の ARN を確定できなければ「自身の変更セットに対応する殻」を照合できないため
+  // fail-closed に中断する(作成済みの変更セットは Phase A の後始末で回収される)。
+  const expectedStackId =
+    stack.kind === 'update'
+      ? operation.entry.stateEntry?.stackId
+      : (created.stackId ??
+        (await cfn.describeStack(target.stackName))?.stackId);
+  if (!expectedStackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の stackId(ARN) を確定できないため、` +
+        `承認後の実行直前再検査で対象スタックの同一性を照合できません。実行せず中断します`,
+      { stackKey: operation.stackKey, region: operation.region },
+    );
   }
 
   return {
@@ -1115,16 +1185,18 @@ async function planCreateOrUpdate(
       cfn,
       executor,
       changeSetKind: stack.kind,
-      changeSet: { name: created.name, id: created.id },
-      // update では requireManagedStackIdentity が stackId の存在を保証済み。
-      expectedStackId: operation.entry.stateEntry?.stackId ?? undefined,
+      changeSet,
+      expectedStackId,
     },
   };
 }
 
 /**
- * FR-5-17c: 承認待ちの間に対象スタックが実行不能な状態へ遷移していないかを、
- * `ExecuteChangeSet` の前に確認する(FR-5-17e 手順 1)。
+ * FR-5-17b / FR-5-17c: 承認待ちの間に対象スタックが差し替えられていないか、実行不能な状態へ
+ * 遷移していないかを `ExecuteChangeSet` の前に確認する(FR-5-17e 手順 1)。
+ * `stackId`(ARN)の照合と状態の確認をこの 1 回の `DescribeStacks` に集約する —
+ * FR-5-17e は手順 (2) `ListChangeSets` と (3) fencing の間に別の AWS 呼び出しを挟むことを
+ * 許さないため、UPDATE の ARN 再照合を実行直前へ二重に置くことはできない。
  * `*_IN_PROGRESS` の否定だけでは `ROLLBACK_COMPLETE` 等を通してしまうため allowlist で判定する。
  */
 async function assertExecutableStackState(
@@ -1136,11 +1208,7 @@ async function assertExecutableStackState(
 
   if (action.changeSetKind === 'update') {
     // FR-5-17b: 不変 ARN の再照合。expectedStackId 未確定のまま通過させない(fail-closed)。
-    if (
-      action.expectedStackId === undefined ||
-      !summary ||
-      summary.stackId !== action.expectedStackId
-    ) {
+    if (!summary || summary.stackId !== action.expectedStackId) {
       throw new StackStateError(
         `スタック '${target.stackName}' の stackId(ARN) が承認前と一致しません。` +
           `同名スタックが差し替えられた可能性があるため実行を中止します。cfnsync import を実行してください`,
@@ -1158,11 +1226,26 @@ async function assertExecutableStackState(
     return;
   }
 
-  // FR-5-17c2: CREATE は「未作成」または「自身の変更セットに対応する REVIEW_IN_PROGRESS の殻」。
-  if (summary !== undefined && summary.status !== 'REVIEW_IN_PROGRESS') {
+  // FR-5-17c2: CREATE は「未作成」または「**自身の変更セットに対応する** REVIEW_IN_PROGRESS の殻」。
+  // スタックが実在するなら、状態が殻であることに加えて ARN が Phase A で作成した殻と完全一致
+  // することまで確認する。同名の別スタックへ差し替えられた場合はここで fail-closed に止める。
+  if (summary === undefined) {
+    // 殻ごと消えている場合、自変更セットも道連れに消えているため、続く FR-5-17e 手順 2 の
+    // ListChangeSets(スタック不存在ならエラー、存在しても自変更セットなし)が実行を止める。
+    return;
+  }
+  if (summary.status !== 'REVIEW_IN_PROGRESS') {
     throw new StackStateError(
       `スタック '${target.stackName}' は承認後に ${summary.status} で実在しています。` +
         `CREATE 対象として期待する状態(未作成または REVIEW_IN_PROGRESS)ではないため実行を中止します`,
+      context,
+    );
+  }
+  if (summary.stackId !== action.expectedStackId) {
+    throw new StackStateError(
+      `スタック '${target.stackName}' の REVIEW_IN_PROGRESS の殻が、承認前に自身の変更セットを` +
+        `作成した殻(stackId が一致しない)ではありません。同名スタックが差し替えられた可能性が` +
+        `あるため実行を中止します。cfnsync import を実行してください`,
       context,
     );
   }
@@ -1179,17 +1262,20 @@ async function executeApprovedChangeSet(
   action: PendingChangeSetExecution,
   report: DeployReport,
   resultByOperation: Map<PlannedOperation, StackResult>,
+  createdChangeSets: Set<CreatedChangeSet>,
 ): Promise<OperationResult> {
   const { operation, target, cfn, executor, analysis } = action;
   const redact = executor.redact ?? identityRedactor;
 
-  // FR-5-17e 手順 1。
-  await assertExecutableStackState(action);
-
   // ExecuteChangeSet 前の最新イベントを境界にし、長期運用スタックの過去履歴を待機へ持ち込まない。
+  // FR-5-17e の再検査 (1)〜(4) は連続していなければならないため、その**前**に取得する。
   const eventCursor = await cfn.getStackEventCursor(target.stackName);
   let latestFailure: StackEventLine | undefined;
   let rollbackObserved = false;
+
+  // FR-5-17e 手順 1: DescribeStacks による存在・stackId・状態の確認。
+  await assertExecutableStackState(action);
+
   emitProgress(
     ctx.deps,
     operation.stackKey,
@@ -1197,22 +1283,19 @@ async function executeApprovedChangeSet(
     'execute-start',
     '変更セットを実行しています',
   );
-  // FR-5-17e 手順 2〜4。ListChangeSets 再検査 → beforeExecute → ExecuteChangeSet。
+  // FR-5-17e 手順 2〜4: ListChangeSets 再検査 → fencing(fencedGateway の verifyLock)
+  // → ExecuteChangeSet。この 3 つの間に AWS 呼び出しを挟んではならない。
   await executeWithReinspection(
     executor,
     target.stackName,
     action.changeSet.name,
     action.changeSet.id,
-    action.changeSetKind === 'update'
-      ? async () => {
-          // UPDATE の実副作用直前: 変更セット再検査後にも不変 ARN を再照合する。
-          await requireManagedStackIdentity(
-            cfn,
-            target,
-            action.entry.stateEntry,
-          );
-        }
-      : undefined,
+    () => {
+      // ここから先は ExecuteChangeSet を送信済みかどうかが確定しない(タイムアウト・
+      // 接続断でも AWS 側で受理されうる)。送信済みかもしれない変更セットを後始末で
+      // 削除しないよう、この時点で回収対象から外す(design §5.3)。
+      createdChangeSets.delete(action.changeSet);
+    },
   );
   let final: Awaited<ReturnType<CloudFormationGateway['waitForStack']>>;
   try {

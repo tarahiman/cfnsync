@@ -286,7 +286,9 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     return summaries;
   }
 
-  async createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }> {
+  async createChangeSet(
+    input: CreateChangeSetInput,
+  ): Promise<{ id: string; stackId?: string }> {
     const output = await this.withRetry('CreateChangeSet', () =>
       this.client.send(
         new CreateChangeSetCommand({
@@ -301,7 +303,10 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
         }),
       ),
     );
-    return { id: output.Id ?? '' };
+    // StackId は CREATE 型でこの呼び出しが作った REVIEW_IN_PROGRESS の殻の ARN。
+    // 承認待ちを挟んだ実行直前再検査(FR-5-17c2)で「自身の変更セットに対応する殻か」を
+    // 照合するため、そのまま持ち帰る。
+    return { id: output.Id ?? '', stackId: output.StackId };
   }
 
   async describeChangeSet(

@@ -28,7 +28,11 @@ import type {
   CloudFormationGateway,
   StackEvent,
 } from '../../src/ports/index.js';
-import { renderJson, renderText } from '../../src/report/index.js';
+import {
+  type ApprovalRequest,
+  renderJson,
+  renderText,
+} from '../../src/report/index.js';
 import { deploy } from '../../src/usecase/deploy.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import {
@@ -206,6 +210,11 @@ function setup(
       allowDelete?: boolean;
       onFailure?: 'stop' | 'continue';
     } = {},
+    // 承認待ちの競合窓(FR-5-14b / FR-5-17)を再現する場合だけ approve を注入する。
+    // 未指定なら従来どおり --auto-approve 相当で走る。
+    extraDeps: {
+      approve?: (request: ApprovalRequest) => Promise<boolean>;
+    } = {},
   ) =>
     deploy({
       config,
@@ -219,8 +228,12 @@ function setup(
         runId: () => RUN_ID,
         onEvent: (event) => emitted.push(event),
         onProgress: (event) => progress.push(event),
+        ...extraDeps,
       },
-      options: { autoApprove: true, ...options },
+      options: {
+        autoApprove: extraDeps.approve === undefined,
+        ...options,
+      },
     });
   return { timeline, emitted, progress, backend, gateways, cfnFactory, run };
 }
@@ -1984,5 +1997,282 @@ Outputs:
     expect(s.progress.some((p) => p.stackKey === `a.yaml@${REGION_2}`)).toBe(
       true,
     );
+  });
+});
+
+// ===========================================================================
+// T-22 実装レビュー(Codex)指摘の回帰固定。
+// いずれも「変更セットを事前作成して承認を挟む」2 フェーズ化に固有の欠陥であり、
+// 既存テストでは検出できていなかった。
+// ===========================================================================
+
+describe('deploy — Phase A / Phase B の変更セット回収と実行直前再検査', () => {
+  /** 実行で作成された自変更セットの ARN(名前は runId + 固定時刻から決まる)。 */
+  function createdChangeSetArn(fake: FakeCloudFormationGateway): string {
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      changeSetName: string;
+    };
+    return `arn:aws:cloudformation:changeSet/${input.changeSetName}`;
+  }
+
+  it('FR-5-12c: Phase A で失敗した対象自身が作成済みの変更セットも先行対象と一緒に回収する', async () => {
+    // createManagedChangeSet は CreateChangeSet 成功**後**にも throw しうる(待機例外 /
+    // name・ARN 不一致 / 非空 FAILED)。この 3 経路では変更セットが AWS 上に残るため、
+    // 先行対象の分だけでなく当該対象の分も削除されなければならない。
+    const injections: Array<{
+      label: string;
+      inject: (fake: FakeCloudFormationGateway) => void;
+    }> = [
+      {
+        label: '待機例外',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            if (stackName === 'C')
+              throw new AwsError(
+                'CloudFormation DescribeChangeSet に失敗しました',
+              );
+            return original(stackName, changeSetName);
+          };
+        },
+      },
+      {
+        label: 'name/ARN 不一致',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            const detail = await original(stackName, changeSetName);
+            if (stackName !== 'C') return detail;
+            return {
+              ...detail,
+              id: 'arn:aws:cloudformation:changeSet/replaced',
+            };
+          };
+        },
+      },
+      {
+        label: '非空 FAILED',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            const detail = await original(stackName, changeSetName);
+            if (stackName !== 'C') return detail;
+            return {
+              ...detail,
+              status: 'FAILED',
+              statusReason:
+                'Template format error: Unresolved resource dependencies [Foo].',
+              changes: changedDetail().changes,
+            };
+          };
+        },
+      },
+    ];
+
+    for (const { label, inject } of injections) {
+      const config = configOf({
+        'a.yaml': { stackName: 'A' },
+        'c.yaml': { stackName: 'C' },
+      });
+      const templates = templatesOf({
+        'a.yaml': TEMPLATE_A,
+        'c.yaml': TEMPLATE_C,
+      });
+      const s = setup(
+        config,
+        templates,
+        recordedState(config, templates, { modified: true }),
+      );
+      const fake = gatewayFor(s);
+      setExistingStacks(config, fake);
+      inject(fake);
+
+      const result = await s.run();
+
+      expect(result.exitCode, label).toBe(1);
+      expect(fake.callsOf('executeChangeSet'), label).toHaveLength(0);
+      // 先行対象 A だけでなく、失敗した C の作成済み変更セットも削除される(FR-5-12c)。
+      expect(
+        fake.callsOf('deleteChangeSet').map((call) => call.args[0]),
+        label,
+      ).toEqual(['A', 'C']);
+      for (const call of fake.callsOf('deleteChangeSet')) {
+        expect(call.args[1], label).toBe(createdChangeSetArn(fake));
+      }
+    }
+  });
+
+  it('FR-5-17c2: 承認待ちの間に REVIEW_IN_PROGRESS の殻が差し替えられたら実行しない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(config, templates);
+    const fake = gatewayFor(s);
+    // Phase A の CreateChangeSet(CREATE 型)が作る殻を模す。以後この ARN が「自身の
+    // 変更セットに対応する殻」の識別子になる。
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        stackId: 'arn:aws:cloudformation:stack/A/own-shell',
+        status: 'REVIEW_IN_PROGRESS',
+      }),
+    );
+
+    const result = await s.run(
+      {},
+      {
+        approve: async () => {
+          // 承認待ちの間に、同名・同状態だが別スタックの殻へ差し替えられる。
+          fake.stacks.set(
+            'A',
+            makeStackSummary({
+              stackName: 'A',
+              stackId: 'arn:aws:cloudformation:stack/A/foreign-shell',
+              status: 'REVIEW_IN_PROGRESS',
+            }),
+          );
+          return true;
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        errorMessage: expect.stringMatching(/殻|stackId|import/),
+      }),
+    );
+    // 実行しなかった自変更セットは回収する(design §5.3)。
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [createdChangeSetArn(fake)],
+    );
+    // 成功記録は保存しない(保存されたのは初回 accountId の記録だけ。FR-5-18d)。
+    expect(s.backend.stored?.state.stacks).toEqual({});
+  });
+
+  it('FR-5-17e: 実行直前再検査は DescribeStacks → ListChangeSets → fencing → ExecuteChangeSet の順に連続する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    const executeIndex = s.timeline.indexOf(`cfn:${REGION}.executeChangeSet`);
+    expect(executeIndex).toBeGreaterThanOrEqual(4);
+    // 規範順序 (1)〜(4) の間には AWS 呼び出しを一切挟まない。イベントカーソルの取得は
+    // 再検査の**前**に置く(FR-5-17e)。
+    expect(s.timeline.slice(executeIndex - 4, executeIndex + 1)).toEqual([
+      `cfn:${REGION}.getStackEventCursor`,
+      `cfn:${REGION}.describeStack`,
+      `cfn:${REGION}.listChangeSets`,
+      'backend.verifyLock',
+      `cfn:${REGION}.executeChangeSet`,
+    ]);
+  });
+
+  it('design §5.3: Phase B の状態不一致による実行前拒否でも未実行の変更セットを回収する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const describeStack = fake.describeStack.bind(fake);
+    fake.describeStack = async (stackName) => {
+      const summary = await describeStack(stackName);
+      // 変更セット作成後(= Phase B の再検査)だけ stackId が差し替わっている。
+      if (fake.callsOf('createChangeSet').length > 0 && summary) {
+        return {
+          ...summary,
+          stackId: 'arn:aws:cloudformation:replaced-before-execute',
+        };
+      }
+      return summary;
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    // ExecuteChangeSet を呼んでいないことが確定する拒否なので、回収対象に残す。
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [createdChangeSetArn(fake)],
+    );
+  });
+
+  it('design §5.3: ExecuteChangeSet の送信結果が不明な失敗では変更セットを削除しない', async () => {
+    // 実行前の fail-closed 拒否(回収する)と、送信済みかもしれない失敗(回収しない)を
+    // 区別する。後者を削除すると、AWS 側で受理された実行を横から取り消しかねない。
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const executeChangeSet = fake.executeChangeSet.bind(fake);
+    fake.executeChangeSet = async (stackName, changeSetName) => {
+      await executeChangeSet(stackName, changeSetName);
+      throw new AwsError(
+        'CloudFormation ExecuteChangeSet の応答を受け取れませんでした',
+      );
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
+    expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+  });
+
+  it('design §5.3: Phase B の実行直前再検査(他主体の変更セット検出)でも未実行の変更セットを回収する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const ownArn = () => createdChangeSetArn(fake);
+    // 1 回目 = Phase A の残存回収、2 回目 = 実行直前再検査。承認待ちの間に他主体が
+    // 変更セットを追加した状況を再検査の直前に注入する。
+    fake.onListChangeSets = (stackName, callCount) => {
+      if (callCount !== 2) return;
+      fake.changeSets.set(stackName, [
+        ...(fake.changeSets.get(stackName) ?? []),
+        makeChangeSetSummary('human-raced-change-set'),
+      ]);
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [ownArn()],
+    );
+    // 他主体の変更セットには触れない(FR-2-7)。
+    expect(
+      fake.callsOf('deleteChangeSet').map((call) => call.args[1]),
+    ).not.toContain(makeChangeSetSummary('human-raced-change-set').id);
+    expect(s.backend.saveCalls).toHaveLength(0);
   });
 });

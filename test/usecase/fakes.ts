@@ -202,7 +202,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     return [...(this.changeSets.get(stackName) ?? [])];
   }
 
-  async createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }> {
+  async createChangeSet(
+    input: CreateChangeSetInput,
+  ): Promise<{ id: string; stackId?: string }> {
     this.record('createChangeSet', input);
     const id = `arn:aws:cloudformation:changeSet/${input.changeSetName}`;
     const existing = this.changeSets.get(input.stackName) ?? [];
@@ -210,6 +212,16 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
       ...existing,
       makeChangeSetSummary(input.changeSetName, { id }),
     ]);
+    // 実 AWS の CreateChangeSet は変更セット ARN(Id)と対象スタックの StackId を返す。
+    // CREATE 型では、この呼び出し自体が REVIEW_IN_PROGRESS の殻を作りその ARN を返す。
+    // 実行直前再検査(FR-5-17c2)がこの値と DescribeStacks の stackId を照合するため、
+    // フェイクも「既存スタックがあればその ARN、なければ殻の ARN」を返す。
+    const shell =
+      this.stacks.get(input.stackName) ??
+      makeStackSummary({
+        stackName: input.stackName,
+        status: 'REVIEW_IN_PROGRESS',
+      });
     if (
       this.strictStackExistence &&
       input.changeSetType === 'CREATE' &&
@@ -217,15 +229,9 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
     ) {
       // 実 AWS は CREATE 型の CreateChangeSet でスタックを REVIEW_IN_PROGRESS として
       // 新規作成する。strictStackExistence 下ではこれ以降の存在チェックを実体に合わせる。
-      this.stacks.set(
-        input.stackName,
-        makeStackSummary({
-          stackName: input.stackName,
-          status: 'REVIEW_IN_PROGRESS',
-        }),
-      );
+      this.stacks.set(input.stackName, shell);
     }
-    return { id };
+    return { id, stackId: shell.stackId };
   }
 
   async describeChangeSet(

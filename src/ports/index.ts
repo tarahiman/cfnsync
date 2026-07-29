@@ -169,8 +169,16 @@ export interface CloudFormationGateway {
   /** `ListChangeSets` を **NextToken で全ページ走査**して返す(§7 Codex 承認条件)。 */
   listChangeSets(stackName: string): Promise<ChangeSetSummary[]>;
 
-  /** `CreateChangeSet`。生成された ChangeSetId を返す(FR-2-1,2,5,9)。 */
-  createChangeSet(input: CreateChangeSetInput): Promise<{ id: string }>;
+  /**
+   * `CreateChangeSet`。生成された ChangeSetId と、対象スタックの StackId(ARN)を返す
+   * (FR-2-1,2,5,9)。`CREATE` 型では CloudFormation がこの呼び出しで
+   * `REVIEW_IN_PROGRESS` の殻を作るため、その ARN を返すことが実行直前再検査
+   * (FR-5-17c2: 自身の変更セットに対応する殻か)の照合値になる。
+   * 応答から特定できない場合だけ `stackId` を省略してよい(呼び出し側が fail-closed に扱う)。
+   */
+  createChangeSet(
+    input: CreateChangeSetInput,
+  ): Promise<{ id: string; stackId?: string }>;
 
   /** `DescribeChangeSet` を Changes の NextToken で全ページ結合して返す(FR-2 / FR-3)。 */
   describeChangeSet(
