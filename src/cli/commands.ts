@@ -301,11 +301,48 @@ export async function runForceUnlock(
   return result.exitCode;
 }
 
-export async function defaultConfirm(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
+/**
+ * 承認プロンプトが利用者の中断で終わったか。Node の readline は Ctrl-D(空行での
+ * EOF)と Ctrl-C を `AbortError`(`code: 'ABORT_ERR'`)で reject する
+ * (node:internal/readline/interface の Ctrl キー処理)。`rl.question` へ
+ * `options.signal` を渡していないため AbortError の発生源はこの 2 経路しかなく、
+ * stdin の破損等の予期しない失敗をここで No に倒して隠すことはない。
+ */
+function isPromptAborted(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' ||
+      (error as { code?: unknown }).code === 'ABORT_ERR')
+  );
+}
+
+/**
+ * FR-5-2a / design §5.3.2: 承認プロンプト。`y` / `yes`(大文字小文字を問わない)
+ * だけを承認とし、空入力・不正入力は No(fail-closed)とする。Ctrl-D(EOF)と
+ * Ctrl-C も「承認が得られなかった」状態であり同じ No として扱う — 例外のまま
+ * 送出すると usecase の承認拒否パスを迂回し、Phase A で作成済みの変更セットが
+ * 回収されずに AWS へ残る(FR-5-10a)。
+ */
+export async function defaultConfirm(
+  question: string,
+  io: {
+    input?: NodeJS.ReadableStream;
+    output?: NodeJS.WritableStream;
+  } = {},
+): Promise<boolean> {
+  // readline は `output.isTTY` で terminal(キー単位の解釈)モードを決める。
+  // 本関数へ到達するのは stdin・stderr がともに TTY のときだけ(FR-12-3b の
+  // 非 TTY ガード)なので、実運用では常に terminal モードになる。
+  const rl = createInterface({
+    input: io.input ?? process.stdin,
+    output: io.output ?? process.stderr,
+  });
   try {
     const answer = await rl.question(`${question} [y/N] `);
     return /^(y|yes)$/i.test(answer.trim());
+  } catch (error) {
+    if (!isPromptAborted(error)) throw error;
+    return false;
   } finally {
     rl.close();
   }
