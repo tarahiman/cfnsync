@@ -1340,7 +1340,11 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
       .split('\n')
       .findIndex((line) => line.startsWith('[delete]'));
     expect(deleteLineIndex).toBeGreaterThanOrEqual(0);
-    expect(summaryText.split('\n')[deleteLineIndex + 1]).toBe('  (変更なし)');
+    // FR-5-7e: 0 件注記の対象外であることは維持しつつ、削除専用の表示を出す。
+    const deleteDiffLine = summaryText.split('\n')[deleteLineIndex + 1];
+    expect(deleteDiffLine).not.toContain('CloudFormation リソース差分 0 件');
+    expect(deleteDiffLine).not.toBe('  (変更なし)');
+    expect(deleteDiffLine).toContain('削除対象');
     expect(summaryText).not.toContain(
       '注記: CloudFormation リソース差分が 0 件の create / update',
     );
@@ -2626,7 +2630,10 @@ describe('T-22 承認フロー — 0 件注記の境界(FR-5-7c)', () => {
     expect(noteFor('create')).toContain('CloudFormation リソース差分 0 件');
     expect(noteFor('update')).toContain('CloudFormation リソース差分 0 件');
     // 削除プレビューと no-change はリソース差分 0 件が正常であり、注記の対象にしない。
-    expect(noteFor('delete')).toBe('  (変更なし)');
+    // FR-5-7e: そのうえで削除は「変更なし」ではなく削除専用の表示にする。
+    expect(noteFor('delete')).not.toContain('CloudFormation リソース差分 0 件');
+    expect(noteFor('delete')).not.toBe('  (変更なし)');
+    expect(noteFor('delete')).toContain('削除対象');
     expect(noteFor('no-change')).toBe('  (変更なし)');
 
     const summary = buildApprovalSummary(report.diffs);

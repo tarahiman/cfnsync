@@ -457,13 +457,38 @@ function isResourcelessChange(diff: StackDiff): boolean {
 const RESOURCELESS_CHANGE_NOTE =
   '  (CloudFormation リソース差分 0 件 — Outputs 等の非リソース変更を含み得ます。実行対象です)';
 
+/**
+ * FR-5-7e: 削除プレビューの対象か。削除は変更セットを介さず `DeleteStack` を直接
+ * 呼ぶため `resources` は常に空であり、しかも FR-5-7c により 0 件注記の対象から
+ * 外れる。0 件を理由に `(変更なし)` へ落とすと、これから消えるスタックに
+ * 「変更なし」と出て承認判断を誤らせる。判別条件は `delete かつ resources 0 件`
+ * に固定し、`no-change`(`(変更なし)` が正しい表示)には及ばない。
+ * FR-5-7d と同一の制約に従い、この判別もレンダラ限定であって
+ * `DeployReport` のデータ(`warnings` / `operation`)は変更しない。
+ */
+function isDeletePreview(diff: StackDiff): boolean {
+  return diff.operation === 'delete' && diff.resources.length === 0;
+}
+
+/**
+ * FR-5-7e: 削除対象の専用表示。`renderText` は `--allow-delete` を知らない
+ * (当該情報は `DeployReport` になく `ApprovalRequest.allowDelete` だけが持つ)
+ * ため、文言は「削除対象である」ことに留め、実行の可否を断定しない。実際に削除
+ * するのか警告に留まるのかは、承認要約では FR-5-6e の見出し注記が、text 差分では
+ * `StackDiff.warnings` が担う。
+ */
+const DELETE_PREVIEW_NOTE =
+  '  (スタック全体が削除対象です — 削除は変更セットを介さないためリソース単位の差分はありません)';
+
 /** 1 スタック分のリソース差分行(renderText / renderApprovalSummary で共有する)。 */
 function resourceDiffLines(diff: StackDiff, color: boolean): string[] {
   const lines: string[] = [];
   if (diff.resources.length === 0) {
-    lines.push(
-      isResourcelessChange(diff) ? RESOURCELESS_CHANGE_NOTE : '  (変更なし)',
-    );
+    // 3 者(0 件注記 / 削除対象 / 真の変更なし)は同一の出力に混在しうるため、
+    // それぞれ区別できる文言を出す(FR-5-7b / FR-5-7e)。
+    if (isResourcelessChange(diff)) lines.push(RESOURCELESS_CHANGE_NOTE);
+    else if (isDeletePreview(diff)) lines.push(DELETE_PREVIEW_NOTE);
+    else lines.push('  (変更なし)');
   }
   for (const resource of diff.resources) {
     const flag = resource.replacement
