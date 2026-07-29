@@ -64,4 +64,5 @@
 
 - サンプル設定ファイル: [`examples/cfnsync.sample.yaml`](./examples/cfnsync.sample.yaml)
 - 安全性不変条件・コマンド一覧・運用手順: リポジトリ直下の [`README.md`](../README.md)
-- 要件定義・設計: [`spec/requirements.md`](./spec/requirements.md), [`spec/design.md`](./spec/design.md)
+- ドキュメント体系・仕様変更手順: [`README.md`](./README.md), [`spec/README.md`](./spec/README.md)
+- 要件定義・設計・トレーサビリティ: [`spec/requirements.md`](./spec/requirements.md), [`spec/design.md`](./spec/design.md), [`spec/traceability.md`](./spec/traceability.md)

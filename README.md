@@ -187,7 +187,7 @@ cfnsync 管理対象スタックへ、手動または他ツールで Change Set 
 
 ## コントリビュート
 
-TypeScript / pnpm / Biome / Vitest で構築し、spec-driven TDD に従っています。[CONTRIBUTING.md](./CONTRIBUTING.md) を参照してください。
+TypeScript / pnpm / Biome / Vitest で構築し、spec-driven TDD に従っています。仕様・設計・ADR・変更履歴の入口は[ドキュメントガイド](./docs/README.md)、開発手順は [CONTRIBUTING.md](./CONTRIBUTING.md) を参照してください。
 
 ## ライセンス
 

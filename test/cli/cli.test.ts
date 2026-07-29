@@ -942,7 +942,7 @@ describe('T-19 cli', () => {
     expect(deps.readTemplates).not.toHaveBeenCalled();
   });
 
-  it('FR-12(import JSON診断): ロック warning の内部 cause を出力しない', async () => {
+  it('FR-12-6b(import JSON診断): ロック warning の内部 cause を出力しない', async () => {
     const cause = 'AccessDenied: request id import diagnostic';
     const deps = dependencies({
       runImport: vi.fn(async () => ({
@@ -977,7 +977,7 @@ describe('T-19 cli', () => {
     expect(out.stderr()).toContain('ロック取得に失敗しました');
   });
 
-  it('FR-12(import text診断): ロック warning の装飾済み cause を出力する', async () => {
+  it('FR-12-6b(import text診断): ロック warning の装飾済み cause を出力する', async () => {
     const cause = 'AccessDenied: request id import diagnostic';
     const deps = dependencies({
       runImport: vi.fn(async () => ({
@@ -1100,7 +1100,7 @@ describe('T-19 cli', () => {
     }
   });
 
-  it('FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない', async () => {
+  it('FR-12-6a(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない', async () => {
     const secretCause =
       'credential=AKIAEXAMPLE NoEchoActualValue=super-secret-value';
     const deps = dependencies({
@@ -1219,7 +1219,7 @@ describe('T-19 cli', () => {
   it.each([
     ['分離記法', ['status', '--output', 'json']],
     ['equals 記法', ['status', '--output=json']],
-  ] as const)('FR-12(JSON選択): --output json と --output=json の両記法を認識する（%s）', async (_label, args) => {
+  ] as const)('FR-12-6d(JSON選択): --output json と --output=json の両記法を認識する（%s）', async (_label, args) => {
     const out = capture();
     const deps = dependencies({
       loadConfig: vi.fn(() => {
@@ -1234,7 +1234,7 @@ describe('T-19 cli', () => {
   it.each([
     ['サブコマンド前', ['--output', 'json', 'status']],
     ['サブコマンド後', ['status', '--output', 'json']],
-  ] as const)('FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効（%s）', async (_label, args) => {
+  ] as const)('FR-12-6e(JSON選択): --output はサブコマンドの前後どちらでも有効（%s）', async (_label, args) => {
     const out = capture();
     const deps = dependencies({
       loadConfig: vi.fn(() => {
@@ -1249,7 +1249,7 @@ describe('T-19 cli', () => {
   it.each([
     ['最後が text', ['status', '--output', 'json', '--output', 'text'], false],
     ['最後が json', ['status', '--output', 'text', '--output=json'], true],
-  ] as const)('FR-12(JSON選択): 複数指定は最後の --output を採用する（%s）', async (_label, args, jsonExpected) => {
+  ] as const)('FR-12-6f(JSON選択): 複数指定は最後の --output を採用する（%s）', async (_label, args, jsonExpected) => {
     const out = capture();
     const deps = dependencies({
       loadConfig: vi.fn(() => {
@@ -1274,7 +1274,7 @@ describe('T-19 cli', () => {
     ['--output', ['status', '--output', '--output=json']],
     ['--on-failure', ['deploy', '--on-failure', '--output=json']],
     ['--reconcile', ['import', '--reconcile', '--output=json']],
-  ] as const)('FR-12(JSON選択): 他オプション %s の値 --output=json を JSON 指定として扱わない', async (_option, args) => {
+  ] as const)('FR-12-6g(JSON選択): 他オプション %s の値 --output=json を JSON 指定として扱わない', async (_option, args) => {
     const out = capture();
     const deps = dependencies({
       loadConfig: vi.fn(() => {
@@ -1290,7 +1290,7 @@ describe('T-19 cli', () => {
   it.each([
     ['--help', ['status', '--output', 'json', '--help'], 'Usage:'],
     ['--version', ['--output=json', '--version'], undefined],
-  ] as const)('FR-12(JSON契約外): %s は text を出して exit 0', async (_option, args, expectedText) => {
+  ] as const)('FR-12-6h(JSON契約外): %s は text を出して exit 0', async (_option, args, expectedText) => {
     const out = capture();
 
     expect(await runCli([...args], { deps: dependencies(), io: out.io })).toBe(
@@ -1364,7 +1364,7 @@ describe('T-19 cli', () => {
     expect(out.stdout()).toBe('');
   });
 
-  it('FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1', async () => {
+  it('FR-12-6a(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1', async () => {
     const cyclic: CfnSyncConfig = {
       ...config,
       stacks: {
@@ -1461,7 +1461,7 @@ describe('T-19 cli', () => {
     }
   });
 
-  it('FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1', async () => {
+  it('FR-12-6a(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1', async () => {
     for (const args of [
       ['deploy', '--on-failure', 'bogus', '--output', 'json'],
       ['unknown-command', '--output=json'],
@@ -1480,7 +1480,7 @@ describe('T-19 cli', () => {
     }
   });
 
-  it('FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す', async () => {
+  it('FR-12-6b(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す', async () => {
     const result = {
       exitCode: 1 as const,
       released: false,

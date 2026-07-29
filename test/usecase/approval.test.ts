@@ -26,7 +26,11 @@ import {
   computeInputsHash,
   computeTemplateHash,
 } from '../../src/core/detect.js';
-import { ConfigError, StateConflictError } from '../../src/core/errors.js';
+import {
+  AwsError,
+  ConfigError,
+  StateConflictError,
+} from '../../src/core/errors.js';
 import {
   type CfnSyncState,
   createInitialState,
@@ -1574,6 +1578,244 @@ describe('T-22 承認フロー — 承認拒否(FR-5-10 / FR-5-11)', () => {
     );
     expect(cleanup?.errorMessage).toContain('次回実行の残存回収');
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// FR-5-19: 承認ポートが reject / throw した場合の fail-closed 回収
+// ===========================================================================
+
+function injectApprovalFailure(s: Harness, error: unknown): void {
+  s.control.onApprove = () => {
+    throw error;
+  };
+}
+
+describe('承認フロー — 承認処理の失敗(FR-5-19)', () => {
+  it('FR-5-19a: approve の reject 後に skipped 進捗通知も throw しても全変更セットを先に ARN 回収する', async () => {
+    const config = configOf({
+      'a.yaml': { stackName: 'A' },
+      'b.yaml': { stackName: 'B' },
+      'c.yaml': { stackName: 'C' },
+    });
+    const templates = templatesOf({
+      'a.yaml': TEMPLATE_A,
+      'b.yaml': TEMPLATE_B,
+      'c.yaml': TEMPLATE_C,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    let progressFailureObserved = false;
+    const result = await s.run(
+      {},
+      {
+        onProgress: (event) => {
+          // CLI の approve と onProgress は同じ stderr に書き込みうる。承認要約の
+          // 書き込み失敗後、skipped 通知も同じ故障で throw する実経路を固定する。
+          if (event.phase === 'skipped') {
+            progressFailureObserved = true;
+            throw new Error('injected progress stderr failure');
+          }
+        },
+      },
+    );
+
+    const deleted = fake
+      .callsOf('deleteChangeSet')
+      .map((call) => [String(call.args[0]), String(call.args[1])]);
+    expect(deleted.map(([stackName]) => stackName)).toEqual(['A', 'B', 'C']);
+    expect(
+      deleted.every(([, id]) =>
+        id.startsWith('arn:aws:cloudformation:changeSet/'),
+      ),
+    ).toBe(true);
+    expect(progressFailureObserved).toBe(true);
+    expect(result.exitCode).toBe(1);
+    expect(
+      result.report.result?.stacks
+        .filter((stack) => !stack.stackKey.startsWith('('))
+        .map((stack) => [stack.stackName, stack.outcome]),
+    ).toEqual([
+      ['A', 'skipped'],
+      ['B', 'skipped'],
+      ['C', 'skipped'],
+    ]);
+    expect(
+      result.report.result?.stacks.find(
+        (stack) => stack.stackKey === '(approval)',
+      ),
+    ).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('FR-5-19b: approve の reject 後に ExecuteChangeSet を行わない', async () => {
+    const { s, fake } = setupMixedOperations();
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    await s.run({ allowDelete: true });
+
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-5-19c: approve の reject 後に DeleteStack を行わない', async () => {
+    const { s, fake } = setupMixedOperations();
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    await s.run({ allowDelete: true });
+
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+  });
+
+  it('FR-5-19d: approve の reject で Phase B の全実行予定対象を skipped として報告する', async () => {
+    const { s } = setupMixedOperations();
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(
+      result.report.result?.stacks
+        .filter((stack) => !stack.stackKey.startsWith('('))
+        .map((stack) => [stack.stackName, stack.outcome]),
+    ).toEqual([
+      ['A', 'skipped'],
+      ['New', 'skipped'],
+      ['Old', 'skipped'],
+    ]);
+  });
+
+  it('FR-5-19e: approve の reject を承認処理の failed 結果として report に含める', async () => {
+    const { s } = setupMixedOperations();
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(
+      result.report.result?.stacks.find(
+        (stack) => stack.stackKey === '(approval)',
+      ),
+    ).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('FR-5-19f: approve の reject は exit 1 で終了する', async () => {
+    const { s } = setupMixedOperations();
+    injectApprovalFailure(s, new Error('injected approval failure'));
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('FR-5-19g: approve 失敗後の変更セット削除失敗を report し次回の残存回収を案内する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    injectApprovalFailure(s, new Error('injected approval failure'));
+    fake.deleteChangeSet = async () => {
+      throw new Error('injected DeleteChangeSet failure');
+    };
+
+    let progressFailureObserved = false;
+    const result = await s.run(
+      {},
+      {
+        onProgress: (event) => {
+          if (event.phase === 'skipped') {
+            progressFailureObserved = true;
+            throw new Error('injected progress stderr failure');
+          }
+        },
+      },
+    );
+
+    expect(progressFailureObserved).toBe(true);
+    expect(
+      result.report.result?.stacks.find(
+        (stack) => stack.stackKey === '(cleanup)',
+      ),
+    ).toMatchObject({
+      outcome: 'failed',
+      errorMessage: expect.stringContaining('次回実行の残存回収'),
+    });
+  });
+
+  it('FR-5-19h: approve の CfnSyncError は全 NoEcho redactor を通し内部 cause を公開しない', async () => {
+    // 値に包含関係を持たせ、スタック別 redactor の単純な順次適用で
+    // `****-bravo` のような suffix が残る退行も検出する。
+    const secretA = 'approval-secret';
+    const secretB = 'approval-secret-bravo';
+    const config = configOf({
+      'secret-a.yaml': {
+        stackName: 'SecretA',
+        parameters: { Secret: secretA },
+      },
+      'secret-b.yaml': {
+        stackName: 'SecretB',
+        parameters: { Secret: secretB },
+      },
+    });
+    const templates = templatesOf({
+      'secret-a.yaml': TEMPLATE_SECRET,
+      'secret-b.yaml': TEMPLATE_SECRET,
+    });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    setExistingStacks(config, gatewayFor(s));
+    injectApprovalFailure(
+      s,
+      new AwsError(`承認ポートが ${secretA} / ${secretB} を返しました`, {
+        cause: new Error(`internal-cause:${secretA}:${secretB}`),
+      }),
+    );
+
+    const result = await s.run();
+    const rendered = renderJson(result.report);
+    const approvalFailure = result.report.result?.stacks.find(
+      (stack) => stack.stackKey === '(approval)',
+    );
+
+    expect(approvalFailure?.errorMessage).toBe(
+      '承認処理に失敗しました: 承認ポートが **** / **** を返しました',
+    );
+    expect(rendered).toContain('****');
+    expect(rendered).not.toContain(secretA);
+    expect(rendered).not.toContain(secretB);
+    expect(rendered).not.toContain('internal-cause');
+  });
+
+  it('FR-5-19i: approve の分類不能な例外は生メッセージを固定の安全な文言へ置換する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    setExistingStacks(config, gatewayFor(s));
+    injectApprovalFailure(s, new Error('raw approval transport failure'));
+
+    const result = await s.run();
+    const approvalFailure = result.report.result?.stacks.find(
+      (stack) => stack.stackKey === '(approval)',
+    );
+
+    expect(approvalFailure?.errorMessage).toBe(
+      '承認処理に失敗しました: 予期しないエラーが発生しました',
+    );
   });
 });
 

@@ -2,13 +2,18 @@
 
 対応する仕様: [requirements.md](./requirements.md) / [design.md](./design.md)
 
+> **実装記録・詳細証跡:** 本書は T-01〜T-22 の実装計画、進捗、受入基準→テストケース対応を
+> 当時の形で保持する。現行の振る舞いを定義する規範 SoT ではなく、今後の進捗管理にも使用しない。
+> 現行仕様は [requirements.md](./requirements.md) / [design.md](./design.md)、横断索引は
+> [traceability.md](./traceability.md)、今後の変更手順は[仕様管理ガイド](./README.md)を参照する。
+
 ## 1. 進め方
 
 - **red → green → refactor**。各タスクはまず対応表のテストを書き、失敗を確認してから実装する。
 - **受け入れ基準 ID の規約**: requirements.md で明示 ID がある受け入れ基準はその ID を参照し、明示 ID のない受け入れ基準は従来どおり各要件内の出現順を `FR-X-n` として参照する。現時点で明示 ID がある要件は FR-3、FR-4、FR-5、FR-8-7、FR-11-10、FR-12 である。箇条書きの挿入・並べ替えによって、明示 ID および既存の出現順 ID の意味を変更しない。
 - **1 基準 = 1 主張**: 複数の主張を 1 つの基準へ詰め込まない。複数主張を含む基準はサブ ID(`FR-5-6a` / `FR-5-6b` …)へ分割し、requirements.md の基準と各タスクの対応表の行を真に 1:1 にする。
 
-#### 1.1 T-22 による受け入れ基準 ID の移行表
+### 1.1 T-22 による受け入れ基準 ID の移行表
 
 T-22(deploy 承認フロー)は既存 ID の**意味を変える**変更を含む。下表が正本であり、「意味は変わらない」とみなしてはならない。
 
@@ -350,24 +355,24 @@ usecase が依存する出力契約(構造化された差分・イベント・�
 |---|---|---|
 | FR-12-1 | status / plan / deploy / graph / import(+ force-unlock)を提供 | 各サブコマンドが定義され、対応する usecase が呼ばれる |
 | FR-12-2 | 終了コード: 0 = 成功・変更なし / 1 = エラー / 2 = 差分あり |
-| FR-12-4 | `--version`(短縮形 `-v`)で `package.json` の version を表示し終了コード 0 | `FR-12(JSON契約外): --version は text を出して exit 0`(exit 0 と非 JSON の text 出力を固定)。**短縮形 `-v` と、出力が `package.json` の version と一致することは未検証**(下記の穴埋めを T-22 で行う) | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
+| FR-12-4 | `--version`(短縮形 `-v`)で `package.json` の version を表示し終了コード 0 | `FR-12-6h(JSON契約外): --version は text を出して exit 0`(exit 0 と非 JSON の text 出力を固定)。**短縮形 `-v` と、出力が `package.json` の version と一致することは未検証**(下記の穴埋めを T-22 で行う) | plan 差分あり → 2 / plan 差分なし → 0 / 検証エラー → 1 / deploy 成功 → 0 / deploy 失敗 → 1(§9 の表と 1:1) |
 | FR-12-3a | TTY なしで全コマンドが動作する | 非 TTY 環境で `status` / `plan` / `graph` / `import` / `force-unlock` / `deploy --auto-approve` がプロンプトなしに完走する(`--auto-approve` なしの拒否は T-22 の FR-12-3b / FR-12-3c) |
 | FR-12-5 | 各サブコマンドの `--help` に共通オプションを表示 | `status`/`plan`/`deploy`/`graph`/`import`/`force-unlock` それぞれの `--help` 出力に `--config`/`--profile`/`--region`/`--output` が「Global Options」として含まれる(全 6 サブコマンド) |
 | FR-11-5(統合) | filesystem adapter は設定検証の `ConfigError` を再ラップせず、本文・stackKey・cause を増幅しない | `FR-11-5(統合): 設定検証エラーを再ラップせず本文と stackKey を各1回だけ出す` |
-| FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
-| FR-12-6a / FR-12-6b(import診断) | import の JSON warning は安全な本文、text warning は `CfnSyncError.message` の装飾済み診断を使う | `FR-12(import JSON診断): ロック warning の内部 cause を出力しない` / `FR-12(import text診断): ロック warning の装飾済み cause を出力する` |
-| FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
+| FR-12-6a(JSONエラー) | 有効な JSON 指定では result 生成前の例外を stdout の単一共通エラー JSON として exit 1 で返し、message は未装飾の公開本文だけにする | `FR-12-6a(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12-6a(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12-6a(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` |
+| FR-12-6a / FR-12-6b(import診断) | import の JSON warning は安全な本文、text warning は `CfnSyncError.message` の装飾済み診断を使う | `FR-12-6b(import JSON診断): ロック warning の内部 cause を出力しない` / `FR-12-6b(import text診断): ロック warning の装飾済み cause を出力する` |
+| FR-12-6b(JSON出力先) | コマンド固有 result は exitCode によらず既存 schema の単一 JSON を stdout へ出す | `FR-12-6b(JSON出力先): force-unlock の結果が exit 1 でも JSON は stdout のみに出す` |
 | FR-12-6c1 | deploy の承認拒否は `cancelled: true` 付きの deploy report を stdout へ 1 個出し exit 0 | (T-22 で更新) `FR-12-6c1: 承認拒否は cancelled:true 付き deploy report を stdout に 1 個出して exit 0(diffs と skipped を保持)` |
-| FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12(JSON選択): --output json と --output=json の両記法を認識する` |
-| FR-12-6e(JSON配置) | `--output` はサブコマンドの前後どちらでも有効 | `FR-12(JSON選択): --output はサブコマンドの前後どちらでも有効` |
-| FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12(JSON選択): 複数指定は最後の --output を採用する` |
-| FR-12-6g(JSON誤検出防止) | 他の値付きオプションの値として消費された `--output=json` は JSON 選択ではない | `FR-12(JSON選択): 他オプションの値 --output=json を JSON 指定として扱わない` |
-| FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12(JSON契約外): --help と --version は text を出して exit 0` |
+| FR-12-6d(JSON記法) | `--output json` と `--output=json` の両記法を認識 | `FR-12-6d(JSON選択): --output json と --output=json の両記法を認識する` |
+| FR-12-6e(JSON配置) | `--output` はサブコマンドの前後どちらでも有効 | `FR-12-6e(JSON選択): --output はサブコマンドの前後どちらでも有効` |
+| FR-12-6f(JSON最後勝ち) | 複数の `--output` 指定は最後を採用 | `FR-12-6f(JSON選択): 複数指定は最後の --output を採用する` |
+| FR-12-6g(JSON誤検出防止) | 他の値付きオプションの値として消費された `--output=json` は JSON 選択ではない | `FR-12-6g(JSON選択): 他オプションの値 --output=json を JSON 指定として扱わない` |
+| FR-12-6h(JSON契約外) | `--help` / `--version` は JSON 指定と同時でも text・exit 0 | `FR-12-6h(JSON契約外): --help と --version は text を出して exit 0` |
 | FR-12-7 | plan / deploy だけが `--no-color` を提供 | plan / deploy の help に `--no-color` があり、他サブコマンドの help にはない |
 | FR-7-1〜3 | `--profile` / `AWS_PROFILE` / リージョン指定 | CLI オプション・環境変数がクライアント設定に伝播する |
 | FR-12-8a / FR-12-8b / FR-12-8c | `deploy` だけが `--auto-approve`(`-y`)を提供し、`--confirm` は廃止 | (T-22 で検証) `FR-12-8a` / `FR-12-8b` / `FR-12-8c` の各テスト |
 | NFR-5 | status / graph は AWS を呼ばない | 両コマンド実行で AWS クライアントが一切呼ばれない |
-| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗・承認要約は stderr に分離される / `FR-12(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / (T-22) `FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
+| NFR-1 | 進捗・結果を stdout / stderr に構造的に出力。有効な JSON 指定の stdout は成功・失敗・キャンセルとも単一 JSON document とし、共通エラーには装飾済み context / cause / stack trace / zod issue / credential を含めない | 結果は stdout、診断・進捗・承認要約は stderr に分離される / `FR-12-6a(JSONエラー): 設定読込・設定検証・graph循環は stdout の単一 CliErrorPayload で exit 1` / `FR-12-6a(JSONエラー): --on-failure 不正値と未知サブコマンドも stdout の単一 CliUsageError で exit 1` / `FR-12-6a(JSON安全性): AwsError の SDK cause と CfnSyncError の装飾を公開 message に含めない` / (T-22) `FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない` |
 
 ## 8. M5: ドキュメント・パッケージング
 
@@ -579,4 +584,4 @@ TDD 手順(red → green → refactor):
 - [x] T-19 cli
 - [x] T-20 README・運用ドキュメント
 - [x] T-21 npm パッケージング
-- [ ] T-22 deploy 承認フロー(差分表示 → 承認 → 実行)
+- [x] T-22 deploy 承認フロー(差分表示 → 承認 → 実行)

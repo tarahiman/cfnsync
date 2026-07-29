@@ -170,6 +170,8 @@ interface PreparedPlan {
   mergedGraphs: Map<string, RegionGraph>;
   plan: ExecutionPlan;
   redactors: Map<StackKey, TextRedactor>;
+  /** FR-5-19h: スタックを特定できない実行全体の診断へ適用する全対象 redactor。 */
+  globalRedactor: TextRedactor;
   parsedTemplates: Map<string, unknown>;
 }
 
@@ -557,7 +559,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     );
     // FR-5-12c: 事前作成した自身の変更セットをすべて削除する。失敗した対象自身が
     // 作成済みの変更セット(待機・検証で失敗したもの)も createdChangeSets に載っている。
-    await cleanupCreatedChangeSets(ctx, createdChangeSets, extraStacks);
+    await cleanupCreatedChangeSets(ctx, createdChangeSets, extraStacks, redact);
     return finalize(1, hasDiff);
   }
 
@@ -572,16 +574,56 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         '承認手段が与えられていないため実行できません。--auto-approve を指定してください',
       );
     }
-    const approved = await approve({
-      connection: report.connection,
-      // FR-5-6g / NFR-4: report と同一の redactor を通してから承認手段へ渡す。
-      diffs: redactReportMessages(
-        { connection: report.connection, diffs: report.diffs },
+    let approved: boolean;
+    try {
+      approved = await approve({
+        connection: report.connection,
+        // FR-5-6g / NFR-4: report と同一の redactor を通してから承認手段へ渡す。
+        diffs: redactReportMessages(
+          { connection: report.connection, diffs: report.diffs },
+          redact,
+        ).diffs,
+        summary: buildApprovalSummary(report.diffs),
+        allowDelete: ctx.options.allowDelete === true,
+      });
+    } catch (error) {
+      // FR-5-19: 承認ポート自体の失敗は拒否(false)とは区別するが、Phase B へ
+      // 進めない点と作成済み変更セットの回収は同じ fail-closed 契約に従う。
+      extraStacks.push({
+        stackKey: '(approval)',
+        region: ctx.connection.regions[0] ?? '(none)',
+        stackName: '(approval)',
+        outcome: 'failed',
+        // 対象スタックを一意に決められないため、全対象の NoEcho 実効値をまとめて
+        // マスクする。分類不能な例外は publicErrorMessage が固定文言へ置換する。
+        errorMessage: `承認処理に失敗しました: ${prepared.globalRedactor(
+          publicErrorMessage(error),
+        )}`,
+        rolledBack: false,
+      });
+      // FR-5-19a: CLI の approve と onProgress は同じ stderr 故障で続けて
+      // throw しうる。観測通知によって回収が妨げられないよう、必ず先に後始末する。
+      await cleanupCreatedChangeSets(
+        ctx,
+        createdChangeSets,
+        extraStacks,
         redact,
-      ).diffs,
-      summary: buildApprovalSummary(report.diffs),
-      allowDelete: ctx.options.allowDelete === true,
-    });
+      );
+      for (const action of pending) {
+        resultByOperation.set(
+          action.operation,
+          resultForOperation(action.operation, 'skipped'),
+        );
+        emitProgress(
+          ctx.deps,
+          action.operation.stackKey,
+          action.operation.region,
+          'skipped',
+          '承認処理に失敗したため実行しませんでした',
+        );
+      }
+      return finalize(1, hasDiff);
+    }
     if (!approved) {
       // FR-5-10a〜c: 変更セットを全削除し、未実行は skipped、終了コードは 0。
       report.cancelled = true;
@@ -602,6 +644,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         ctx,
         createdChangeSets,
         extraStacks,
+        redact,
       );
       // FR-5-11: クリーンアップ失敗のみ exit 1(残存は次回の残存回収で収束する)。
       return finalize(cleanupFailed ? 1 : 0, hasDiff);
@@ -707,6 +750,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       ctx,
       createdChangeSets,
       extraStacks,
+      redact,
     );
     hasError ||= cleanupFailed;
   }
@@ -826,6 +870,7 @@ async function cleanupCreatedChangeSets(
   ctx: LockedRunContext,
   createdChangeSets: Set<CreatedChangeSet>,
   extraStacks: StackResult[],
+  redact: (stackKey: string, text: string) => string,
 ): Promise<boolean> {
   const failures: string[] = [];
   for (const changeSet of [...createdChangeSets]) {
@@ -834,9 +879,9 @@ async function cleanupCreatedChangeSets(
       createdChangeSets.delete(changeSet);
     } catch (error) {
       failures.push(
-        `${changeSet.operation.stackKey}: ${publicErrorMessage(
-          error,
-          '変更セットの削除に失敗しました',
+        `${changeSet.operation.stackKey}: ${redact(
+          changeSet.operation.stackKey,
+          publicErrorMessage(error, '変更セットの削除に失敗しました'),
         )}`,
       );
     }
@@ -859,6 +904,12 @@ async function cleanupCreatedChangeSets(
 function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
   const analyses = new Map<StackKey, TemplateAnalysis>();
   const redactors = new Map<StackKey, TextRedactor>();
+  // FR-5-19h: スタック別 redactor の単純な順次適用は、秘密値に包含関係があると
+  // 短い値の先行置換で長い値の suffix を残しうる。全対象の値を一度に渡し、
+  // createNoEchoRedactor の長さ降順置換でまとめてマスクする。
+  const globalNoEchoValues: Record<string, string> = {};
+  const globalNoEchoNames: string[] = [];
+  let globalNoEchoIndex = 0;
   const parsedTemplates = new Map<string, unknown>();
   const staticAnalyses = new Map<string, StaticTemplateAnalysis>();
   const templateHashes = new Map<string, string>();
@@ -885,14 +936,24 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
       parameters: target.parameters,
     });
     analyses.set(target.stackKey, analysis);
+    const templateDefaults = extractScalarParameterDefaults(parsed);
     redactors.set(
       target.stackKey,
       createNoEchoRedactor(
         target.parameters,
         analysis.noEchoParams,
-        extractScalarParameterDefaults(parsed),
+        templateDefaults,
       ),
     );
+    for (const parameterName of analysis.noEchoParams) {
+      const value =
+        target.parameters[parameterName] ?? templateDefaults[parameterName];
+      if (value === undefined) continue;
+      const globalName = `${globalNoEchoIndex}:${parameterName}`;
+      globalNoEchoIndex += 1;
+      globalNoEchoNames.push(globalName);
+      globalNoEchoValues[globalName] = value;
+    }
     currentNodes.push({
       stackKey: target.stackKey,
       region: target.region,
@@ -943,6 +1004,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     mergedGraphs,
     plan,
     redactors,
+    globalRedactor: createNoEchoRedactor(globalNoEchoValues, globalNoEchoNames),
     parsedTemplates,
   };
 }
@@ -1907,7 +1969,12 @@ function emitProgress(
   phase: ProgressPhase,
   message: string,
 ): void {
-  deps.onProgress?.({ stackKey, region, phase, message });
+  try {
+    deps.onProgress?.({ stackKey, region, phase, message });
+  } catch {
+    // ProgressEvent は観測専用ポートであり、stderr 等の配送障害によって
+    // AWS 操作・クリーンアップ・最終 report の制御フローを置換させない。
+  }
 }
 
 function stackResult(

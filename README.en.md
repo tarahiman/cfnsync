@@ -187,7 +187,7 @@ Every release, including breaking changes and their migration steps, is recorded
 
 ## Contributing
 
-Built with TypeScript, pnpm, Biome, and Vitest, following spec-driven TDD. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+Built with TypeScript, pnpm, Biome, and Vitest, following spec-driven TDD. See the [documentation map](./docs/README.md) for the specification, design, ADR, and change-history structure, and [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow.
 
 ## License
 
