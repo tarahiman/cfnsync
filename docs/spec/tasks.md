@@ -18,7 +18,7 @@ T-22(deploy 承認フロー)は既存 ID の**意味を変える**変更を含�
 | FR-5-2 | 既定で**非対話**完走。確認プロンプトはオプトイン | FR-5-2a / FR-5-2b | **意味が反転**。既定が「1 回承認」になり、非対話は `--auto-approve` のオプトインになった |
 | FR-5-3 | `--dry-run` は差分表示までで停止 | FR-5-3 | 変更なし。ただし変更セットライフサイクルの規定を FR-5-9b として新設 |
 | FR-5-4 | 進捗をスタックキー付きで stderr へ逐次出力 | FR-5-4 | **追記**(承認を挟んでもスタックごとの段階の相対順序を変えない、という条項を追加) |
-| (なし) | — | FR-5-5a / FR-5-5b / FR-5-5b1〜b6 / FR-5-5c / FR-5-6a〜g / FR-5-7a〜d / FR-5-8a〜b / FR-5-9a〜b / FR-5-10a〜c / FR-5-11 / FR-5-12a〜c / FR-5-13 / FR-5-14a〜b / FR-5-15a〜b / FR-5-16 / FR-5-17a1〜a3 / FR-5-17b / FR-5-17c1〜c2 / FR-5-17d / FR-5-17e / FR-5-18a〜d | 新設 |
+| (なし) | — | FR-5-5a / FR-5-5b / FR-5-5b1〜b6 / FR-5-5c / FR-5-6a〜g / FR-5-7a〜e / FR-5-8a〜b / FR-5-9a〜b / FR-5-10a〜c / FR-5-11 / FR-5-12a〜c / FR-5-13 / FR-5-14a〜b / FR-5-15a〜b / FR-5-16 / FR-5-17a1〜a3 / FR-5-17b / FR-5-17c1〜c2 / FR-5-17d / FR-5-17e / FR-5-18a〜d | 新設 |
 | (なし) | — | FR-3-7a / FR-3-7b | 新設(承認要約の色・出力先) |
 | (なし) | — | FR-11-10a / FR-11-10b / FR-11-10c | 新設((リージョン, スタック名)の一意性と、正常系を拒否しない保証) |
 | FR-12-3 | すべてのコマンドは TTY なしで動作する | FR-12-3a | **意味を保存**(FR-12-3a が旧 FR-12-3 と同義) |
@@ -420,10 +420,10 @@ TDD 手順(red → green → refactor):
 3. `usecase/deploy.ts` を Phase A / Phase B へ分割する。**まず `--auto-approve` 経路で既存の `test/usecase/deploy.test.ts` 全件が green に戻ることを確認**してから、承認・拒否・Phase A 失敗・実行直前再検査のテストを追加する。
 4. `cli` のオプションと非 TTY ガードをテスト・実装する。
 5. `pnpm run quality:check` を通す。
-6. QA が `templates/.qa-baseline/` に記録した `--output json` のベースラインと突き合わせ、`connection` / `diffs` / `events` / `result` に非回帰であることを確認する(FR-5-16)。**テキスト出力は FR-5-7b により意図的に変わる**ため、非回帰判定の対象は JSON に限る。
+6. QA が `templates/.qa-baseline/` に記録した `--output json` のベースラインと突き合わせ、`connection` / `diffs` / `events` / `result` に非回帰であることを確認する(FR-5-16)。**テキスト出力は FR-5-7b / FR-5-7e により意図的に変わる**ため、非回帰判定の対象は JSON に限る。
 7. 実機検証(QA)で、**新規 Export を参照する対象を含む実行を `ExecuteChangeSet` まで通す**。design §5.3.1 の限界 1 のとおり、保留値(`{{changeSet:KNOWN_AFTER_APPLY}}`)を持つ変更セットの実行は未実測であり、依存順(FR-9)によりその経路へ到達しないという設計上の理屈しか裏付けがない。ここで実測を得る。
 
-`core/plan.ts` は変更しない。当初検討していた deferred(遅延変更セット)機構は**採用しない**。その出発点だった「依存先の Export が未作成だと Phase A の変更セット作成が失敗する」という前提は、生 AWS CLI による独立検証(cfnsync 非経由)で否定された — スタックも Export も存在しない状態で `--change-set-type CREATE` を実行しても `Status: CREATE_COMPLETE` / `ExecutionStatus: AVAILABLE` となり、プロパティ値は `{{changeSet:KNOWN_AFTER_APPLY}}` として保留される(design.md §5.3.1)。したがって `computeDeferred`・`StackDiff.deferred`・`plan` の挙動変更はいずれも不要であり、**`plan` の挙動は FR-5-7b のテキスト表示を除いて無変更**である。`CreateChangeSet` が別の理由で失敗した場合は FR-5-12a の Phase A 失敗として fail-closed に中断する。
+`core/plan.ts` は変更しない。当初検討していた deferred(遅延変更セット)機構は**採用しない**。その出発点だった「依存先の Export が未作成だと Phase A の変更セット作成が失敗する」という前提は、生 AWS CLI による独立検証(cfnsync 非経由)で否定された — スタックも Export も存在しない状態で `--change-set-type CREATE` を実行しても `Status: CREATE_COMPLETE` / `ExecutionStatus: AVAILABLE` となり、プロパティ値は `{{changeSet:KNOWN_AFTER_APPLY}}` として保留される(design.md §5.3.1)。したがって `computeDeferred`・`StackDiff.deferred`・`plan` の挙動変更はいずれも不要であり、**`plan` の挙動は FR-5-7b / FR-5-7e のテキスト表示を除いて無変更**である。`CreateChangeSet` が別の理由で失敗した場合は FR-5-12a の Phase A 失敗として fail-closed に中断する。
 
 破壊的変更(0.x のため許容。README・リリースノートに明記すること):
 
@@ -432,6 +432,7 @@ TDD 手順(red → green → refactor):
 - 承認拒否時の出力契約の置換。JSON は専用 payload から `cancelled: true` 付き deploy report へ、text は「stderr のキャンセル文のみ」から「stderr のキャンセル文 + stdout の deploy report」へ(FR-12-6c3)
 - **`--on-failure` の適用範囲を計画段階から取り除く互換性破壊**(FR-5-12b)。従来は `__REQUIRED__` 残存等の計画上の失敗でも、依存下流を skipped としたうえで独立スタックは `--on-failure continue` に従って実行された(変更前 design.md §8.2 の「独立スタックだけを `--on-failure` に従わせる」を今回削除)。今後は Phase A の失敗を `--on-failure` の値にかかわらず実行全体の中断とする
 - リソース差分 0 件の `create` / `update` のテキスト表示が `(変更なし)` から変わる(FR-5-7b)
+- 削除対象(`delete`)のテキスト表示が `(変更なし)` から「スタック全体が削除対象」であることが分かる文言へ変わる(FR-5-7e)。JSON は不変
 - 同一リージョンで同一スタック名へ解決される設定が `ConfigError` になる(FR-11-10a)
 - **CREATE 復旧の fail-closed 化**(FR-1 / FR-5-5b4)。従来は NoEcho・`dependsOn` を比較から除外し、警告のうえローカルの希望値で再同期していた。今後は検証不能な入力が 1 つでも残る場合(テンプレートに NoEcho パラメータがある、または `dependsOn` が空でない)は再同期せず失敗させる。復旧には「設定を退避 → `cfnsync import --reconcile local` → `__REQUIRED__` を希望する秘密値へ戻す → `plan` / `deploy`」という手順と手動の秘密値復元が必要になる(design §7)。従来の挙動には、未適用の NoEcho 値を「適用済み」として記録し変更を永久に失う経路があった
 
@@ -448,6 +449,8 @@ TDD 手順(red → green → refactor):
 | `test/cli/cli.test.ts` `FR-5-2: --confirm 指定かつ TTY の場合だけ確認する` | 削除。FR-12-8a / FR-12-8c へ置換 |
 | `test/cli/cli.test.ts` `FR-12(JSONキャンセル)` / `FR-12(textキャンセル)` | FR-12-6c1 / FR-12-6c2 / FR-12-6c3 の新契約へ書き換え |
 | `test/report/report.test.ts` のテキスト差分ゴールデン | FR-5-7b により 0 件 `create` / `update` の文言が変わる |
+| `test/usecase/approval.test.ts` `FR-5-7c: delete プレビュー(resources 空)は 0 件注記の対象にならない` | T-22 で追加済みのテスト。FR-5-7e により削除行の期待値が `(変更なし)` から削除向けの文言へ変わる(0 件注記の対象外であることの確認自体は維持) |
+| `test/usecase/approval.test.ts` `FR-5-7c: plan / deploy の create/update/delete/no-change × 空 resources の境界で表示が正しい` | 同上。境界表を「`delete` = 削除向け表示 / `no-change` = `(変更なし)`」を区別する形へ更新する(`create` / `update` / `no-change` の期待値は不変) |
 | `test/usecase/executor.test.ts` `FR-2-11: 再検査(listChangeSets)が ExecuteChangeSet の直前に配置される` | FR-5-17e により規範順序が DescribeStacks → ListChangeSets → fencing → Execute になる。順序アサーションの更新が必要 |
 | `test/usecase/executor.test.ts` `FR-2-11(ARN再レビュー⑥): 同名でも ARN が差し替わっていれば実行を拒否する` | FR-5-17a2 として維持。承認待ちを挟むシナリオを追加 |
 | `test/usecase/recovery.test.ts` `FR-1-11(a) 検証不能入力: dependsOn/NoEcho を比較から除外し、希望 inputsHash と warnings を残す` | **意味が反転**。FR-1 / FR-5-5b4 により再同期せず fail-closed で失敗するテストへ書き換える |
@@ -480,6 +483,7 @@ TDD 手順(red → green → refactor):
 | FR-5-7b | 0 件であることが分かる表示にし、`no-change` と区別する | `FR-5-7b: 0 件の update は「変更あり」かつ「CloudFormation リソース差分 0 件」と表示され no-change 表示と一致しない` |
 | FR-5-7c | 判別表示は create / update に限定し、削除プレビューを誤分類しない | `FR-5-7c: delete プレビュー(resources 空)は 0 件注記の対象にならない` / `FR-5-7c: plan / deploy の create/update/delete/no-change × 空 resources の境界で表示が正しい` |
 | FR-5-7d | 判別はレンダラのみで行い `DeployReport` のデータを変えない | `FR-5-7d: 0 件 update の JSON は warnings 空・operation update のままベースラインと一致し、text 出力だけが変わる` |
+| FR-5-7e | 削除対象を 0 件を理由に「変更なし」と表示せず、スタック全体の削除と判別できる表示にする(レンダラ限定・実行の可否は断定しない) | `FR-5-7e: delete の差分行が (変更なし) でも 0 件注記でもない、スタック全体が削除対象と分かる文言になる(text 差分・承認要約の両方)` / `FR-5-7e: 削除対象の JSON は operation delete・resources 空・warnings 不変のままで text 出力だけが変わる` |
 | FR-5-8a | 実行予定が 0 件なら承認を求めない | `FR-5-8a: 全対象が変更なしの再実行では approve が呼ばれない`(NFR-3 冪等性の維持) |
 | FR-5-8b | その場合も再同期を行い exit 0 で終了する | `FR-5-8b: 再同期のみ必要な実行は approve なしで state を同期して exit 0` |
 | FR-5-9a | `--dry-run` / `plan` は承認を求めない | `FR-5-9a: deploy --dry-run と plan では approve が呼ばれない` |

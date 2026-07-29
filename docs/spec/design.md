@@ -316,7 +316,27 @@ deploy report を生成できた場合は、fail-closed の失敗 report およ�
 
 この区別は**レンダラ(`renderText` / `renderApprovalSummary`)の表示ロジックとしてのみ**実装する(FR-5-7d)。`StackDiff.warnings` へ警告を積む、`operation` へ新しい値(`outputs-only` 等)を追加する等、`DeployReport` のデータ側を変更してはならない — `warnings` も `operation` も `renderJson` の出力対象フィールドであり(§9)、データ側で区別すると FR-5-16 の JSON 非回帰に違反する(ベースラインでは当該スタックが `"operation": "update"` / `"resources": []` / `"warnings": []` である)。
 
-**既知の副作用**: この変更により `plan` / `deploy` の**テキスト**差分出力は当該ケースで文言が変わる(`(変更なし)` → 上記)。これは意図した変更であり、FR-5-16 が非回帰を要求するのは **JSON 出力**である。テキスト出力のベースラインを回帰判定に使う場合は、この差分を許容する必要がある。
+**削除プレビューの表示(FR-5-7e)**: 同じ 0 件表示の欠陥は `operation === 'delete'` にも残る。削除は変更セットを介さず `DeleteStack` を直接呼ぶため `resources` は常に空であり、しかも FR-5-7c により 0 件注記の対象から明示的に外れる。その結果 `renderText` / `renderApprovalSummary` が共有する差分行は `(変更なし)` へ落ちる:
+
+```
+[delete] old.yaml@ap-northeast-1 (stack: Old)
+  (変更なし)
+```
+
+これから消えるスタックに「変更なし」と出る。FR-5-7b が create / update について是正したのと同一の失敗様式であり、承認は削除の可否を人間に問う場面そのもので、削除は最も不可逆な操作であるため、誤らせたときの被害はより大きい。したがって削除対象には専用の行を出す(FR-5-7e。例):
+
+```
+[delete] old.yaml@ap-northeast-1 (stack: Old)
+  (スタック全体が削除対象です — 削除は変更セットを介さないためリソース単位の差分はありません)
+```
+
+文言は `(変更なし)`(真の変更なし)とも FR-5-7b の 0 件注記(`(CloudFormation リソース差分 0 件 — …)`)とも区別できるものにする。同一の出力に 3 者が混在しうるためである。判別条件は **`operation === 'delete' && resources.length === 0`** とし、`no-change`(`(変更なし)` が正しい表示)には及ばない。
+
+**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です` / `dry-run のため削除を実行しません`)が担う。
+
+この区別も FR-5-7d と同様に**レンダラ限定**とする。`StackDiff.warnings` へ削除向けの文言を積む、`operation` を変える等、`DeployReport` のデータ側を変更してはならない — FR-5-16 の JSON 非回帰に違反する。
+
+**既知の副作用**: この変更により `plan` / `deploy` の**テキスト**差分出力は当該ケースで文言が変わる(`(変更なし)` → FR-5-7b の 0 件注記)。同じことが FR-5-7e の削除対象にも当てはまり、テキスト出力は削除対象の行についても変わる。いずれも意図した変更であり、FR-5-16 が非回帰を要求するのは **JSON 出力**である。**JSON は create / update / delete のいずれについても不変**である(`operation` / `resources` / `warnings` を変えないため)。テキスト出力のベースラインを回帰判定に使う場合は、この差分を許容する必要がある。
 
 **`ApprovalSummary` の集計規則**: リソース差分 0 件の対象も、通常どおり `create` / `update` の件数に算入する(実行されるため)。そのうえで、注記の対象となった件数を `resourcelessChanges` として別に保持し、要約行に併記する。`ApprovalSummary` は承認要求専用の型であり `DeployReport` の JSON には現れないため、この追加は FR-5-16 に抵触しない。
 
