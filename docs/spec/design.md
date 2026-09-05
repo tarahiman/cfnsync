@@ -144,7 +144,7 @@ stacks:
 - タグの実効値 = `defaultTags` に スタックの `tags`、さらに `regionOverrides.<region>.tags` を順に浅くマージしたもの(後勝ち)。同名キーの重複は設定エラーとせず、より狭いスコープの値が優先される。マージは設定の `stacks` 配下を書き換えるのではなく、(テンプレート × リージョン)へ展開した実効値の算出時に一度だけ行う。実効タグは通常のタグと区別されないため `inputsHash`(§4.3)にも含まれ、`defaultTags` のみの変更は付与先の全スタックを `modified` として検知させる。管理タグ(§8.4)は実行時に最後にマージされるため、`defaultTags` で同名キーを指定しても管理タグの値が優先される。
 - import(§5.4)は実スタックのタグを `stacks` 配下へ書き戻す。`defaultTags` と同名のキーであっても書き戻しは抑止しない(実スタックの値が失われないことを優先する)。この書き戻しと `defaultTags` の相互作用は、キーの重なりの有無で結果が異なる: (a) 実スタックのタグが `defaultTags` と同名のキーを持つ場合、書き戻された `tags` の値が優先されるため実効値は取り込み時点と一致し、当該スタックは事実上そのキーについて `defaultTags` の対象から外れる(ユーザーが設定ファイルを手動編集して `tags` からキーを削除しない限り、`defaultTags` 側の値は使われない)。(b) 実スタックが持たない `defaultTags` のキーは書き戻し対象にならないため、import 直後の次回変更検知は当該スタックを `modified` と判定し、次回デプロイで `defaultTags` の値が新規タグとして適用される。これは意図した挙動である(FR-10: 実環境とローカルの差異を隠蔽しない)。
 - インポート(FR-10)はこのファイルの `stacks` 配下を機械的に更新する。コメント・キー順を保持するため YAML の AST 編集(`yaml` パッケージの Document API)で書き戻す。
-- 設定オブジェクトは未知キーを拒否する。`stacks` のテンプレートパスは相対パスのみとし、絶対パス・NUL・空・正規化後の `.` / `..`、正規化後に重複するパスを config 検証で拒否する。通常の読取では対象が通常ファイルであることを確認する。import の `--write-template` だけは不存在を許可するが、読み取りおよび書き込みでは、対象(未作成なら既存の最長親)の realpath が設定ディレクトリ配下であることを CLI filesystem adapter が再検証し、シンボリックリンク経由の脱出も fail-closed に拒否する。
+- 設定オブジェクトは未知キーを拒否する。`stacks` のテンプレートパスは相対パスのみとし、絶対パス・NUL・空・正規化後の `.` / `..`、正規化後に重複するパス、および予約プレフィックス `cfnsync:` で始まるパス(FR-11-11。削除待ちのスタックキー名前空間 `cfnsync:pending/...`(§4.4)との衝突を排除するため)を config 検証で拒否する。通常の読取では対象が通常ファイルであることを確認する。import の `--write-template` だけは不存在を許可するが、読み取りおよび書き込みでは、対象(未作成なら既存の最長親)の realpath が設定ディレクトリ配下であることを CLI filesystem adapter が再検証し、シンボリックリンク経由の脱出も fail-closed に拒否する。
 - CLI の `--region` による既定リージョン上書き後にも実効設定全体を再検証する。明示依存は同一リージョンの管理対象へ解決できることを必須とし、自己依存も拒否する。
 - **(リージョン, スタック名)の一意性**(FR-11-10a): 解決済みターゲットのうち 2 つ以上が同一の (リージョン, スタック名) を指す設定は `ConfigError` で拒否する(スタック名の明示指定・導出規約・`regionOverrides` のいずれに由来しても同じ)。同一リージョン内でスタック名は物理スタックの一意識別子であり、複数のスタックキーが同一の物理スタックを指すことを許すと、**変更セットを事前作成する実行(§5.3 Phase A)で破綻する**: スタックキー A が物理スタック S へ変更セットを作成して保持した後、同じ S を指すスタックキー B の残存回収(§7)が A の未実行変更セットを「自ステート ID の残骸」と判定して削除し、Phase B の A が実行直前再検査(FR-5-17a)で自変更セットを見つけられず fail-closed に停止する。fail-closed には落ちるが原因が追いにくいため、AWS へアクセスする前の設定検証で弾く。
 - 設定検証で捕捉できない経路(テンプレートパスの変更により旧ステートのエントリと新しい設定が同一の物理スタックを指す等)は、変更検知の後・AWS 副作用の前に同じ観点で fail-closed に拒否する(FR-11-10b)。`usecase/deploy` が削除側について既に持つ「現に管理対象である物理スタックの削除を拒否する」判定(`survivingPhysicalIds`)と同一の物理識別子 `(region, stackName)` を用い、create/update 側にも適用範囲を広げる。
@@ -153,7 +153,7 @@ stacks:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "accountId": "123456789012",
   "generation": 42,
   "stacks": {
@@ -170,18 +170,33 @@ stacks:
       "lastAction": "UPDATE",
       "lastSuccessAt": "2026-07-19T00:00:00Z"
     }
+  },
+  "pendingDeletions": {
+    "prod-network-old@ap-northeast-1": {
+      "stackName": "prod-network-old",
+      "stackId": "arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network-old/fedcba98-7654-3210-fedc-ba9876543210",
+      "region": "ap-northeast-1",
+      "exports": ["prod-network-old-VpcId"],
+      "imports": [],
+      "dependsOn": [],
+      "dependencyAnalysisIncomplete": false,
+      "originStackKey": "network.yaml@ap-northeast-1",
+      "reason": "rename",
+      "recordedAt": "2026-07-19T00:00:00.000Z"
+    }
   }
 }
 ```
 
 - `accountId`: このステートが表す AWS アカウント。初回の変更系実行時に接続先から記録し、以後 STS の解決結果と不一致なら実行を拒否する(FR-1)。複数アカウントを扱う場合は設定+ステートの組をディレクトリごと分離する。
-- `schemaVersion`: 現行は `2`。`schemaVersion: 1` は読み込み時に受理し、`dependsOn` が存在しない各エントリを `dependsOn: null`(明示依存情報なし・unknown)、`stackId` がないエントリを未移行としてメモリ上で識別する。`dependsOn` unknown だけなら deploy/update は継続できるが自動削除は FR-6-5 により拒否する。`stackId` 未記録なら UPDATE と自動削除の双方を拒否し、import または明示的な移行を案内する。次回の成功保存では `schemaVersion: 2` として正規化する。
+- `schemaVersion`: 現行は `3`。`schemaVersion: 1` / `2` は読み込み時に受理し、`pendingDeletions` を空(削除待ちなし)として補完する。`schemaVersion: 1` はさらに、`dependsOn` が存在しない各エントリを `dependsOn: null`(明示依存情報なし・unknown)、`stackId` がないエントリを未移行としてメモリ上で識別する。`dependsOn` unknown だけなら deploy/update は継続できるが自動削除は FR-6-5 により拒否する。`stackId` 未記録なら UPDATE と自動削除の双方を拒否し、import または明示的な移行を案内する。次回の成功保存ではいずれも `schemaVersion: 3` として正規化する。**`schemaVersion: 3` を保存したステートは旧バージョンの cfnsync では読めない**(旧実装は 1 / 2 だけを受理するため)。移行と復旧手順は [CHANGELOG](../../CHANGELOG.md#10-ステート-schema-v3-への移行と削除待ちスタックの追跡) に記録する。
 - `stackId`: CloudFormation が返す不変の Stack ARN。作成・import・再同期の成功時に保存する。UPDATE の変更セット作成直前および `DeleteStack` 直前に `DescribeStacks` の `stackId` と完全一致を検証し、不一致または未記録なら自動操作を拒否して import/移行を案内する。削除 API には検証済み ARN を渡す。
 - `templateHash`: デプロイ成功時点のテンプレートファイル内容の SHA-256。
 - `inputsHash`: `templateHash` + スタック名 + 実効パラメータ + タグ + Capabilities + 明示依存(`dependsOn`)の複合ハッシュ。**設定ファイルのみの変更もデプロイ対象として検知する**ため(FR-1 の変更検知を「デプロイへの入力全体」に適用)。旧方式の hash はこの変更後の初回検知で `modified` となり、成功保存時に新方式へ移行する。
 - `exports` / `imports`: 前回成功時点の依存辺。テンプレートファイル削除後の削除順序決定に使用(FR-6, FR-8)。
-- `dependsOn`: 前回成功時点の**明示依存**(設定の `dependsOn` をスタックキーに解決したもの)。自動解析辺と同様に旧グラフの復元に含める。新たに成功保存する v2 エントリでは配列を必須とする。v1 からの移行で欠落していたエントリに限り、次の成功保存まで `null` を unknown の印として保持する。unknown は FR-6-4/FR-6-5 の fail-closed 対象であり、自動削除を拒否する。
+- `dependsOn`: 前回成功時点の**明示依存**(設定の `dependsOn` をスタックキーに解決したもの)。自動解析辺と同様に旧グラフの復元に含める。新たに成功保存する v2 / v3 エントリでは配列を必須とする。v1 からの移行で欠落していたエントリに限り、次の成功保存まで `null` を unknown の印として保持する。unknown は FR-6-4/FR-6-5 の fail-closed 対象であり、自動削除を拒否する。
 - `dependencyAnalysisIncomplete`: 前回成功時点のテンプレート解析に解決不能な動的 Export / Import 警告が残っていたことを示す。解析警告が残っても、明示 `dependsOn` が1件以上ある場合は利用者が依存関係を補完済みとみなし `false` として保存する。明示 `dependsOn` がない場合だけ `true` とする。`true` は FR-6-5 の曖昧な依存情報として当該スタックの自動削除を拒否する。
+- `pendingDeletions`: **削除待ち**(FR-1-16)。`stacks` から外れたが AWS 上にまだ存在しうる物理スタックの記録。キーは同一リージョン内で物理スタックを一意に識別する `<スタック名>@<リージョン>`。値は FR-6 の安全装置が必要とする情報(`stackName` / `stackId` / `region` / `exports` / `imports` / `dependsOn` / `dependencyAnalysisIncomplete`)と由来(`originStackKey` / `reason` / `recordedAt`)を持ち、`templateHash` / `inputsHash` / `lastAction` は持たない — 削除以外の操作対象にはならないためである。`stacks` のエントリとキー空間を共有しないため、リネームで同一スタックキーへ新エントリを保存しても旧スタック名の情報が失われない(§4.4)。読み込み時は `stacks` と同じ内部整合性検証を行う: キーが `<stackName>@<region>` と一致すること、`stackId` が ARN 形式ならリージョン・アカウントが一致すること、`originStackKey` のリージョンが一致すること。不一致は `StateCorruptionError`(fail-closed)。
 - `generation`: 保存のたびにインクリメント。読込時点の世代(`s3` では ETag)との比較により compare-and-swap を実現する(FR-1、§4.5)。
 
 ### 4.4 変更分類(core/detect)
@@ -195,7 +210,9 @@ stacks:
 
 ハッシュはファイル内容に基づくため、タイムスタンプのみの変更は `unchanged` となる(FR-1)。
 
-- **スタック名の変更**(設定から導出したスタック名とステートの記録が不一致)は「旧スタック名のスタックの削除 + 新スタック名での新規作成」として計画する(FR-1)。削除側は FR-6 の安全装置(`--allow-delete` 等)に従うため、既定では警告となり旧スタックは残る。
+- **スタック名の変更**(設定から導出したスタック名とステートの記録が不一致)は「旧スタック名のスタックの削除 + 新スタック名での新規作成」として計画する(FR-1)。削除側は FR-6 の安全装置(`--allow-delete` 等)に従うため、既定では警告となり旧スタックは残る。**旧スタックが残る場合でも追跡を失わないため、新スタック名の作成成功をステートへ記録する保存操作は、同じ compare-and-swap のペイロードに旧スタック名の削除待ち(§4.3 `pendingDeletions`)を含める**(FR-1-18)。2 回の保存へ分けると、その間の中断で旧スタック名がステートから脱落する(Issue #16)。
+- **削除待ちの検知**: `detectChanges` は `pendingDeletions` 1 件につき `deleted` 分類の対象を 1 件生成する(FR-1-21)。スタックキーは予約プレフィックスを用いた `cfnsync:pending/<スタック名>@<リージョン>` とし、`<スタック名>` に `@` を含められない CloudFormation の命名規則と、`cfnsync:` で始まるテンプレートパスの拒否(§4.2)により、設定由来のスタックキーと衝突しない。生成順は純粋な `deleted` の後、キーの文字列昇順で決定的とする。削除待ちは `stacks` のエントリを持たないため、`DetectedEntry` では `stateEntry` ではなく `pendingDeletion`(記録本体と ID)を保持する。
+- 削除待ちは、対応する物理スタックの不在または削除完了を確認するまでステートに残る(FR-1-19)。`--allow-delete` 未指定・削除保護・依存情報の欠落・削除失敗・承認拒否のいずれでも消えない。連続したリネーム(Old → New → Newer)では物理スタックごとに 1 件ずつ積み上がる(FR-1-22)。
 - `dependsOn` 等の依存情報のみの変更で CloudFormation 上の差分が生じない場合でも、ステートの依存辺(`exports` / `imports`)と `inputsHash` は最新化して保存する(削除順序の決定に使う旧グラフを陳腐化させないため)。
 
 ### 4.5 ステートバックエンドと排他制御
@@ -227,7 +244,7 @@ config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。C
 1. config 検証 → AccountGuard(変更セット作成は変更系のため必須)→ ステートロック取得
 2. state 読込 → 変更分類 → 依存グラフ構築(新旧統合)→ 実行計画立案
 3. `added` / `modified` の各スタックキーに対し変更セットを作成 → `DescribeChangeSet` で差分取得 → **describe 後に変更セットを削除**(残骸を残さない。クラッシュ時の残骸は §7 の残存回収が拾う)
-4. `deleted` は削除プレビューとして差分出力に含める(FR-6)
+4. `deleted` は削除プレビューとして差分出力に含める(FR-6)。削除待ち(§4.3 `pendingDeletions`)も同じ `delete` 操作として含め、由来を示す警告を `StackDiff.warnings` へ付ける(FR-6-11)。削除待ちの対象スタックが既に存在しない場合は、Phase A の既成事実の再同期として記録を除去する(FR-5-5b7)
 5. 差分を出力(リージョン明示・Replacement 警告・NoEcho マスク)。リソース差分 0 件で成功した変更セットは「変更あり」として扱う(§5.3.1、FR-5-7a〜d)
 6. 終了コード: 差分あり 2 / なし 0 / エラー 1(FR-5-20d)
 7. `plan` は何も実行しないため承認を求めない(FR-5-9a)。`ExecuteChangeSet` / `DeleteStack` は 1 件も行わない(FR-5-20b)
@@ -256,7 +273,8 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
    - リソース差分 0 件だが成功した変更セット(Outputs / Export のみの変更): **「変更あり」として実行対象に含める**(§5.3.1、FR-5-7a)
    - 空変更セット(既知の「変更なし」定型文で `FAILED`): 変更セットを削除し、「変更なし」として差分へ積み、**再同期をここで保存する**(FR-5-5b1)
    - CREATE 復旧(§7、`added` だが同名スタックが実在し全一致): 比較の上「変更なし」として差分へ積む。**再同期をここで保存できるのは、検証不能な入力が存在しない場合(対象テンプレートに `NoEcho` パラメータがなく `dependsOn` も空)に限る**(FR-5-5b3)。検証不能な入力が残る場合は保存せず、当該対象を Phase A の失敗として扱い `cfnsync import` を案内する(§7 / FR-1)
-   - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合は**ステートからの除去をここで保存する**(FR-5-5b2)
+   - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合は**ステートからの除去をここで保存する**(FR-5-5b2)。対象が削除待ち(§4.3)なら、除去するのは `pendingDeletions` の当該記録である(FR-1-20 / FR-5-5b7)。これは `DeleteStack` は成功したがステート保存だけが CAS 競合・fencing 喪失で失敗した実行からの収束経路である
+   - リネーム対の delete(同一スタックキーの create と対をなす旧スタック名側)は、Phase A では `stacks` のエントリを除去しない — 同一スタックキーの新エントリを消してしまうためである。この対の追跡は `pendingDeletions` が担う(§4.4、FR-1-18)
    - Phase A が行う AWS の変更操作は「自ステートの残存変更セットの回収」と「変更セットの作成・削除」だけであり、`ExecuteChangeSet` / `DeleteStack` は行わない(FR-5-5a)。ステート保存は**既成事実の再同期に限り**許され(FR-5-5b1〜b3)、実行の成功記録は行わない(FR-5-5c)
    - Phase A で 1 件でも失敗した場合、承認を求めず §5.3.3 のクリーンアップを行って exit 1(FR-5-12a / FR-5-12b / FR-5-12c。`--on-failure continue` でも同じ)
 4. **承認**(FR-5-2a): Phase B に `ExecuteChangeSet` または `DeleteStack` が 1 件以上予定されている場合にだけ、`DeployDeps.approve`(§5.3.2)を**実行全体で 1 回だけ**呼ぶ。`--auto-approve` 指定時(FR-5-2b)、`plan` 時(FR-5-9a)、および実行予定が 0 件の場合(FR-5-8a)は呼ばない
@@ -277,7 +295,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
 
    各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの公開本文を再利用する。`CfnSyncError` は `publicMessage` だけを入力とし、stackKey / region は stack entry の構造化フィールドへ分離する。内部 cause は保持しても report / progress / JSON へ昇格させず、分類不能な例外は固定の安全な文言に置換する。これにより NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
    2 フェーズ化により、**あるスタックについての phase の相対順序は変わらない**(`changeset-create-start` → `diff-ready` → `execute-start` → `done`)が、複数スタックがある場合は全対象の `diff-ready` が最初の `execute-start` に先行する。承認そのものには `ProgressPhase` を追加しない — `ProgressEvent` は stackKey / region を必須とするスタック単位の契約であり、実行全体で 1 回の承認は該当しないためである。承認要求の発生は `approve` ポートの呼び出しとして観測でき、拒否後の未実行対象は既存の `skipped` phase で通知される。
-6. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)。削除の安全装置(削除保護・依存情報の欠落)による拒否は Phase B の失敗として扱う — 拒否は不可逆な副作用を伴わないため、条件を Phase A へ二重実装せず、`DeleteStack` 直前の fail-closed 再検証に一本化する
+6. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)。削除の安全装置(削除保護・依存情報の欠落)による拒否は Phase B の失敗として扱う — 拒否は不可逆な副作用を伴わないため、条件を Phase A へ二重実装せず、`DeleteStack` 直前の fail-closed 再検証に一本化する。削除待ちも同じ経路・同じ安全装置を通る(FR-6-7)。リネーム対の旧スタック削除は、`DeleteStack` の直前に対の create の成功記録(= 当該削除待ちの存在)を確認し、記録がなければ削除を拒否する(FR-6-9)
 7. `plan` は Phase A だけを実行し、**変更セットを保持せず** describe 直後に自身の変更セットを削除する(FR-5-9a / FR-5-20b / FR-5-20c)。承認を行わない以上、変更セットを保持する理由がない。保持経路を流用すると変更セットの生存期間・同時残存数・クラッシュ時の残骸・`REVIEW_IN_PROGRESS` の殻の滞留時間が長くなるため、`plan` は保持経路を用いない
 
 人間可読な text 差分の色と無色化の優先順位は plan と同じとする(FR-3-4 / FR-3-5)。
@@ -476,6 +494,8 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 
 正常時の graph JSON schema は維持する。循環等で graph result を生成できない場合は §9 の共通エラー JSON を stdout へ出力する。
 
+`graph` はステートを一切読まないため、削除待ち(§4.3 `pendingDeletions`)をノードとして含めない(FR-6-12)。削除済み・削除予定のスタックを従来から表示していないことと同じ扱いであり、削除待ちのためだけにステート読み取りを導入するとコマンドの性質と性能特性(NFR-5)が変わる。削除待ちの可視化は `status` / `plan` / `deploy` が担う。
+
 ### 5.6 `cfnsync force-unlock`
 
 異常終了で残存したステートロック(`s3` バックエンド)を手動で解放する。ロックに記録された実行 ID の指定を必須とし、現在のロックの実行 ID が指定値と一致する場合のみ `If-Match` 条件付き削除で解放する(読み取りから削除までの間の所有者交代による誤解放を防ぐ。FR-1)。
@@ -511,7 +531,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
   - `REVIEW_IN_PROGRESS`(変更セット未実行のままの空スタック)→ **スタック自体の `DeleteStack` は行わない**(検証と削除の間の競合窓で他主体の変更セットを巻き込む余地を構造的に排除する)。自ステート ID の変更セットのみ個別に破棄し、既存の `REVIEW_IN_PROGRESS` スタック上に `CREATE` 型変更セットを再作成して続行する(CloudFormation は `REVIEW_IN_PROGRESS` スタックへの `CREATE` 型作成を許可している)。IF 他主体の変更セット(非 `cfnsync-` または別ステート ID)が存在する場合、変更セットを作成せず命名衝突・並行操作の可能性として fail-closed に停止し、手動対応を案内する(FR-2)
   - スタックなし → `CREATE` 型(この場合は残存回収(`ListChangeSets`)を行わず直接 `CreateChangeSet` へ進む。前述のとおり不存在スタックへの `ListChangeSets` は AWS の実エラーとなるため)/ あり → `UPDATE` 型
 - **実スタックとの突合による復旧分岐**(FR-1。AWS 操作成功後・ステート保存前の中断からの自動収束):
-  - `added` 分類だがスタックが既に存在する場合(過去実行の CREATE 成功後にステート保存だけが失敗したケース、または命名衝突): 実スタックから検証可能な入力の**すべて**を希望する内容と比較する — `GetTemplate`(`Original` ステージ)で取得したテンプレートのパース後同値比較、`DescribeStacks` で取得した実効パラメータ・タグ・Capabilities の完全一致。希望側の実効 parameters は、希望 template の scalar な `Parameters.<name>.Default` を `String(value)` で文字列化した値を基底とし、config の共通＋region override を解決済みの明示値で上書きする。Default がない未指定値は足さず、NoEcho は Default／明示値のどちらでも比較外とする。object・array・intrinsic の Default は推測も黙示無視もせず比較不能として再同期を拒否する(fail-closed)。Default 補完は復旧比較だけに用い、config object や `inputsHash` の parameter 部分は変更しない。一致条件には管理タグ(§8.4)による由来確認を含み、IF 管理タグが自ステート ID と一致しない(欠如を含む)場合、他がすべて一致しても再同期せずエラーとする(fail-closed。NoEcho 実値のように検証不能な入力があっても由来を確認できる)。**検証不能な入力が 1 つでも残る場合は再同期しない**(fail-closed): 対象テンプレートに `NoEcho` パラメータが宣言されている、または当該スタックに明示依存 `dependsOn` が 1 件以上ある場合、`GetTemplate` / `DescribeStacks` からは同値性を確認できない入力が残る。この場合は他のすべてが一致していてもステートを保存せず、当該対象を失敗として扱い `cfnsync import` を案内する。管理タグは「自ステートの実行が作成した」ことしか示さず、**どの入力値で作成されたか**は証明しないためである。したがって再同期してよいのは、検証可能な入力のすべてが一致し、**かつ NoEcho パラメータも `dependsOn` も存在しない**場合に限る。すべて満たした場合のみデプロイ成功として fencing 検証の上でステートに記録(再同期)して次へ進む。一つでも不一致がある場合は命名衝突または管理外スタックの可能性としてエラーとし、インポート(§5.4)を案内する
+  - `added` 分類だがスタックが既に存在する場合(過去実行の CREATE 成功後にステート保存だけが失敗したケース、または命名衝突): 実スタックから検証可能な入力の**すべて**を希望する内容と比較する — `GetTemplate`(`Original` ステージ)で取得したテンプレートのパース後同値比較、`DescribeStacks` で取得した実効パラメータ・タグ・Capabilities の完全一致。希望側の実効 parameters は、希望 template の scalar な `Parameters.<name>.Default` を `String(value)` で文字列化した値を基底とし、config の共通＋region override を解決済みの明示値で上書きする。Default がない未指定値は足さず、NoEcho は Default／明示値のどちらでも比較外とする。object・array・intrinsic の Default は推測も黙示無視もせず比較不能として再同期を拒否する(fail-closed)。Default 補完は復旧比較だけに用い、config object や `inputsHash` の parameter 部分は変更しない。一致条件には管理タグ(§8.4)による由来確認を含み、IF 管理タグが自ステート ID と一致しない(欠如を含む)場合、他がすべて一致しても再同期せずエラーとする(fail-closed。NoEcho 実値のように検証不能な入力があっても由来を確認できる)。**検証不能な入力が 1 つでも残る場合は再同期しない**(fail-closed): 対象テンプレートに `NoEcho` パラメータが宣言されている、または当該スタックに明示依存 `dependsOn` が 1 件以上ある場合、`GetTemplate` / `DescribeStacks` からは同値性を確認できない入力が残る。この場合は他のすべてが一致していてもステートを保存せず、当該対象を失敗として扱い `cfnsync import` を案内する。管理タグは「自ステートの実行が作成した」ことしか示さず、**どの入力値で作成されたか**は証明しないためである。したがって再同期してよいのは、検証可能な入力のすべてが一致し、**かつ NoEcho パラメータも `dependsOn` も存在しない**場合に限る。すべて満たした場合のみデプロイ成功として fencing 検証の上でステートに記録(再同期)して次へ進む。**当該対象がスタック名変更(FR-1-14)の新名側である場合、この再同期の保存ペイロードには旧スタック名の削除待ち(§4.3)を同時に含める**(FR-1-18) — 再同期は同一スタックキーの記録を新スタック名で上書きするため、含めないと旧スタック名の追跡が失われる(Issue #16)。一つでも不一致がある場合は命名衝突または管理外スタックの可能性としてエラーとし、インポート(§5.4)を案内する
 
     この fail-closed 条件を採用した理由、検証不能入力を除外する方式で生じる変更喪失経路、代替案は
     [ADR-0002](../decisions/0002-create-recovery-fail-closed.md) に記録する。
@@ -524,7 +544,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
     4. `cfnsync plan` で差分を確認し、`cfnsync deploy` を実行する
 
     **既知の制限**: この復旧には**手動の秘密値復元**が必要である。import が NoEcho の実値を取得できない(AWS がマスク値しか返さない)ことに起因する構造的な制約であり、自動化しない。`import` に「NoEcho の希望値を保持する」専用契約を設ける案は、既存の import セマンティクスを変える大きな変更のため採用しない
-  - `deleted` 分類だがスタックが存在しない場合: 削除成功とみなし、ステートからエントリを除去して CAS 保存する
+  - `deleted` 分類だがスタックが存在しない場合: 削除成功とみなし、ステートからエントリを除去して CAS 保存する。対象が削除待ち(§4.3)なら除去するのは `pendingDeletions` の当該記録である(FR-1-20)
 
 ## 8. 安全装置
 
@@ -549,6 +569,15 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - 削除前チェック: 削除保護有効 → エラー(自動解除しない)。ステートに依存辺が存在しない・復元できない → 削除拒否 + 手動対応の案内。依存メタデータが unknown/incomplete で provider を特定できない場合は、同じ削除バッチの他対象も副作用前に停止する。
 - 統合グラフの逆トポロジカル順で削除。削除成功のたびにステートからエントリを除去し保存(CAS)。
 - 削除の拒否・失敗は通常の失敗伝播へ必ず渡し、削除時だけ依存辺を逆向きに辿る。失敗した dependent が必要とする provider は `--on-failure continue` でも必ず skipped とする。
+
+**削除待ち(pending deletion)**(§4.3、FR-1-16、Issue #16):
+
+- 削除待ちは `stacks` から外れた物理スタックの記録であり、**通常の削除対象とまったく同じ経路・同じ安全装置**を通る(FR-6-7)。`--allow-delete`、統合グラフの逆順、依存情報の復元可否、削除保護、`REVIEW_IN_PROGRESS` への `DeleteStack` の禁止、`stackId`(ARN)の一致確認、`DeleteStack` 直前とステート保存直前の fencing、CAS 保存、FR-7 の接続先検証のいずれも省略しない。fencing はここでもベストエフォートであり、それ以上の保証を主張しない。
+- **削除順序**: 統合グラフを構築する旧ノード集合に、削除待ちが保持する `exports` / `imports` / `dependsOn` から復元したノードを加える(FR-6-8)。ノードキーは `cfnsync:pending/<スタック名>@<リージョン>`。IF 削除待ちの `dependsOn` を統合グラフ上のノードへ解決できない場合、当該削除待ちの削除を拒否する(FR-6-5) — 削除順を安全に復元できないためである。この拒否は依存メタデータ欠落と同じ扱いで、同じ削除バッチの他対象も副作用前に停止させる。
+- **物理スタック衝突**: 削除待ちの (リージョン, スタック名) を設定由来の create / update 対象が同時に指す構成(例: `Old` → `New` のリネーム後に削除待ち `Old` を残したまま `New` → `Old` へ戻す)は、`usecase/deploy` の物理識別子判定(§4.2、FR-11-10b)へ削除待ちを含めることで AWS 副作用の前に fail-closed で拒否する(FR-6-10)。
+- **リネーム対の前提条件**: 同一実行内で計画されたリネーム対の旧スタック削除は、`DeleteStack` の直前に対の create の成功記録(= 当該削除待ちの存在)を確認し、記録がなければ削除を拒否する(FR-6-9)。`--on-failure continue` で新スタックの作成が失敗した場合に、旧スタックだけを削除してしまう経路を塞ぐ。
+- **削除成功時のステート反映**: 削除待ちの削除が成功したら `pendingDeletions` から当該記録を除去して CAS 保存する。リネーム対の旧スタック削除でも同じであり、`stacks` の新エントリには触れない。
+- **収束**: 削除の拒否・失敗・スキップ・承認拒否では記録を残す(FR-1-19)。`DeleteStack` は成功したがステート保存が失敗した場合は、次回実行の Phase A が `DescribeStacks` で不在を確認して記録を除去する(FR-1-20 / FR-5-5b7)。
 
 ### 8.4 管理タグ(provenance)
 
@@ -700,12 +729,12 @@ jobs:
 
 | 要件 | 実現箇所 |
 |---|---|
-| FR-1 変更検知・ステート | core/detect, core/state, §4.3–4.5 |
+| FR-1 変更検知・ステート | core/detect, core/state(`stacks` / `pendingDeletions`), §4.3–4.5 |
 | FR-2 変更セット作成 | usecase/executor, §7 |
 | FR-3 差分表示 | report, §5.2 |
 | FR-4 デプロイ実行 | usecase/executor, §5.3, §9 |
 | FR-5 一括実行・承認 | usecase(deploy = plan+approve+apply), §5.2, §5.3, §5.3.1〜§5.3.5, report(ApprovalRequest) |
-| FR-6 削除 | §8.3, core/graph(旧グラフ統合) |
+| FR-6 削除 | §8.3, core/graph(旧グラフ統合 + 削除待ちノード), usecase/delete |
 | FR-7 認証・誤接続防止 | usecase/guard, §8.1, cli/commands(リージョン解決。§3) |
 | FR-8 依存マッピング | core/template, core/graph, §6 |
 | FR-9 依存順デプロイ | core/plan, §5.3 |
