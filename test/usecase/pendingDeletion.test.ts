@@ -789,4 +789,42 @@ describe('usecase/deploy — FR-6-9: 新スタックが作成されていなけ�
         .stackName,
     ).toBe('Old');
   });
+
+  it('FR-6-9a(敵対的レビュー): 無関係な過去のリネーム由来の削除待ちを、今回の paired create 成功と誤認しない', async () => {
+    // 過去、別のテンプレートキー(other.yaml)のリネームが同じスタック名 'Old' を
+    // 削除待ちとして残していた(originStackKey が今回のリネームと異なる)。
+    // pendingDeletionId は (region, stackName) だけで決まるため、今回 a.yaml を
+    // Old -> New へリネームすると、この無関係な残骸と同じ ID('Old@REGION')を
+    // 参照してしまう。「ID が存在する」だけでは「今回の対の create が成功した」
+    // ことの証明にならない — originStackKey が一致して初めて自分自身の対だと言える。
+    const templates = new Map([['a.yaml', TEMPLATE]]);
+    const oldConfig = configOf({ 'a.yaml': { stackName: 'Old' } });
+    const newConfig = configOf({ 'a.yaml': { stackName: 'New' } });
+    const staleState = upsertPendingDeletion(
+      recordedState(oldConfig, templates),
+      PENDING_OLD,
+      makePending({ originStackKey: `other.yaml@${REGION}` }),
+    );
+    const s = setup(newConfig, templates, staleState);
+    existingStack(s.cfn, 'Old');
+    // 新スタックの作成は失敗する。
+    s.cfn.waitResults.set('New', [
+      makeStackSummary({ stackName: 'New', status: 'CREATE_FAILED' }),
+    ]);
+
+    const result = await s.run({ allowDelete: true, onFailure: 'continue' });
+
+    expect(result.exitCode).toBe(1);
+    expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(1);
+    // 無関係な削除待ちの存在を「今回の paired create 成功」の証拠として扱ってはならない。
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(
+      (s.backend.stored?.state as CfnSyncState).stacks[`a.yaml@${REGION}`]
+        .stackName,
+    ).toBe('Old');
+    // 無関係な削除待ちの記録自体は変えない(それが指す物理スタックの削除可否とは無関係)。
+    expect(
+      (s.backend.stored?.state as CfnSyncState).pendingDeletions[PENDING_OLD],
+    ).toBeDefined();
+  });
 });

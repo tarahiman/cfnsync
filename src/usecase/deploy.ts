@@ -1688,10 +1688,20 @@ async function deleteApprovedStack(
   // FR-6-9: リネーム対の旧スタックは、対となる新スタックの作成成功が state へ
   // 記録済み(= 削除待ちが存在する)場合にだけ削除する。create が失敗・中断した実行で
   // 旧スタックだけを削除しないための fail-closed ガードである。
+  //
+  // 敵対的レビュー指摘: 削除待ちの ID は (region, stackName) だけで決まるため、
+  // 無関係な過去のリネームが同じスタック名で残した削除待ちと衝突しうる。
+  // 「ID が存在する」だけでは「今回の対の create が成功した」ことの証明にならない。
+  // originStackKey が今回の対(operation.stackKey)と一致して初めて、自分自身の
+  // 対が記録した削除待ちだと判定できる。
+  const pairedPendingDeletion =
+    action.pendingDeletionId === undefined
+      ? undefined
+      : ctx.state.state.pendingDeletions[action.pendingDeletionId];
   if (
     action.requiresPairedCreate &&
-    (action.pendingDeletionId === undefined ||
-      ctx.state.state.pendingDeletions[action.pendingDeletionId] === undefined)
+    (pairedPendingDeletion === undefined ||
+      pairedPendingDeletion.originStackKey !== action.operation.stackKey)
   ) {
     const message =
       `スタック '${record.stackName}' はリネーム対の旧スタックですが、` +

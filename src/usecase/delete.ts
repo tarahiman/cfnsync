@@ -145,6 +145,24 @@ export async function deleteManagedStack(
     );
   }
 
+  // FR-6-9(敵対的レビュー指摘): 削除待ちの ID は (region, stackName) だけで決まるため、
+  // 無関係な過去のリネーム・import による再取り込みと衝突しうる。削除対象と同じ
+  // stackId(ARN) を、現在 `stacks` の別キーが指している場合、その物理スタックは
+  // いま生きた管理対象として追跡されているということであり、削除待ちの由来
+  // (今回のリネームか、過去の積み残しか)にかかわらず削除してはならない。
+  const liveOwner = Object.entries(input.state.stacks).find(
+    ([key, entry]) =>
+      key !== target.stackKey && entry.stackId === target.entry.stackId,
+  );
+  if (liveOwner) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の物理スタックは、現在テンプレートパス ` +
+        `'${liveOwner[0]}' で管理対象として追跡されています。生きた管理対象を誤って` +
+        `削除しないため削除を拒否します`,
+    );
+  }
+
   // FR-2 / FR-2-10: DeleteStack の直前に実状態を再取得し、並行操作と
   // REVIEW_IN_PROGRESS を fail-closed に拒否する。競合で既に消えた場合は復旧成功扱い。
   const summary =

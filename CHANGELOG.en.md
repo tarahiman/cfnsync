@@ -154,6 +154,8 @@ Fixes a bug where renaming `stackName` and leaving the old stack undeleted dropp
 
 **Other behavior change**: with `--on-failure continue`, a run could previously delete the old stack even though creating the renamed stack had failed. The old stack is now deleted only when the successful creation of its counterpart is already recorded in state.
 
+**Adversarial-review fix (`FR-6-9a` / `FR-6-13`)**: the "deleted only when the counterpart's successful creation is already recorded in state" check above initially verified only "does a pending deletion with this id exist", and a pending deletion's id is derived solely from its physical stack name and region. **An unrelated pending deletion left behind by an older, unrelated rename (or a prior run's leftover) that happens to share the same stack name would satisfy that check, letting the tool wrongly conclude "this run's paired create succeeded" and delete the old stack of a rename whose new stack had actually failed to create.** A related gap let a pending deletion's physical stack be deleted even when `import` had since brought that same physical stack back under live management at a different template path. Both are fixed: the tool now also verifies that the pending deletion's `originStackKey` matches this run's own pair (`FR-6-9a`), and that the target `stackId` is not currently held by another `stacks` key (`FR-6-13`), immediately before `DeleteStack`. No public API changes; this only adds refusal cases (new error messages).
+
 ### Added
 
 - `--auto-approve` (`-y`) on `deploy`.
