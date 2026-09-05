@@ -34,7 +34,7 @@
 | NFR-4 セキュリティ | §8.1, §8.2, §9 | `usecase/redactor`, `report`, `usecase/guard` | `test/usecase/redactor.test.ts`, `test/report/report.test.ts`, `test/usecase/guard.test.ts`, `test/cli/cli.test.ts` |
 | NFR-5 パフォーマンス | §7, §9, §10 | `aws/cloudformation`, local-only status / graph path | `test/aws/cloudformation.test.ts`, `test/usecase/status-graph.test.ts`, CI での suite 実行時間観測 |
 | NFR-6 保守性 | §3, §10 | ports & adapters の依存境界 | ディレクトリ構造・依存レビュー、`pnpm run build` |
-| NFR-7 出力言語 | §9 | `src` 全体の人間可読メッセージ、`scripts/check-message-language.mjs` | `pnpm run lint`(自動チェック)、`test/cli/cli.test.ts`、`test/report/report.test.ts`、各 usecase テストのメッセージアサーション |
+| NFR-7 出力言語 | §9 | `src` 全体の人間可読メッセージ、`scripts/check-message-language.mjs` | `test/scripts/check-message-language.test.ts`(検査自体の境界値テスト)、`pnpm run lint`(自動チェック)、`test/cli/cli.test.ts`、`test/report/report.test.ts`、各 usecase テストのメッセージアサーション |
 
 設計節番号は [design.md](./design.md) を指す。テストファイル内では、個々の `it(...)` 名に `FR-*` / `NFR-*`
 または設計節 ID を含め、サブ基準単位の証跡を検索できるようにする。
