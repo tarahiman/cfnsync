@@ -1689,19 +1689,32 @@ async function deleteApprovedStack(
   // 記録済み(= 削除待ちが存在する)場合にだけ削除する。create が失敗・中断した実行で
   // 旧スタックだけを削除しないための fail-closed ガードである。
   //
-  // 敵対的レビュー指摘: 削除待ちの ID は (region, stackName) だけで決まるため、
+  // 敵対的レビュー指摘(1回目): 削除待ちの ID は (region, stackName) だけで決まるため、
   // 無関係な過去のリネームが同じスタック名で残した削除待ちと衝突しうる。
   // 「ID が存在する」だけでは「今回の対の create が成功した」ことの証明にならない。
   // originStackKey が今回の対(operation.stackKey)と一致して初めて、自分自身の
-  // 対が記録した削除待ちだと判定できる。
+  // 対が記録した削除待ちだと判定できる(FR-6-9a)。
+  //
+  // 敵対的レビュー指摘(2回目): 同じテンプレートキーが過去に同じ物理スタック名で
+  // リネームされ、その削除待ちが残ったまま config が旧名へ戻され import された場合、
+  // originStackKey は今回のリネームの対と偶然同じキーになる(テンプレートキー自体は
+  // 変わっていないため)。この場合は originStackKey の一致だけでは不十分であり、
+  // state.stacks[operation.stackKey] が実際に「別の(新しい)物理スタック」へ
+  // 置き換わっている(= 削除しようとしている旧スタックの stackId と異なる)ことまで
+  // 確認しなければならない。create が失敗・未実行なら当該キーは旧スタックの stackId の
+  // ままであり、この確認で fail-closed に拒否できる。
   const pairedPendingDeletion =
     action.pendingDeletionId === undefined
       ? undefined
       : ctx.state.state.pendingDeletions[action.pendingDeletionId];
+  const currentEntryAtPairKey =
+    ctx.state.state.stacks[action.operation.stackKey];
   if (
     action.requiresPairedCreate &&
     (pairedPendingDeletion === undefined ||
-      pairedPendingDeletion.originStackKey !== action.operation.stackKey)
+      pairedPendingDeletion.originStackKey !== action.operation.stackKey ||
+      currentEntryAtPairKey === undefined ||
+      currentEntryAtPairKey.stackId === record.stackId)
   ) {
     const message =
       `スタック '${record.stackName}' はリネーム対の旧スタックですが、` +
