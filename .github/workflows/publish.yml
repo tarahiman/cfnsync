@@ -38,7 +38,7 @@ jobs:
           corepack prepare pnpm@11.2.2 --activate
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Check formatting, lint, test, and build
+      - name: Run the quality gate (format, lint, type-check, test, build)
         run: pnpm run quality:check
       - name: Verify the tag matches the package version
         run: node scripts/verify-release-tag.mjs

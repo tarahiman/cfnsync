@@ -2545,7 +2545,7 @@ describe('T-22 承認フロー — JSON 非回帰と再同期の開示(FR-5-16 /
     const result = await s.run();
 
     const text = renderText(result.report, { color: false });
-    expect(text).not.toContain('再同期');
+    expect(text).not.toContain('== Reconciliation');
     expect(text.split('\n')[0]).toBe('== Connection ==');
   });
 
@@ -2564,7 +2564,9 @@ describe('T-22 承認フロー — JSON 非回帰と再同期の開示(FR-5-16 /
     // 初回 accountId 記録は FR-5-5b の再同期とは別種であり、開示の対象ではない。
     expect(result.report.reconciliations).toBeUndefined();
     expect(jsonKeys(result.report)).not.toContain('reconciliations');
-    expect(renderText(result.report, { color: false })).not.toContain('再同期');
+    expect(renderText(result.report, { color: false })).not.toContain(
+      '== Reconciliation',
+    );
   });
 });
 

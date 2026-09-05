@@ -20,6 +20,7 @@ const CODE_FILES = new Set([
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
   'tsconfig.json',
+  'tsconfig.test.json',
   'vitest.config.ts',
 ]);
 

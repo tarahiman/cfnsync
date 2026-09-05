@@ -29,9 +29,7 @@ ln -s "$dependencies_path" "${snapshot_directory}/node_modules"
   # attempt to replace a symlinked modules directory. npm's script runner does
   # not mutate dependencies, so use it to invoke the repository's staged
   # quality checks against this isolated snapshot.
-  npm run check:docs
-  npm run format:check
-  npm run lint
-  npm test
-  npm run build
+  # Single gate definition: the hook runs exactly what CI runs, so any step
+  # added to "quality:check" is picked up here without touching this script.
+  npm run quality:check
 )

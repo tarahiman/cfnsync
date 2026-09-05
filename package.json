@@ -51,10 +51,11 @@
     "prepack": "pnpm run generate:shrinkwrap && pnpm run clean && pnpm run build && pnpm run verify:dist",
     "prepublishOnly": "pnpm run clean && pnpm run build",
     "test": "vitest run",
-    "lint": "biome check . && node scripts/check-control-chars.mjs && node scripts/check-message-language.mjs",
+    "lint": "biome check --error-on-warnings . && node scripts/check-control-chars.mjs && node scripts/check-message-language.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "quality:check": "pnpm run check:skill-references && pnpm run check:docs && pnpm run format:check && pnpm run lint && pnpm test && pnpm run build",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "quality:check": "pnpm run check:skill-references && pnpm run check:docs && pnpm run format:check && pnpm run lint && pnpm run typecheck:test && pnpm test && pnpm run build",
     "gitleaks:install": "sh scripts/install-gitleaks.sh",
     "hooks:install": "node scripts/install-hooks.mjs",
     "hooks:setup": "pnpm run gitleaks:install && pnpm run hooks:install"

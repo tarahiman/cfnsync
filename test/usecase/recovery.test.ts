@@ -170,7 +170,6 @@ function setup(
   const run = (options: { allowDelete?: boolean } = {}) =>
     deploy({
       config,
-      configDir: '/repo',
       templates,
       deps: {
         cfnFactory: (): CloudFormationGateway => cfn,

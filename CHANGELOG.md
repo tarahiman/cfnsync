@@ -182,6 +182,8 @@ cfnsync が組み立てる進捗・エラー・警告・承認プロンプト・
 - **承認時点の差分と実行時点の実状態の一致は保証しません。** Change Set は作成時点のスナップショットであり、上記の再検査が防御のすべてです。これらは競合窓を狭めますが排除はせず、cfnsync はそれ以上の保証を主張しません。
 - 承認を拒否した場合、または計画段階で失敗した場合は、作成済みの Change Set をすべて削除します。ただし新規スタックに対する CREATE 型 Change Set の作成で生じた `REVIEW_IN_PROGRESS` のスタックの殻は AWS 上に残ります（安全不変条件により殻へ `DeleteStack` は呼びません）。殻は次回実行時に回収され、その上に CREATE 型 Change Set を再作成して収束します。既定が承認フローになったことで、この殻の発生頻度は上がります。
 
+- 開発者向けの品質ゲートを強化しました（**利用者に見える振る舞いの変更はありません**）。`pnpm run lint` は Biome の警告でも失敗し、`biome.json` の `overrides` が層ごとの禁止 import（`src/core/` の AWS SDK 依存など）を機械検査します。新設の `pnpm run typecheck:test`（`tsconfig.test.json`）が `test/` も型検査し、`pnpm run quality:check` に組み込まれました。pre-commit フックは個別のステップを列挙せず `quality:check` を呼ぶため、CI と同じ内容を実行します。
+
 ### 既知の性質
 
 - **この実行で新規作成される Export を参照するプロパティは、承認時点で最終値が確定しません。** `Fn::ImportValue` は Change Set の作成時に解決されず、`{{changeSet:KNOWN_AFTER_APPLY}}` として保留されます（既に存在する Export を参照する場合は作成時に実値へ解決されます）。cfnsync はこの保留値をそのまま提示し、独自に解決・補完しません。terraform の "known after apply" と同じ性質です。

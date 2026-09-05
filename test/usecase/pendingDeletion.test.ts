@@ -189,7 +189,8 @@ function existingStack(
     makeStackSummary({
       stackName,
       stackId: stackIdOf(stackName),
-      status: 'CREATE_COMPLETE',
+      // status は overrides が必ず持つ(既定値 CREATE_COMPLETE)。ここで先に
+      // 指定すると常に上書きされるため、既定値は引数側にのみ置く。
       ...overrides,
     }),
   );

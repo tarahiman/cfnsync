@@ -132,7 +132,6 @@ function setup(initial?: CfnSyncState) {
   const run = () =>
     deploy({
       config,
-      configDir: '/repo',
       templates,
       deps: {
         cfnFactory: (): CloudFormationGateway => cfn,
