@@ -12,7 +12,10 @@ import {
 import {
   type CfnSyncState,
   createInitialState,
+  type PendingDeletionEntry,
+  pendingDeletionStackKey,
   type StackEntry,
+  upsertPendingDeletion,
   upsertStackEntry,
 } from '../../src/core/state.js';
 import { makeStackKey } from '../../src/core/types.js';
@@ -410,7 +413,11 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
     expect(addedEntry.stackKey).toBe(newTarget.stackKey);
     expect(addedEntry.changeType).toBe('added');
     expect(addedEntry.target).toBe(newTarget);
-    expect(addedEntry.renamedFrom).toEqual({ oldStackName: 'prod-network' });
+    // FR-1-18: 新エントリ保存と同一の CAS で削除待ちを記録できるよう、旧エントリを添える。
+    expect(addedEntry.renamedFrom?.oldStackName).toBe('prod-network');
+    expect(addedEntry.renamedFrom?.oldEntry).toBe(
+      state.stacks[newTarget.stackKey],
+    );
     expect(addedEntry.templateHash).toBeDefined();
     expect(addedEntry.inputsHash).toBeDefined();
   });
@@ -451,7 +458,7 @@ describe('core/detect — FR-1-14: スタック名変更は「旧名の deleted�
       'deleted',
       'added',
     ]);
-    expect(result.entries[2].renamedFrom).toEqual({ oldStackName: 'old-b' });
+    expect(result.entries[2].renamedFrom?.oldStackName).toBe('old-b');
   });
 });
 
@@ -591,5 +598,146 @@ describe('core/detect — FR-13-5: リージョン追加/削除', () => {
         changeType: 'deleted',
       }),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-1-21 / FR-1-22: 削除待ち(pending deletion)の検知
+// ---------------------------------------------------------------------------
+
+function makePendingEntry(
+  overrides: Partial<PendingDeletionEntry> = {},
+): PendingDeletionEntry {
+  return {
+    stackName: 'prod-network-old',
+    stackId:
+      'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network-old/id',
+    region: 'ap-northeast-1',
+    exports: [],
+    imports: [],
+    dependsOn: [],
+    dependencyAnalysisIncomplete: false,
+    originStackKey: 'network.yaml@ap-northeast-1',
+    reason: 'rename',
+    recordedAt: '2026-07-19T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('core/detect — FR-1-21: 削除待ちは deleted 分類として検知される', () => {
+  it('FR-1-21: 削除待ち 1 件につき、予約スタックキーを持つ deleted 対象が 1 件生成される', () => {
+    const target = makeTarget();
+    const state = upsertPendingDeletion(
+      stateWith({ [target.stackKey]: stateEntryFor(target, BASE_CONTENT) }),
+      'prod-network-old@ap-northeast-1',
+      makePendingEntry(),
+    );
+
+    const result = detectChanges({
+      targets: [target],
+      templates: new Map([[target.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries[0].changeType).toBe('unchanged');
+
+    const pending = result.entries[1];
+    expect(pending.changeType).toBe('deleted');
+    expect(pending.stackKey).toBe(
+      pendingDeletionStackKey('prod-network-old@ap-northeast-1'),
+    );
+    expect(pending.stackKey).toBe(
+      'cfnsync:pending/prod-network-old@ap-northeast-1',
+    );
+    // 削除待ちは stacks のエントリを持たないため stateEntry ではなく pendingDeletion を持つ。
+    expect(pending.stateEntry).toBeUndefined();
+    expect(pending.pendingDeletion?.id).toBe('prod-network-old@ap-northeast-1');
+    expect(pending.pendingDeletion?.entry).toEqual(makePendingEntry());
+  });
+
+  it('FR-1-21: 削除待ちのスタックキーは設定由来のスタックキーと衝突しない', () => {
+    const target = makeTarget();
+    const state = upsertPendingDeletion(
+      stateWith({ [target.stackKey]: stateEntryFor(target, BASE_CONTENT) }),
+      'prod-network-old@ap-northeast-1',
+      makePendingEntry(),
+    );
+
+    const result = detectChanges({
+      targets: [target],
+      templates: new Map([[target.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    const keys = result.entries.map((entry) => entry.stackKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).not.toContain(target.stackKey.replace('network.yaml', ''));
+  });
+
+  it('FR-1-21: 削除待ちは純粋な deleted の後に、キーの昇順で決定的に並ぶ', () => {
+    const target = makeTarget();
+    const removed = makeTarget({
+      templatePath: 'removed.yaml',
+      stackKey: makeStackKey('removed.yaml', 'ap-northeast-1'),
+      stackName: 'removed',
+    });
+    let state = stateWith({
+      [target.stackKey]: stateEntryFor(target, BASE_CONTENT),
+      [removed.stackKey]: stateEntryFor(removed, BASE_CONTENT),
+    });
+    state = upsertPendingDeletion(
+      state,
+      'zzz-old@ap-northeast-1',
+      makePendingEntry({ stackName: 'zzz-old', stackId: null }),
+    );
+    state = upsertPendingDeletion(
+      state,
+      'aaa-old@ap-northeast-1',
+      makePendingEntry({ stackName: 'aaa-old', stackId: null }),
+    );
+
+    const result = detectChanges({
+      targets: [target],
+      templates: new Map([[target.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    expect(result.entries.map((entry) => entry.stackKey)).toEqual([
+      target.stackKey,
+      removed.stackKey,
+      'cfnsync:pending/aaa-old@ap-northeast-1',
+      'cfnsync:pending/zzz-old@ap-northeast-1',
+    ]);
+  });
+});
+
+describe('core/detect — FR-1-22: 連続したリネームは削除待ちを積み上げる', () => {
+  it('FR-1-22: 2 件の削除待ちがどちらも deleted として現れ、互いに上書きしない', () => {
+    const target = makeTarget({ stackName: 'prod-network-v3' });
+    let state = stateWith({
+      [target.stackKey]: stateEntryFor(target, BASE_CONTENT),
+    });
+    state = upsertPendingDeletion(
+      state,
+      'prod-network-v1@ap-northeast-1',
+      makePendingEntry({ stackName: 'prod-network-v1', stackId: null }),
+    );
+    state = upsertPendingDeletion(
+      state,
+      'prod-network-v2@ap-northeast-1',
+      makePendingEntry({ stackName: 'prod-network-v2', stackId: null }),
+    );
+
+    const result = detectChanges({
+      targets: [target],
+      templates: new Map([[target.templatePath, BASE_CONTENT]]),
+      state,
+    });
+
+    const pendingNames = result.entries
+      .filter((entry) => entry.pendingDeletion !== undefined)
+      .map((entry) => entry.pendingDeletion?.entry.stackName);
+    expect(pendingNames).toEqual(['prod-network-v1', 'prod-network-v2']);
   });
 });

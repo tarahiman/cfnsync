@@ -11,6 +11,7 @@ import {
   type CfnSyncState,
   createInitialState,
   type StackEntry,
+  upsertPendingDeletion,
   upsertStackEntry,
   withAccountId,
 } from '../../src/core/state.js';
@@ -505,5 +506,124 @@ describe('delete / deploy integration — T-15', () => {
         expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-6-7 / FR-6-8: 削除待ち(pending deletion)の削除契約(usecase/delete 単体)
+// ---------------------------------------------------------------------------
+
+describe('usecase/delete — FR-6-7 / FR-6-8: 削除待ちの削除', () => {
+  const pendingEntry = {
+    stackName: 'Old',
+    stackId: `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/Old/managed`,
+    region: REGION,
+    exports: [],
+    imports: [],
+    dependsOn: [] as string[] | null,
+    dependencyAnalysisIncomplete: false,
+  };
+
+  function directSetup(state: CfnSyncState) {
+    const timeline: string[] = [];
+    const backend = new FakeStateBackend(timeline, state);
+    const cfn = new FakeCloudFormationGateway(timeline, 'cfn');
+    cfn.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: pendingEntry.stackId,
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
+    cfn.waitResults.set('Old', [
+      makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' }),
+    ]);
+    return { timeline, backend, cfn };
+  }
+
+  it('FR-6-8: 削除待ちの dependsOn を統合グラフ上のノードへ解決できない場合は DeleteStack を呼ばず拒否する', async () => {
+    const state = upsertPendingDeletion(
+      withAccountId(createInitialState(), ACCOUNT),
+      'Old@ap-northeast-1',
+      {
+        ...pendingEntry,
+        dependsOn: ['gone.yaml@ap-northeast-1'],
+        originStackKey: 'a.yaml@ap-northeast-1',
+        reason: 'rename',
+        recordedAt: '2026-07-19T00:00:00.000Z',
+      },
+    );
+    const s = directSetup(state);
+    const lock = await s.backend.acquireLock({
+      runId: 'run16',
+      startedAt: '2026-07-20T12:00:00.000Z',
+      owner: 'test',
+    });
+
+    const result = await deleteManagedStack({
+      target: {
+        stackKey: 'cfnsync:pending/Old@ap-northeast-1',
+        region: REGION,
+        entry: state.pendingDeletions['Old@ap-northeast-1'],
+      },
+      cfn: s.cfn,
+      backend: s.backend,
+      lock,
+      state,
+      version: s.backend.stored?.version,
+      pendingDeletionId: 'Old@ap-northeast-1',
+      unresolvedDependsOn: ['gone.yaml@ap-northeast-1'],
+    });
+
+    expect(result.outcome).toBe('refused');
+    expect(result.errorMessage).toContain('gone.yaml@ap-northeast-1');
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
+  it('FR-6-7: 削除待ちの削除成功は pendingDeletions からのみ除去し、stacks には触れない', async () => {
+    let state = withAccountId(createInitialState(), ACCOUNT);
+    state = upsertStackEntry(state, 'a.yaml@ap-northeast-1', entry('New'));
+    state = upsertPendingDeletion(state, 'Old@ap-northeast-1', {
+      ...pendingEntry,
+      originStackKey: 'a.yaml@ap-northeast-1',
+      reason: 'rename',
+      recordedAt: '2026-07-19T00:00:00.000Z',
+    });
+    const s = directSetup(state);
+    const lock = await s.backend.acquireLock({
+      runId: 'run16',
+      startedAt: '2026-07-20T12:00:00.000Z',
+      owner: 'test',
+    });
+
+    const result = await deleteManagedStack({
+      target: {
+        stackKey: 'cfnsync:pending/Old@ap-northeast-1',
+        region: REGION,
+        entry: state.pendingDeletions['Old@ap-northeast-1'],
+      },
+      cfn: s.cfn,
+      backend: s.backend,
+      lock,
+      state,
+      version: s.backend.stored?.version,
+      pendingDeletionId: 'Old@ap-northeast-1',
+    });
+
+    expect(result.outcome).toBe('deleted');
+    expect(result.state.pendingDeletions['Old@ap-northeast-1']).toBeUndefined();
+    expect(result.state.stacks['a.yaml@ap-northeast-1']).toBeDefined();
+    // FR-6-7: DeleteStack の直前と CAS 保存の直前にそれぞれ fencing を通す。
+    expect(s.timeline).toEqual([
+      'backend.acquireLock',
+      'cfn.describeStack',
+      'backend.verifyLock',
+      'cfn.deleteStack',
+      'cfn.waitForStack',
+      'backend.verifyLock',
+      'backend.save',
+    ]);
   });
 });

@@ -183,6 +183,26 @@ describe('core/config', () => {
       expect(message).not.toContain('supersecret-do-not-leak');
     });
 
+    it.each([
+      'cfnsync:pending/prod-network-old',
+      'cfnsync:anything.yaml',
+    ])('FR-11-11: 予約プレフィックスで始まるテンプレートパス %s は ConfigError になる(対象キーを含む)', (templatePath) => {
+      try {
+        validateConfig(minimalRaw({ stacks: { [templatePath]: {} } }));
+        expect.unreachable('ConfigError が送出されるはず');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        expect((err as Error).message).toContain(templatePath);
+      }
+    });
+
+    it('FR-11-11: 予約プレフィックスに似ているが一致しないパスは拒否しない', () => {
+      const config = validateConfig(
+        minimalRaw({ stacks: { 'cfnsync-pending.yaml': {} } }),
+      );
+      expect(config.stacks['cfnsync-pending.yaml']).toBeDefined();
+    });
+
     it('FR-11-5: サブディレクトリを含む正当な相対パスは引き続き許可する', () => {
       const config = validateConfig(
         minimalRaw({ stacks: { 'nested/stack.yaml': {} } }),

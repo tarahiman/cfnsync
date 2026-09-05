@@ -36,10 +36,20 @@ export async function getStatus(input: {
     templateHashes,
   });
   return {
+    // FR-1-23: 削除待ちは stacks のエントリを持たないため、pendingDeletion から
+    // リージョンと旧スタック名を解決する。出力 schema にフィールドは追加しない。
     entries: detection.entries.map((entry) => ({
       stackKey: entry.stackKey,
-      region: entry.target?.region ?? entry.stateEntry?.region ?? '',
-      stackName: entry.target?.stackName ?? entry.stateEntry?.stackName ?? '',
+      region:
+        entry.target?.region ??
+        entry.stateEntry?.region ??
+        entry.pendingDeletion?.entry.region ??
+        '',
+      stackName:
+        entry.target?.stackName ??
+        entry.stateEntry?.stackName ??
+        entry.pendingDeletion?.entry.stackName ??
+        '',
       changeType: entry.changeType,
     })),
   };

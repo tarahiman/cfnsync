@@ -4,18 +4,47 @@ import {
   type CfnSyncState,
   createInitialState,
   matchAccount,
+  type PendingDeletionEntry,
   parseState,
+  pendingDeletionId,
+  pendingDeletionStackKey,
   prepareSave,
+  removePendingDeletion,
   removeStackEntry,
   type StackEntry,
   serializeState,
   sha256Hex,
+  upsertPendingDeletion,
   upsertStackEntry,
   withAccountId,
 } from '../../src/core/state.js';
 
 // design.md §4.3 のステート例そのままの妥当な JSON。
 const validStateJson = JSON.stringify({
+  schemaVersion: 3,
+  accountId: '123456789012',
+  generation: 42,
+  stacks: {
+    'network.yaml@ap-northeast-1': {
+      stackName: 'prod-network',
+      stackId:
+        'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network/id',
+      region: 'ap-northeast-1',
+      templateHash: 'sha256:abc',
+      inputsHash: 'sha256:def',
+      exports: ['prod-network-VpcId'],
+      imports: [],
+      dependsOn: [],
+      dependencyAnalysisIncomplete: false,
+      lastAction: 'UPDATE',
+      lastSuccessAt: '2026-07-19T00:00:00Z',
+    },
+  },
+  pendingDeletions: {},
+});
+
+/** FR-1-17: 削除待ちを持たない旧 schema。読み込み時に v3 へ移行される。 */
+const validV2StateJson = JSON.stringify({
   schemaVersion: 2,
   accountId: '123456789012',
   generation: 42,
@@ -36,6 +65,25 @@ const validStateJson = JSON.stringify({
     },
   },
 });
+
+function makePendingEntry(
+  overrides: Partial<PendingDeletionEntry> = {},
+): PendingDeletionEntry {
+  return {
+    stackName: 'prod-network-old',
+    stackId:
+      'arn:aws:cloudformation:ap-northeast-1:123456789012:stack/prod-network-old/id',
+    region: 'ap-northeast-1',
+    exports: ['prod-network-old-VpcId'],
+    imports: [],
+    dependsOn: [],
+    dependencyAnalysisIncomplete: false,
+    originStackKey: 'network.yaml@ap-northeast-1',
+    reason: 'rename',
+    recordedAt: '2026-07-19T00:00:00.000Z',
+    ...overrides,
+  };
+}
 
 function makeEntry(overrides: Partial<StackEntry> = {}): StackEntry {
   return {
@@ -58,7 +106,7 @@ function makeEntry(overrides: Partial<StackEntry> = {}): StackEntry {
 describe('core/state — §4.3 ステートスキーマ', () => {
   it('§4.3: design.md §4.3 の形をそのまま受理する', () => {
     const state = parseState(validStateJson);
-    expect(state.schemaVersion).toBe(2);
+    expect(state.schemaVersion).toBe(3);
     expect(state.accountId).toBe('123456789012');
     expect(state.generation).toBe(42);
     expect(state.stacks['network.yaml@ap-northeast-1']).toEqual({
@@ -106,9 +154,9 @@ describe('core/state — §4.3 ステートスキーマ', () => {
     expect(() => parseState(missingExports)).toThrow(StateCorruptionError);
   });
 
-  it('§4.3: 不正な schemaVersion(3 等)を拒否する', () => {
+  it('§4.3: 不正な schemaVersion(4 等)を拒否する', () => {
     const wrongVersion = JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       accountId: null,
       generation: 0,
       stacks: {},
@@ -137,7 +185,7 @@ describe('core/state — §4.3 ステートスキーマ', () => {
       }),
     );
 
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     expect(migrated.stacks['legacy.yaml@ap-northeast-1'].dependsOn).toBeNull();
     expect(migrated.stacks['legacy.yaml@ap-northeast-1'].stackId).toBeNull();
     // 再レビュー2: v1 で欠落した解析完全性は fail-closed に「不完全」へ倒す。
@@ -145,7 +193,7 @@ describe('core/state — §4.3 ステートスキーマ', () => {
       migrated.stacks['legacy.yaml@ap-northeast-1']
         .dependencyAnalysisIncomplete,
     ).toBe(true);
-    expect(JSON.parse(serializeState(migrated)).schemaVersion).toBe(2);
+    expect(JSON.parse(serializeState(migrated)).schemaVersion).toBe(3);
   });
 
   it('security(再レビュー2): スタックキーのリージョンとエントリの region 不一致は StateCorruptionError', () => {
@@ -297,10 +345,11 @@ describe('core/state — FR-1-15: ステート未存在(初回)の扱い', () =>
   it('FR-1-15: createInitialState は accountId: null / generation: 0 / stacks: {} の空ステートを返す', () => {
     const state = createInitialState();
     expect(state).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       accountId: null,
       generation: 0,
       stacks: {},
+      pendingDeletions: {},
     });
   });
 
@@ -395,5 +444,255 @@ describe('core/state — sha256Hex ユーティリティ(§4.3 の templateHash/
 
   it('internal: sha256Hex は異なる入力に対して異なるハッシュを返す', () => {
     expect(sha256Hex('input-a')).not.toBe(sha256Hex('input-b'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-1-16 / FR-1-17: 削除待ち(pending deletion)とステート schema v3
+// ---------------------------------------------------------------------------
+
+describe('core/state — FR-1-16: 削除待ち(pendingDeletions)の schema', () => {
+  it('FR-1-16: design.md §4.3 の削除待ちの形をそのまま受理する', () => {
+    const state = parseState(
+      JSON.stringify({
+        schemaVersion: 3,
+        accountId: '123456789012',
+        generation: 1,
+        stacks: {},
+        pendingDeletions: {
+          'prod-network-old@ap-northeast-1': makePendingEntry(),
+        },
+      }),
+    );
+    expect(state.pendingDeletions['prod-network-old@ap-northeast-1']).toEqual(
+      makePendingEntry(),
+    );
+  });
+
+  it('FR-1-16: 削除に必要な項目(exports)を欠く削除待ちを拒否する', () => {
+    const { exports: _dropped, ...withoutExports } = makePendingEntry();
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: null,
+      generation: 1,
+      stacks: {},
+      pendingDeletions: { 'prod-network-old@ap-northeast-1': withoutExports },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: v3 で pendingDeletions を欠くステートは fail-closed に拒否する', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: null,
+      generation: 1,
+      stacks: {},
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: 削除待ちのキーが <stackName>@<region> と一致しない場合は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {},
+      pendingDeletions: { 'other-name@ap-northeast-1': makePendingEntry() },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: 削除待ちの stackId ARN のリージョン不一致は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {},
+      pendingDeletions: {
+        'prod-network-old@ap-northeast-1': makePendingEntry({
+          stackId:
+            'arn:aws:cloudformation:us-east-1:123456789012:stack/prod-network-old/id',
+        }),
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: 削除待ちの stackId ARN のアカウント不一致は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {},
+      pendingDeletions: {
+        'prod-network-old@ap-northeast-1': makePendingEntry({
+          stackId:
+            'arn:aws:cloudformation:ap-northeast-1:999999999999:stack/prod-network-old/id',
+        }),
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: 削除待ちの originStackKey のリージョン不一致は StateCorruptionError', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {},
+      pendingDeletions: {
+        'prod-network-old@ap-northeast-1': makePendingEntry({
+          originStackKey: 'network.yaml@us-east-1',
+        }),
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: 未知の reason を fail-closed に拒否する', () => {
+    const corrupt = JSON.stringify({
+      schemaVersion: 3,
+      accountId: '123456789012',
+      generation: 1,
+      stacks: {},
+      pendingDeletions: {
+        'prod-network-old@ap-northeast-1': {
+          ...makePendingEntry(),
+          reason: 'unknown-future-reason',
+        },
+      },
+    });
+    expect(() => parseState(corrupt)).toThrow(StateCorruptionError);
+  });
+
+  it('FR-1-16: serializeState は削除待ちをキー順に安定して整形する', () => {
+    const base = createInitialState();
+    const a = upsertPendingDeletion(
+      upsertPendingDeletion(
+        base,
+        'b-old@ap-northeast-1',
+        makePendingEntry({ stackName: 'b-old', stackId: null }),
+      ),
+      'a-old@ap-northeast-1',
+      makePendingEntry({ stackName: 'a-old', stackId: null }),
+    );
+    const b = upsertPendingDeletion(
+      upsertPendingDeletion(
+        base,
+        'a-old@ap-northeast-1',
+        makePendingEntry({ stackName: 'a-old', stackId: null }),
+      ),
+      'b-old@ap-northeast-1',
+      makePendingEntry({ stackName: 'b-old', stackId: null }),
+    );
+    expect(serializeState(a)).toBe(serializeState(b));
+    expect(Object.keys(JSON.parse(serializeState(a)).pendingDeletions)).toEqual(
+      ['a-old@ap-northeast-1', 'b-old@ap-northeast-1'],
+    );
+  });
+
+  it('FR-1-16: serializeState → parseState のラウンドトリップで削除待ちが保持される', () => {
+    const state = upsertPendingDeletion(
+      withAccountId(createInitialState(), '123456789012'),
+      'prod-network-old@ap-northeast-1',
+      makePendingEntry(),
+    );
+    expect(parseState(serializeState(state))).toEqual(state);
+  });
+
+  it('FR-1-16: upsertPendingDeletion / removePendingDeletion はイミュータブルに動作する', () => {
+    const base = createInitialState();
+    const added = upsertPendingDeletion(
+      base,
+      'prod-network-old@ap-northeast-1',
+      makePendingEntry(),
+    );
+    expect(Object.keys(base.pendingDeletions)).toHaveLength(0);
+    expect(Object.keys(added.pendingDeletions)).toHaveLength(1);
+
+    const removed = removePendingDeletion(
+      added,
+      'prod-network-old@ap-northeast-1',
+    );
+    expect(Object.keys(added.pendingDeletions)).toHaveLength(1);
+    expect(Object.keys(removed.pendingDeletions)).toHaveLength(0);
+    expect(() =>
+      removePendingDeletion(base, 'missing@ap-northeast-1'),
+    ).not.toThrow();
+  });
+
+  it('FR-1-16: 削除待ちの ID とスタックキーは (リージョン, スタック名) から決定的に導出される', () => {
+    const id = pendingDeletionId('ap-northeast-1', 'prod-network-old');
+    expect(id).toBe('prod-network-old@ap-northeast-1');
+    expect(pendingDeletionStackKey(id)).toBe(
+      'cfnsync:pending/prod-network-old@ap-northeast-1',
+    );
+  });
+});
+
+describe('core/state — FR-1-17: v1 / v2 → v3 の移行', () => {
+  it('FR-1-17: schemaVersion 2 のステートを削除待ちなしとして受理し v3 へ移行する', () => {
+    const migrated = parseState(validV2StateJson);
+    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.pendingDeletions).toEqual({});
+    // 既存エントリの内容は一切変えない。
+    expect(migrated.stacks['network.yaml@ap-northeast-1'].dependsOn).toEqual(
+      [],
+    );
+    expect(
+      migrated.stacks['network.yaml@ap-northeast-1']
+        .dependencyAnalysisIncomplete,
+    ).toBe(false);
+    expect(JSON.parse(serializeState(migrated)).schemaVersion).toBe(3);
+    expect(JSON.parse(serializeState(migrated)).pendingDeletions).toEqual({});
+  });
+
+  it('FR-1-17: schemaVersion 1 のステートも削除待ちなしとして v3 へ移行し、既存の unknown 補完を変えない', () => {
+    const migrated = parseState(
+      JSON.stringify({
+        schemaVersion: 1,
+        accountId: '123456789012',
+        generation: 7,
+        stacks: {
+          'legacy.yaml@ap-northeast-1': {
+            stackName: 'legacy',
+            region: 'ap-northeast-1',
+            templateHash: 'sha256:legacy',
+            inputsHash: 'sha256:legacy-inputs',
+            exports: [],
+            imports: [],
+            lastAction: 'UPDATE',
+            lastSuccessAt: '2026-07-19T00:00:00Z',
+          },
+        },
+      }),
+    );
+    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.pendingDeletions).toEqual({});
+    expect(migrated.stacks['legacy.yaml@ap-northeast-1'].stackId).toBeNull();
+    expect(migrated.stacks['legacy.yaml@ap-northeast-1'].dependsOn).toBeNull();
+    expect(
+      migrated.stacks['legacy.yaml@ap-northeast-1']
+        .dependencyAnalysisIncomplete,
+    ).toBe(true);
+  });
+
+  it('FR-1-17: prepareSave は schemaVersion を 3 に正規化する', () => {
+    const migrated = parseState(validV2StateJson);
+    const saved = prepareSave(migrated);
+    expect(saved.schemaVersion).toBe(3);
+    expect(saved.generation).toBe(migrated.generation + 1);
+    expect(saved.pendingDeletions).toEqual({});
+  });
+
+  it('FR-1-17: prepareSave は削除待ちを保持する', () => {
+    const state = upsertPendingDeletion(
+      createInitialState(),
+      'prod-network-old@ap-northeast-1',
+      makePendingEntry(),
+    );
+    expect(
+      prepareSave(state).pendingDeletions['prod-network-old@ap-northeast-1'],
+    ).toEqual(makePendingEntry());
   });
 });

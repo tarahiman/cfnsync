@@ -52,13 +52,82 @@ const CfnSyncStateV2Schema = z.object({
   stacks: z.record(z.string(), StackEntrySchema),
 });
 
+/**
+ * FR-1-16 / §4.3: 削除待ち(pending deletion)1 件。`stacks` から外れたが AWS 上に
+ * まだ存在しうる物理スタックの記録であり、FR-6 の安全装置が必要とする情報と由来だけを持つ。
+ * `templateHash` / `inputsHash` / `lastAction` を持たないのは、削除以外の操作対象に
+ * ならないためである(偽の値を `inputsHash` 判定へ持ち込まない)。
+ */
+const PendingDeletionSchema = z.object({
+  stackName: z.string().min(1),
+  /** v1 由来の未移行エントリからの記録だけ null。null なら削除は fail-closed に拒否される。 */
+  stackId: z.string().min(1).nullable(),
+  region: z.string().min(1),
+  exports: z.array(z.string()),
+  imports: z.array(z.string()),
+  /** v1 由来で明示依存が unknown だった場合は null(FR-6-5 の拒否対象)。 */
+  dependsOn: z.array(z.string()).nullable(),
+  dependencyAnalysisIncomplete: z.boolean(),
+  /** 記録の由来となったスタックキー(リネーム元)。 */
+  originStackKey: z.string().min(1),
+  /** 未知の値は fail-closed に拒否する(将来の追加は schema 変更として扱う)。 */
+  reason: z.enum(['rename']),
+  recordedAt: z.string().min(1),
+});
+
+const CfnSyncStateV3Schema = z.object({
+  schemaVersion: z.literal(3),
+  accountId: z.string().nullable(),
+  generation: z.number().int().nonnegative(),
+  stacks: z.record(z.string(), StackEntrySchema),
+  pendingDeletions: z.record(z.string(), PendingDeletionSchema),
+});
+
 /** design.md §4.3 のステートスキーマから導出したスタックエントリの型。 */
 export type StackEntry = z.infer<typeof StackEntrySchema>;
 
+/** FR-1-16 / §4.3: 削除待ちの記録。 */
+export type PendingDeletionEntry = z.infer<typeof PendingDeletionSchema>;
+
+/**
+ * FR-6 の削除安全装置が必要とする最小の記録(`StackEntry` と `PendingDeletionEntry` の
+ * 共通部分)。`usecase/delete` はこの構造だけに依存し、削除待ちと通常エントリを
+ * 同一の安全装置へ通す。
+ */
+export interface DeletableStackRecord {
+  stackName: string;
+  stackId: string | null;
+  region: string;
+  exports: string[];
+  imports: string[];
+  dependsOn: string[] | null;
+  dependencyAnalysisIncomplete: boolean;
+}
+
 /** design.md §4.3 のステートスキーマから導出したステート全体の型。 */
-export type CfnSyncState = z.infer<typeof CfnSyncStateV2Schema> & {
+export type CfnSyncState = z.infer<typeof CfnSyncStateV3Schema> & {
   stacks: Record<StackKey, StackEntry>;
 };
+
+/**
+ * FR-1-21 / §4.4: 削除待ちを変更検知・実行計画へ載せるためのスタックキーの予約
+ * プレフィックス。設定検証が `cfnsync:` で始まるテンプレートパスを拒否する
+ * (FR-11-11)ため、設定由来のスタックキーと決して衝突しない。
+ */
+export const PENDING_DELETION_STACK_KEY_PREFIX = 'cfnsync:pending/';
+
+/**
+ * FR-1-16: 削除待ちの ID。同一リージョン内でスタック名は物理スタックの一意識別子
+ * であり、CloudFormation のスタック名は `@` を含められないため曖昧さがない。
+ */
+export function pendingDeletionId(region: string, stackName: string): string {
+  return `${stackName}@${region}`;
+}
+
+/** FR-1-21: 削除待ちの ID から、実行計画で用いる予約スタックキーを導出する。 */
+export function pendingDeletionStackKey(id: string): StackKey {
+  return `${PENDING_DELETION_STACK_KEY_PREFIX}${id}`;
+}
 
 /**
  * ステート JSON テキストをパース + zod 検証する(§4.3, FR-1-12)。
@@ -82,9 +151,23 @@ export function parseState(
     );
   }
 
+  const v3Result = CfnSyncStateV3Schema.safeParse(parsedJson);
+  if (v3Result.success) {
+    const state = v3Result.data as CfnSyncState;
+    assertStateConsistency(state, context);
+    return state;
+  }
+
+  // FR-1-17: v2 は削除待ちなしとして受理し、v3 の形へ移行する。
   const v2Result = CfnSyncStateV2Schema.safeParse(parsedJson);
   if (v2Result.success) {
-    const state = v2Result.data as CfnSyncState;
+    const state = {
+      schemaVersion: 3,
+      accountId: v2Result.data.accountId,
+      generation: v2Result.data.generation,
+      stacks: v2Result.data.stacks,
+      pendingDeletions: {},
+    } as CfnSyncState;
     assertStateConsistency(state, context);
     return state;
   }
@@ -93,7 +176,7 @@ export function parseState(
   if (!v1Result.success) {
     throw new StateCorruptionError('ステートのスキーマが不正です', {
       ...context,
-      cause: v2Result.error,
+      cause: v3Result.error,
     });
   }
 
@@ -110,10 +193,12 @@ export function parseState(
     };
   }
   const migrated = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     accountId: v1Result.data.accountId,
     generation: v1Result.data.generation,
     stacks,
+    // FR-1-17: v1 にも削除待ちは存在しない。
+    pendingDeletions: {},
   } as CfnSyncState;
   assertStateConsistency(migrated, context);
   return migrated;
@@ -150,33 +235,72 @@ function assertStateConsistency(
         { ...context, stackKey: key },
       );
     }
-    if (entry.stackId !== null) {
-      const arn = STACK_ARN_PATTERN.exec(entry.stackId);
-      if (arn !== null) {
-        if (arn[1] !== entry.region) {
-          throw new StateCorruptionError(
-            `ステートのスタックキー '${key}' の stackId ARN のリージョン '${arn[1]}' がエントリの region と一致しません`,
-            { ...context, stackKey: key },
-          );
-        }
-        if (state.accountId !== null && arn[2] !== state.accountId) {
-          throw new StateCorruptionError(
-            `ステートのスタックキー '${key}' の stackId ARN のアカウントがステートの accountId と一致しません`,
-            { ...context, stackKey: key },
-          );
-        }
-      }
+    assertStackIdArn(state, entry, `スタックキー '${key}'`, key, context);
+  }
+
+  // FR-1-16: 削除待ちも同じ内部整合性検証を通す。キーは物理スタックの一意識別子
+  // であり、ここが崩れると誤ったスタックへ DeleteStack を送りうる。
+  for (const [id, pending] of Object.entries(state.pendingDeletions)) {
+    const label = `削除待ち '${id}'`;
+    const pendingKey = pendingDeletionStackKey(id);
+    if (id !== pendingDeletionId(pending.region, pending.stackName)) {
+      throw new StateCorruptionError(
+        `ステートの${label}のキーが stackName '${pending.stackName}' / region '${pending.region}' と一致しません`,
+        { ...context, stackKey: pendingKey },
+      );
     }
+    let originRegion: string;
+    try {
+      originRegion = parseStackKey(pending.originStackKey).region;
+    } catch (cause) {
+      throw new StateCorruptionError(
+        `ステートの${label}の originStackKey '${pending.originStackKey}' が不正な形式です`,
+        { ...context, cause, stackKey: pendingKey },
+      );
+    }
+    if (originRegion !== pending.region) {
+      throw new StateCorruptionError(
+        `ステートの${label}の originStackKey '${pending.originStackKey}' のリージョンが region '${pending.region}' と一致しません`,
+        { ...context, stackKey: pendingKey },
+      );
+    }
+    assertStackIdArn(state, pending, label, pendingKey, context);
+  }
+}
+
+/** `stackId` が CloudFormation ARN 形式の場合のリージョン・アカウント照合(fail-closed)。 */
+function assertStackIdArn(
+  state: CfnSyncState,
+  record: { stackId: string | null; region: string },
+  label: string,
+  stackKey: string,
+  context: ErrorContext,
+): void {
+  if (record.stackId === null) return;
+  const arn = STACK_ARN_PATTERN.exec(record.stackId);
+  if (arn === null) return;
+  if (arn[1] !== record.region) {
+    throw new StateCorruptionError(
+      `ステートの${label} の stackId ARN のリージョン '${arn[1]}' がエントリの region と一致しません`,
+      { ...context, stackKey },
+    );
+  }
+  if (state.accountId !== null && arn[2] !== state.accountId) {
+    throw new StateCorruptionError(
+      `ステートの${label} の stackId ARN のアカウントがステートの accountId と一致しません`,
+      { ...context, stackKey },
+    );
   }
 }
 
 /** ステート未存在(初回実行)時に使う空ステート(FR-1-15)。 */
 export function createInitialState(): CfnSyncState {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     accountId: null,
     generation: 0,
     stacks: {},
+    pendingDeletions: {},
   };
 }
 
@@ -203,11 +327,30 @@ export function serializeState(state: CfnSyncState): string {
     };
   }
 
+  // FR-1-16: 削除待ちもキー順・フィールド順を固定して保存内容を決定的にする。
+  const sortedPendingDeletions: Record<string, PendingDeletionEntry> = {};
+  for (const id of Object.keys(state.pendingDeletions).sort()) {
+    const pending = state.pendingDeletions[id];
+    sortedPendingDeletions[id] = {
+      stackName: pending.stackName,
+      stackId: pending.stackId,
+      region: pending.region,
+      exports: pending.exports,
+      imports: pending.imports,
+      dependsOn: pending.dependsOn,
+      dependencyAnalysisIncomplete: pending.dependencyAnalysisIncomplete,
+      originStackKey: pending.originStackKey,
+      reason: pending.reason,
+      recordedAt: pending.recordedAt,
+    };
+  }
+
   const ordered = {
     schemaVersion: state.schemaVersion,
     accountId: state.accountId,
     generation: state.generation,
     stacks: sortedStacks,
+    pendingDeletions: sortedPendingDeletions,
   };
 
   return `${JSON.stringify(ordered, null, 2)}\n`;
@@ -221,7 +364,8 @@ export function serializeState(state: CfnSyncState): string {
 export function prepareSave(state: CfnSyncState): CfnSyncState {
   return {
     ...state,
-    schemaVersion: 2,
+    // FR-1-17: v1 / v2 から読み込んだステートも保存時に v3 へ正規化する。
+    schemaVersion: 3,
     generation: state.generation + 1,
   };
 }
@@ -266,6 +410,37 @@ export function upsertStackEntry(
       ...state.stacks,
       [key]: entry,
     },
+  };
+}
+
+/**
+ * FR-1-16 / FR-1-18: 削除待ちを追加または更新した新しいステートを返す(イミュータブル)。
+ * 呼び出し側は、リネームの新エントリ保存と**同一の保存ペイロード**へこの結果を渡すこと。
+ */
+export function upsertPendingDeletion(
+  state: CfnSyncState,
+  id: string,
+  entry: PendingDeletionEntry,
+): CfnSyncState {
+  return {
+    ...state,
+    pendingDeletions: {
+      ...state.pendingDeletions,
+      [id]: entry,
+    },
+  };
+}
+
+/** FR-1-20: 削除待ちを除去した新しいステートを返す(イミュータブル)。 */
+export function removePendingDeletion(
+  state: CfnSyncState,
+  id: string,
+): CfnSyncState {
+  const pendingDeletions = { ...state.pendingDeletions };
+  delete pendingDeletions[id];
+  return {
+    ...state,
+    pendingDeletions,
   };
 }
 

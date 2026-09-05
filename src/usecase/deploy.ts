@@ -45,9 +45,14 @@ import {
 } from '../core/plan.js';
 import {
   type CfnSyncState,
+  type DeletableStackRecord,
+  type PendingDeletionEntry,
+  pendingDeletionId,
   prepareSave,
+  removePendingDeletion,
   removeStackEntry,
   type StackEntry,
+  upsertPendingDeletion,
   upsertStackEntry,
 } from '../core/state.js';
 import {
@@ -176,6 +181,8 @@ interface PreparedPlan {
   /** FR-5-19h: スタックを特定できない実行全体の診断へ適用する全対象 redactor。 */
   globalRedactor: TextRedactor;
   parsedTemplates: Map<string, unknown>;
+  /** FR-6-8: 削除待ちのスタックキー → 統合グラフへ解決できなかった明示依存。 */
+  unresolvedPendingDependsOn: Map<StackKey, string[]>;
 }
 
 interface OperationResult {
@@ -229,11 +236,20 @@ interface PendingChangeSetExecution {
 interface PendingStackDeletion {
   kind: 'delete';
   operation: PlannedOperation;
-  stateEntry: StackEntry;
+  /** 通常エントリと削除待ちの共通部分だけを削除の安全装置へ渡す(FR-6-7)。 */
+  record: DeletableStackRecord;
   diff: StackDiff;
   cfn: CloudFormationGateway;
-  /** リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。 */
-  preserveStateEntry: boolean;
+  /**
+   * FR-1-20 / FR-6-7: 削除成功時に除去する削除待ちの ID。
+   * リネーム対の旧スタック削除と、過去実行から積み残された削除待ちの双方で設定する。
+   * undefined の場合だけ `stacks` のエントリを除去する。
+   */
+  pendingDeletionId?: string;
+  /** FR-6-9: リネーム対の旧スタック削除では、対の create の成功記録を実行直前に確認する。 */
+  requiresPairedCreate: boolean;
+  /** FR-6-8: 統合依存グラフへ解決できなかった明示依存(1 件でもあれば削除を拒否する)。 */
+  unresolvedDependsOn?: string[];
 }
 
 type PendingAction = PendingChangeSetExecution | PendingStackDeletion;
@@ -487,7 +503,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
   let phaseAFailed = false;
   // §8.3 / FR-6-5: 依存メタデータ自体が unknown/incomplete の削除は provider を特定できない。
   // その対象より前に並んだ削除も含め、同じ削除バッチの他対象を副作用前に止める。
-  const unsafeDeleteKeys = findUnsafeDeleteKeys(ctx, prepared.plan);
+  const unsafeDeleteKeys = findUnsafeDeleteKeys(ctx, prepared);
 
   for (const operation of prepared.plan.index.flattened) {
     if (
@@ -514,6 +530,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           ? await planDeletion(
               ctx,
               operation,
+              prepared,
               report,
               resultByOperation,
               reconciliations,
@@ -785,6 +802,23 @@ function findPhysicalStackConflicts(
   const mutationByPhysicalId = new Map<string, PlannedOperation>();
   for (const operation of plan.index.flattened) {
     if (operation.kind === 'delete') {
+      const pending = operation.entry.pendingDeletion;
+      if (pending !== undefined) {
+        // FR-6-10: 削除待ちの物理スタックを設定由来の create / update が指す構成
+        // (リネームを元に戻した等)は、AWS 副作用の前に fail-closed で拒否する。
+        const conflicting = targetByPhysicalId.get(
+          physicalId(operation.region, pending.entry.stackName),
+        );
+        if (conflicting === undefined) continue;
+        failures.set(
+          operation.stackKey,
+          `スタック '${pending.entry.stackName}'(${operation.region})は削除待ちですが、` +
+            `設定の '${conflicting.stackKey}' が同一の物理スタックを作成/更新しようとしています。` +
+            `AWS への副作用を行わず中断します。先に cfnsync deploy --allow-delete で削除待ちを` +
+            `解消するか、別のスタック名へ変更してください`,
+        );
+        continue;
+      }
       const stateEntry = operation.entry.stateEntry;
       // リネーム(同一スタックキーで stackName 変更)の削除は旧名を指すため衝突しない。
       if (!stateEntry || operation.entry.renamedTo !== undefined) continue;
@@ -828,18 +862,28 @@ function findPhysicalStackConflicts(
  */
 function findUnsafeDeleteKeys(
   ctx: LockedRunContext,
-  plan: ExecutionPlan,
+  prepared: PreparedPlan,
 ): Set<StackKey> {
   if (!ctx.options.allowDelete || ctx.options.dryRun) return new Set();
   return new Set(
-    plan.index.flattened
+    prepared.plan.index.flattened
       .filter(
         (operation) =>
           operation.kind === 'delete' &&
-          hasUnsafeDependencyMetadata(operation.entry.stateEntry),
+          (hasUnsafeDependencyMetadata(deletableRecord(operation.entry)) ||
+            // FR-6-8: 削除待ちの明示依存を統合グラフへ解決できない場合も
+            // provider を特定できないため、同じ削除バッチを副作用前に止める。
+            prepared.unresolvedPendingDependsOn.has(operation.stackKey)),
       )
       .map((operation) => operation.stackKey),
   );
+}
+
+/** FR-6-7: 削除の安全装置へ渡す記録を、通常エントリ・削除待ちのどちらからでも解決する。 */
+function deletableRecord(
+  entry: DetectedEntry,
+): DeletableStackRecord | undefined {
+  return entry.stateEntry ?? entry.pendingDeletion?.entry;
 }
 
 /** まだ結果の付いていない計画上の操作を skipped として記録する。 */
@@ -991,6 +1035,36 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
       explicitDependsOn: Array.isArray(entry.dependsOn) ? entry.dependsOn : [],
     }),
   );
+  // FR-6-8: 削除待ちも統合グラフのノードとして復元し、削除順序(逆トポロジカル順)へ載せる。
+  // これを省くと buildPlan の順序付けで削除待ちの操作が取りこぼされる。
+  const unresolvedPendingDependsOn = new Map<StackKey, string[]>();
+  const knownNodeKeys = new Set([
+    ...currentNodes.map((node) => node.stackKey),
+    ...oldNodes.map((node) => node.stackKey),
+  ]);
+  for (const entry of detection.entries) {
+    const pending = entry.pendingDeletion;
+    if (pending === undefined) continue;
+    const recorded = Array.isArray(pending.entry.dependsOn)
+      ? pending.entry.dependsOn
+      : [];
+    // 解決できない明示依存は「安全な削除順を復元できない」証拠として記録し、
+    // buildGraphs が ConfigError で実行全体を落とさないよう辺からは外す(FR-6-5)。
+    const unresolved = recorded.filter((key) => !knownNodeKeys.has(key));
+    if (unresolved.length > 0)
+      unresolvedPendingDependsOn.set(entry.stackKey, unresolved);
+    oldNodes.push({
+      stackKey: entry.stackKey,
+      region: pending.entry.region,
+      exports: Array.isArray(pending.entry.exports)
+        ? pending.entry.exports
+        : [],
+      imports: Array.isArray(pending.entry.imports)
+        ? pending.entry.imports
+        : [],
+      explicitDependsOn: unresolved.length > 0 ? [] : recorded,
+    });
+  }
   const oldGraphs = buildGraphs(oldNodes);
   const mergedGraphs = mergeGraphMaps(graphs, oldGraphs);
   const regionOrder = unique(ctx.targets.map((target) => target.region));
@@ -1009,6 +1083,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     redactors,
     globalRedactor: createNoEchoRedactor(globalNoEchoValues, globalNoEchoNames),
     parsedTemplates,
+    unresolvedPendingDependsOn,
   };
 }
 
@@ -1076,6 +1151,7 @@ async function planCreateOrUpdate(
         analysis,
         operation.entry.templateHash,
         operation.entry.inputsHash,
+        operation.entry.renamedFrom,
         existing,
         cfn,
         report,
@@ -1463,50 +1539,66 @@ async function executeApprovedChangeSet(
 async function planDeletion(
   ctx: LockedRunContext,
   operation: PlannedOperation,
+  prepared: PreparedPlan,
   report: DeployReport,
   resultByOperation: Map<PlannedOperation, StackResult>,
   reconciliations: ReconciliationRecord[],
 ): Promise<PhaseAResult> {
-  const stateEntry = operation.entry.stateEntry;
-  if (!stateEntry)
+  const record = deletableRecord(operation.entry);
+  if (!record)
     throw new InvariantError(
-      `内部エラー: ${operation.stackKey} の stateEntry がありません`,
+      `内部エラー: ${operation.stackKey} の削除対象の記録がありません`,
       { stackKey: operation.stackKey, region: operation.region },
     );
 
   // 同一物理スタックを指す削除と作成/更新の衝突は findPhysicalStackConflicts が
-  // AWS 副作用前に fail-closed で止めるため、ここには到達しない(FR-11-10b)。
+  // AWS 副作用前に fail-closed で止めるため、ここには到達しない(FR-11-10b / FR-6-10)。
   const rename = operation.entry.renamedTo;
+  const detectedPending = operation.entry.pendingDeletion;
+  // FR-1-20 / FR-6-7: 削除成功時に除去する削除待ちの ID。リネーム対の旧スタックは
+  // 対の create が同一 CAS で記録した削除待ちを指す(FR-1-18)。
+  const pendingId =
+    detectedPending?.id ??
+    (rename === undefined
+      ? undefined
+      : pendingDeletionId(operation.region, record.stackName));
   const cfn = ctx.deps.cfnFactory(operation.region);
   const diff = buildStackDiff({
     stackKey: operation.stackKey,
     region: operation.region,
-    stackName: stateEntry.stackName,
+    stackName: record.stackName,
     operation: 'delete',
     noEchoParams: [],
   });
+  if (detectedPending !== undefined) {
+    // FR-6-11: 通常の削除対象と区別できるよう、由来を警告として明示する。
+    diff.warnings.push(
+      `リネーム前の旧スタックが未削除のため削除待ちです(元のスタックキー: ${detectedPending.entry.originStackKey})`,
+    );
+  }
   report.diffs.push(diff);
 
-  const existing = await cfn.describeStack(stateEntry.stackName);
+  const existing = await cfn.describeStack(record.stackName);
   if (!existing || existing.status === 'DELETE_COMPLETE') {
-    // design §7 / FR-5-5b2: DELETE 成功後・state 保存前の中断からの再同期。
+    // design §7 / FR-5-5b2 / FR-5-5b7: DELETE 成功後・state 保存前の中断からの再同期。
     // 実スタックの不在は DescribeStacks が返さないという事実であり、承認前に保存してよい。
-    // リネーム対の削除では、同一スタックキーの create が既に新エントリを保存済み。
-    // state からエントリを除去すると新スタックの記録まで消えるため保存しない。
-    if (rename === undefined) {
-      const next = removeStackEntry(ctx.state.state, operation.stackKey);
-      await saveState(ctx, next);
-    }
+    // 削除待ち(リネーム対を含む)は pendingDeletions の当該記録だけを除去する。
+    // `stacks` のエントリを除去すると、同一スタックキーの新スタックの記録まで消える。
+    const stateUpdated = await reconcileAbsentDeletion(
+      ctx,
+      operation,
+      pendingId,
+    );
     reconciliations.push({
       stackKey: operation.stackKey,
       region: operation.region,
       kind: 'deleted-absent',
-      stateUpdated: rename === undefined,
+      stateUpdated,
     });
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
-      stackName: stateEntry.stackName,
+      stackName: record.stackName,
       outcome: 'succeeded',
     });
     emitProgress(
@@ -1528,7 +1620,7 @@ async function planDeletion(
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
-      stackName: stateEntry.stackName,
+      stackName: record.stackName,
       outcome: 'skipped',
     });
     emitProgress(
@@ -1541,18 +1633,44 @@ async function planDeletion(
     return { hasDiff: true };
   }
 
+  const unresolvedDependsOn = prepared.unresolvedPendingDependsOn.get(
+    operation.stackKey,
+  );
   return {
     hasDiff: true,
     pending: {
       kind: 'delete',
       operation,
-      stateEntry,
+      record,
       diff,
       cfn,
-      // リネーム対の削除では state エントリを除去しない(create が新エントリを保存済み)。
-      preserveStateEntry: rename !== undefined,
+      pendingDeletionId: pendingId,
+      // FR-6-9: リネーム対の旧スタックは、対の create の成功記録がある場合にだけ削除する。
+      requiresPairedCreate: rename !== undefined,
+      ...(unresolvedDependsOn ? { unresolvedDependsOn } : {}),
     },
   };
+}
+
+/**
+ * FR-5-5b2 / FR-5-5b7 / FR-1-20: 削除対象スタックの不在という既成事実を state へ再同期する。
+ * 削除待ちなら当該記録を、通常の削除対象なら `stacks` のエントリを除去する。
+ * 戻り値は「state を実際に更新したか」(FR-5-18a の開示に使う)。
+ */
+async function reconcileAbsentDeletion(
+  ctx: LockedRunContext,
+  operation: PlannedOperation,
+  pendingId: string | undefined,
+): Promise<boolean> {
+  if (pendingId === undefined) {
+    await saveState(ctx, removeStackEntry(ctx.state.state, operation.stackKey));
+    return true;
+  }
+  // リネーム対では、対の create がまだ削除待ちを記録していない場合がある
+  // (Phase A で create が実行前のため)。その場合は保存すべき差分がない。
+  if (ctx.state.state.pendingDeletions[pendingId] === undefined) return false;
+  await saveState(ctx, removePendingDeletion(ctx.state.state, pendingId));
+  return true;
 }
 
 /** Phase B(承認後)のスタック削除。削除保護・依存情報欠落の拒否は delete usecase が担う。 */
@@ -1561,7 +1679,39 @@ async function deleteApprovedStack(
   action: PendingStackDeletion,
   resultByOperation: Map<PlannedOperation, StackResult>,
 ): Promise<OperationResult> {
-  const { operation, stateEntry, diff, cfn } = action;
+  const { operation, record, diff, cfn } = action;
+
+  // FR-6-9: リネーム対の旧スタックは、対となる新スタックの作成成功が state へ
+  // 記録済み(= 削除待ちが存在する)場合にだけ削除する。create が失敗・中断した実行で
+  // 旧スタックだけを削除しないための fail-closed ガードである。
+  if (
+    action.requiresPairedCreate &&
+    (action.pendingDeletionId === undefined ||
+      ctx.state.state.pendingDeletions[action.pendingDeletionId] === undefined)
+  ) {
+    const message =
+      `スタック '${record.stackName}' はリネーム対の旧スタックですが、` +
+      `対となる新スタックの作成成功が state に記録されていません。` +
+      `旧スタックだけを削除しないため DeleteStack を拒否します`;
+    diff.warnings.push(message);
+    resultByOperation.set(operation, {
+      stackKey: operation.stackKey,
+      region: operation.region,
+      stackName: record.stackName,
+      outcome: 'failed',
+      errorMessage: message,
+      rolledBack: false,
+    });
+    emitProgress(
+      ctx.deps,
+      operation.stackKey,
+      operation.region,
+      'failed',
+      message,
+    );
+    return { hasDiff: true, failed: true };
+  }
+
   emitProgress(
     ctx.deps,
     operation.stackKey,
@@ -1574,14 +1724,19 @@ async function deleteApprovedStack(
     target: {
       stackKey: operation.stackKey,
       region: operation.region,
-      entry: stateEntry,
+      entry: record,
     },
     cfn,
     backend: ctx.deps.backend,
     lock: ctx.lock,
     state: ctx.state.state,
     version: ctx.state.version,
-    preserveStateEntry: action.preserveStateEntry,
+    ...(action.pendingDeletionId === undefined
+      ? {}
+      : { pendingDeletionId: action.pendingDeletionId }),
+    ...(action.unresolvedDependsOn
+      ? { unresolvedDependsOn: action.unresolvedDependsOn }
+      : {}),
   });
 
   if (deleted.outcome === 'refused') {
@@ -1591,7 +1746,7 @@ async function deleteApprovedStack(
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
-      stackName: stateEntry.stackName,
+      stackName: record.stackName,
       outcome: 'failed',
       errorMessage: deleted.errorMessage ?? '安全装置により削除を拒否しました',
       rolledBack: false,
@@ -1611,7 +1766,7 @@ async function deleteApprovedStack(
   resultByOperation.set(operation, {
     stackKey: operation.stackKey,
     region: operation.region,
-    stackName: stateEntry.stackName,
+    stackName: record.stackName,
     outcome: 'succeeded',
   });
   emitProgress(
@@ -1636,6 +1791,8 @@ async function recoverExistingCreate(
   analysis: TemplateAnalysis,
   templateHash: string | undefined,
   inputsHash: string | undefined,
+  /** FR-1-18: リネームの新名側なら、再同期と同一 CAS で旧名の削除待ちを記録する。 */
+  renamedFrom: DetectedEntry['renamedFrom'],
   existing: NonNullable<
     Awaited<ReturnType<CloudFormationGateway['describeStack']>>
   >,
@@ -1737,6 +1894,9 @@ async function recoverExistingCreate(
     target,
     templateHash,
     inputsHash,
+    // FR-1-18: 再同期は同一スタックキーを新スタック名で上書きするため、
+    // 旧スタック名の削除待ちを同じ保存に含めないと追跡が失われる(Issue #16)。
+    ...(renamedFrom ? { renamedFrom } : {}),
   };
   await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
   reconciliations.push({
@@ -1789,10 +1949,41 @@ async function saveSuccessfulEntry(
     lastAction,
     lastSuccessAt: now(ctx.deps).toISOString(),
   };
+  // FR-1-18: リネームの新スタック名を保存する場合、旧スタック名の削除待ちを
+  // **同一の保存ペイロード(単一の compare-and-swap)**へ含める。2 回の保存へ分けると、
+  // その間の中断で旧スタック名が state から脱落する(Issue #16)。
+  const next = upsertStackEntry(ctx.state.state, detected.stackKey, entry);
   await saveState(
     ctx,
-    upsertStackEntry(ctx.state.state, detected.stackKey, entry),
+    detected.renamedFrom === undefined
+      ? next
+      : upsertPendingDeletion(
+          next,
+          pendingDeletionId(target.region, detected.renamedFrom.oldStackName),
+          pendingDeletionFor(detected.renamedFrom, detected.stackKey, ctx),
+        ),
   );
+}
+
+/** FR-1-16 / FR-1-18: リネーム元の旧ステートエントリから削除待ちの記録を作る。 */
+function pendingDeletionFor(
+  renamedFrom: NonNullable<DetectedEntry['renamedFrom']>,
+  stackKey: StackKey,
+  ctx: LockedRunContext,
+): PendingDeletionEntry {
+  const old = renamedFrom.oldEntry;
+  return {
+    stackName: renamedFrom.oldStackName,
+    stackId: old.stackId,
+    region: old.region,
+    exports: Array.isArray(old.exports) ? old.exports : [],
+    imports: Array.isArray(old.imports) ? old.imports : [],
+    dependsOn: Array.isArray(old.dependsOn) ? old.dependsOn : null,
+    dependencyAnalysisIncomplete: old.dependencyAnalysisIncomplete,
+    originStackKey: stackKey,
+    reason: 'rename',
+    recordedAt: now(ctx.deps).toISOString(),
+  };
 }
 
 async function saveState(
@@ -1841,7 +2032,9 @@ async function requireManagedStackIdentity(
   return summary;
 }
 
-function hasUnsafeDependencyMetadata(entry: StackEntry | undefined): boolean {
+function hasUnsafeDependencyMetadata(
+  entry: DeletableStackRecord | undefined,
+): boolean {
   return (
     entry === undefined ||
     !Array.isArray(entry.exports) ||

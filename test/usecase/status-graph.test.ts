@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { CfnSyncConfig } from '../../src/core/config.js';
-import { createInitialState } from '../../src/core/state.js';
+import {
+  createInitialState,
+  upsertPendingDeletion,
+} from '../../src/core/state.js';
 import { getGraph } from '../../src/usecase/graph.js';
 import { getStatus } from '../../src/usecase/status.js';
 import { FakeStateBackend } from './fakes.js';
@@ -45,6 +48,59 @@ describe('usecase/status・graph', () => {
       'added',
     ]);
     expect(backend.calls.map((call) => call.method)).toEqual(['load']);
+  });
+
+  it('FR-1-23: status は削除待ちを deleted 分類として、スタックキーと旧スタック名つきで提示する', async () => {
+    const state = upsertPendingDeletion(
+      createInitialState(),
+      'network-old@ap-northeast-1',
+      {
+        stackName: 'network-old',
+        stackId: null,
+        region: 'ap-northeast-1',
+        exports: [],
+        imports: [],
+        dependsOn: [],
+        dependencyAnalysisIncomplete: false,
+        originStackKey: 'network.yaml@ap-northeast-1',
+        reason: 'rename',
+        recordedAt: '2026-07-19T00:00:00.000Z',
+      },
+    );
+    const backend = new FakeStateBackend([], state);
+    const result = await getStatus({ config, templates, backend });
+
+    const pending = result.entries.find((entry) =>
+      entry.stackKey.startsWith('cfnsync:pending/'),
+    );
+    expect(pending).toEqual({
+      stackKey: 'cfnsync:pending/network-old@ap-northeast-1',
+      region: 'ap-northeast-1',
+      stackName: 'network-old',
+      changeType: 'deleted',
+    });
+    // FR-1-23: 既存の status 出力 schema へフィールドを追加しない。
+    expect(Object.keys(pending ?? {}).sort()).toEqual([
+      'changeType',
+      'region',
+      'stackKey',
+      'stackName',
+    ]);
+  });
+
+  it('FR-6-12: graph は削除待ちを含めず、ステートを一切読まない', () => {
+    const result = getGraph({ config, templates });
+    const graph = result.graphs.get('ap-northeast-1');
+
+    expect(graph?.nodes).toEqual([
+      'network.yaml@ap-northeast-1',
+      'app.yaml@ap-northeast-1',
+    ]);
+    expect(
+      graph?.nodes.some((node) => node.startsWith('cfnsync:pending/')),
+    ).toBe(false);
+    // getGraph は StateBackend を引数に取らない(ステート非依存の構造的証跡)。
+    expect(getGraph.length).toBe(1);
   });
 
   it('FR-8-2: graph は明示依存を含む構造化グラフを返す', () => {
