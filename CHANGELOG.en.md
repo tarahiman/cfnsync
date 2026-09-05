@@ -130,6 +130,29 @@ cfnsync plan
 - **Internals**: `plan` still calls the same `usecase/deploy` implementation with the internal `DeployOptions.dryRun` flag. Removing the public option and reorganizing the internals are separate decisions; splitting them now would duplicate the Phase A safety invariants (leftover change-set ownership checks, `REVIEW_IN_PROGRESS` protection, fencing, CAS), so it is deliberately out of scope (see `docs/spec/design.md` §5.3.5).
 - **Output change**: the deletion-preview warning changes from `dry-run のため削除を実行しません` to `plan のため削除を実行しません` (text output; the same string also appears in the JSON `warnings`). The error message shown when no approval channel is available now points at `cfnsync plan` instead of `--dry-run`.
 
+#### 10. State schema v3 and pending stack deletions
+
+Fixes a bug where renaming `stackName` and leaving the old stack undeleted dropped that stack from state, so it **never reappeared as a deletion candidate** ([Issue #16](https://github.com/tarahiman/cfnsync/issues/16)). Tracking those stacks required a new state field, so **the state schema moves from `2` to `3`.**
+
+- **Before**: a `stackName` change is planned as "delete the old name + create the new name", but saving the successful creation under the same stack key erased the old stack name. Whether the deletion was never attempted (no `--allow-delete`), refused (termination protection), or failed (`DeleteStack`, the completion wait, or the post-deletion state save), nothing was left to retry from. On later runs both the config and the state pointed at the new name, so the entry was `unchanged` and the orphaned stack never came back as a deletion candidate.
+- **After**: the save that records a successful creation of the new stack name also records the old stack name under `pendingDeletions` **in the same compare-and-swap**. A pending deletion is removed only once the physical stack is actually deleted (or confirmed absent from CloudFormation). Until then it keeps showing up in `status` / `plan` / `deploy` as a deletion candidate.
+- Pending deletions go through **exactly the same safeguards as any other deletion**: `--allow-delete` is required, deletion follows the reverse order of the merged dependency graph, deletion is refused when the dependency information cannot be reconstructed, termination protection is never cleared automatically, `DeleteStack` is never called on a `REVIEW_IN_PROGRESS` stack, the `stackId` must match, and both fencing and compare-and-swap still apply, as does the connection guard.
+- The rationale and the alternatives are recorded in [ADR-0003](./docs/decisions/0003-pending-stack-deletions.md) and the change proposal [0001](./docs/changes/0001-pending-stack-deletions.md).
+
+**Migration**: nothing to do. `schemaVersion: 1` / `2` state files are still read, are treated as having no pending deletions, and are normalized to `3` on the first successful save.
+
+**The downgrade is one-way.** Once a state file has been saved as `schemaVersion: 3`, older cfnsync versions reject it with `StateCorruptionError` (they only accept `1` / `2`). If you must roll back, recover with one of:
+
+- `s3` backend: restore the previous object version from bucket versioning
+- `local` backend: restore from `cfnsync.state.json.bak`
+- Manual edit: set `schemaVersion` back to `2` and drop `pendingDeletions` (**the tracked pending deletions are lost and the orphaning in Issue #16 comes back**)
+
+**Output changes**: pending deletions appear as the existing `deleted` change type / `delete` operation. **No new JSON fields were added.** Their stack key uses the reserved prefix form `cfnsync:pending/<stack name>@<region>`, and `plan` / `deploy` diffs carry a warning naming the originating stack key. Confirming that a pending deletion's stack is gone is disclosed through the existing `deleted-absent` kind in `reconciliations`. If you baseline text output for regressions, expect these extra lines.
+
+**Configuration constraint**: to keep that stack-key namespace collision-free, **template paths starting with the reserved prefix `cfnsync:` are now rejected with a `ConfigError` (exit code `1`).** Rename such paths if you have any.
+
+**Other behavior change**: with `--on-failure continue`, a run could previously delete the old stack even though creating the renamed stack had failed. The old stack is now deleted only when the successful creation of its counterpart is already recorded in state.
+
 ### Added
 
 - `--auto-approve` (`-y`) on `deploy`.

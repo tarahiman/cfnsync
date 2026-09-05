@@ -110,6 +110,8 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 ステートは既定で `local` バックエンド（設定の隣に `cfnsync.state.json`）です。CI や複数ランナーの構成では `s3` バックエンド（条件付き書き込みロック + compare-and-swap）を使用してください。S3 バケットのバージョニング有効化を推奨します。
 
+`stackName` を変更すると、cfnsync はそれを「旧スタックの削除 + 新スタックの作成」として扱います。`--allow-delete` を付けていない、削除保護が有効、削除が失敗したなどの理由で旧スタックが残った場合、cfnsync は旧スタックをステートの**削除待ち**として記録し続け、`status` / `plan` / `deploy` に削除候補として `cfnsync:pending/<スタック名>@<リージョン>` の形で提示します。削除は `cfnsync deploy --allow-delete` で行い、通常の削除とまったく同じ安全装置（依存順・削除保護・依存情報の検証）を通ります。
+
 ## CI での利用（GitHub Actions）
 
 `s3` バックエンドを使用し、ステートを Git へ書き戻さないでください。環境ごとに `concurrency.group` と S3 の state key を分離し、並行トリガーを競合ではなく待機にします。CI には TTY がないため、`deploy` には **`--auto-approve` が必須**です（指定しないと承認できないままエラーで停止します）。
@@ -182,6 +184,7 @@ codex plugin add cfnsync@cfnsync
 - ステートの一貫性は compare-and-swap（S3 の `If-Match`）が保証し、競合した側の保存を失敗させます。同一スタックへの同時操作は `*_IN_PROGRESS` ガードと CloudFormation 自身の進行中拒否により安全に失敗します。
 - 所有権 fencing（各副作用前の再検証）は**ベストエフォート**です。競合窓を狭めますが、CloudFormation API 上で完全には排除できません。IAM でも cfnsync の操作主体を分離してください。
 - 管理対象スタックに他主体の Change Set があると実行を停止します（Change Set 実行は他の Change Set を暗黙削除するため）。上書きせず fail-closed で止まります。
+- スタック削除は `--allow-delete` を明示したときだけ行い、新旧を統合した依存グラフの逆順で実行します。依存情報をステートから復元できない場合は削除を拒否します。リネームで残った旧スタックはステートの削除待ちとして追跡し続けるため、黙って管理外へ漏れることはありません。
 
 cfnsync 管理対象スタックへ、手動または他ツールで Change Set を作成しないでください。詳細な根拠は [`docs/spec/design.md`](./docs/spec/design.md) と [`docs/spec/requirements.md`](./docs/spec/requirements.md) にあります。
 

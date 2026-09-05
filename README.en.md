@@ -110,6 +110,8 @@ For the full parameter list see [`docs/config-reference.md`](./docs/config-refer
 
 State defaults to the `local` backend (`cfnsync.state.json` next to the config). For CI or any multi-runner setup, use the `s3` backend (conditional-write locking + compare-and-swap); enabling S3 bucket versioning is recommended.
 
+Changing `stackName` is treated as "delete the old stack + create the new one". When the old stack survives — no `--allow-delete`, termination protection, a failed deletion — cfnsync keeps it in state as a **pending deletion** and keeps offering it as a deletion candidate in `status` / `plan` / `deploy` under the key `cfnsync:pending/<stack name>@<region>`. Clearing it is a normal `cfnsync deploy --allow-delete`, and it goes through exactly the same safeguards (dependency order, termination protection, dependency-information checks).
+
 ## Using in CI (GitHub Actions)
 
 Use the `s3` backend and never write state back to Git. Give each environment its own `concurrency.group` and S3 state key so concurrent triggers queue instead of racing. CI has no TTY, so **`deploy` requires `--auto-approve`** — without it the run stops with an error because approval is impossible.
@@ -182,6 +184,7 @@ Several invariants come out of adversarial review and are load-bearing; do not w
 - State consistency is guaranteed by compare-and-swap (`If-Match` on S3); the losing writer fails. Concurrent operations on one stack fail safely via `*_IN_PROGRESS` guards and CloudFormation's own in-progress rejection.
 - Ownership fencing (re-checking before every side effect) is **best-effort** — it narrows the race window but does not, and cannot, close it on the CloudFormation API. Separate the cfnsync execution principal in IAM as well.
 - A foreign change set on a managed stack blocks execution (executing a change set implicitly deletes the others), so cfnsync stops rather than clobbering it.
+- Stacks are deleted only when `--allow-delete` is explicit, in the reverse order of the merged old+new dependency graph, and deletion is refused when the dependency information cannot be reconstructed from state. A stack left behind by a rename stays tracked as a pending deletion, so it never silently escapes management.
 
 Do not create change sets on cfnsync-managed stacks manually or with other tools. Full rationale is in [`docs/spec/design.md`](./docs/spec/design.md) and [`docs/spec/requirements.md`](./docs/spec/requirements.md).
 
