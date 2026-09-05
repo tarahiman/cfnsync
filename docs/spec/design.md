@@ -76,10 +76,14 @@ cli/ は commander の `configureHelp({ showGlobalOptions: true })` を用い、
 status / graph / import / force-unlock の出力契約を変更しない(FR-12-7)。
 `deploy` だけがサブコマンドオプション `--auto-approve`(短縮形 `-y`)を持つ(FR-12-8a / FR-12-8b)。
 `--confirm` は提供せず、指定された場合は Commander の未知オプション(`CliUsageError`)とする(FR-12-8c)。
+差分確認の公開コマンドは `plan` だけとし、`deploy` は `--dry-run` を提供しない。指定された場合は
+`--confirm` と同じく Commander の未知オプション(`CliUsageError`、exit 1)とする(FR-5-20a / FR-12-8d)。
 この承認方式を選んだ理由と移行上の影響は [ADR-0001](../decisions/0001-deploy-approval-flow.md) および
 [CHANGELOG](../../CHANGELOG.md#unreleased) に記録する。
-CLI は `deploy`(`--dry-run` を伴わない)で `--auto-approve` がなく TTY でもない場合、usecase を呼ばずに
-`CliUsageError` で exit 1 とする(FR-12-3b / FR-12-3c)。この判定は AWS・ステートバックエンドへの一切のアクセスより前に
+CLI は `deploy` で `--auto-approve` がなく TTY でもない場合、usecase を呼ばずに
+`CliUsageError` で exit 1 とする(FR-12-3b / FR-12-3c)。`deploy` から `--dry-run` が消えたことで、この
+CLI 境界の条件は「`--auto-approve` がない」かつ「TTY でない」の 2 項だけになり、差分確認経路の例外を
+持たない(fail-closed の強度は変えない)。この判定は AWS・ステートバックエンドへの一切のアクセスより前に
 行い、変更セットを作ってから落ちて後始末が必要になる事態を構造的に避ける。TTY 判定は
 `process.stdin.isTTY && process.stderr.isTTY` を用いる(要約とプロンプトの出力先が stderr のため)。
 CLI は対象リージョンを `--region` と設定の `defaultRegion` だけで決定する
@@ -218,15 +222,19 @@ stacks:
 config 読込 → state 読込 → 変更分類を表形式 / JSON で出力。CloudFormation / STS は呼び出さない(NFR-5)。S3 state backend を選択した場合のステート読み取りは除く。終了コード 0。
 成功 JSON は既存の status schema を維持する。config 読込・検証等で status result を生成できない場合だけ §9 の共通エラー JSON を stdout へ出力する。
 
-### 5.2 `cfnsync plan`(dry-run)
+### 5.2 `cfnsync plan`(差分確認)
 
 1. config 検証 → AccountGuard(変更セット作成は変更系のため必須)→ ステートロック取得
 2. state 読込 → 変更分類 → 依存グラフ構築(新旧統合)→ 実行計画立案
 3. `added` / `modified` の各スタックキーに対し変更セットを作成 → `DescribeChangeSet` で差分取得 → **describe 後に変更セットを削除**(残骸を残さない。クラッシュ時の残骸は §7 の残存回収が拾う)
 4. `deleted` は削除プレビューとして差分出力に含める(FR-6)
 5. 差分を出力(リージョン明示・Replacement 警告・NoEcho マスク)。リソース差分 0 件で成功した変更セットは「変更あり」として扱う(§5.3.1、FR-5-7a〜d)
-6. 終了コード: 差分あり 2 / なし 0 / エラー 1
-7. `plan` は何も実行しないため承認を求めない(FR-5-9a)
+6. 終了コード: 差分あり 2 / なし 0 / エラー 1(FR-5-20d)
+7. `plan` は何も実行しないため承認を求めない(FR-5-9a)。`ExecuteChangeSet` / `DeleteStack` は 1 件も行わない(FR-5-20b)
+
+`plan` は差分確認を提供する唯一の公開コマンドである(FR-5-20a)。`deploy` に同じ目的の公開オプションを
+重複して置かない — 承認の要否、終了コード 2 の意味、削除プレビューの解釈、`--allow-delete` /
+`--on-failure` の適用範囲がコマンドごとに分岐し、文書と実装の条件分岐が二重化するためである。
 
 各スタックの変更セット作成開始・差分確定は `DeployDeps.onProgress`(FR-5-4)を通じてスタックキー付きで標準エラーへ逐次通知する。差分確定後に意図どおり停止すること自体は `skipped` 進捗として通知しない。依存失敗等による実際のスキップ通知は維持する。CFN リソースイベント(`onEvent`、FR-4-1)とは独立したチャネルであり、差分・結果の最終 report(標準出力)には一切含まれない。
 人間可読な text 差分は端末判定を行わず ANSI 色を既定で有効にし、リソース行の
@@ -243,7 +251,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
 1. config 検証 → 承認手段の存在検証(§5.3.4)→ AccountGuard → ステートロック取得 → state 読込(世代 / ETag 記録)
 2. 変更分類 → 依存グラフ → 実行計画
 3. **Phase A(承認前)**: 実行計画の順に各スタックキーについて:
-   - create/update: スタック状態ガード(§7)→ 残存変更セット回収 → 変更セット作成 → `DescribeChangeSet` で差分確定。**変更セットは削除せず保持する**(FR-5-5a)。`--dry-run` の場合だけは保持せず、`plan` と同じく describe 直後に自身の変更セットを削除する(FR-5-9b、§5.2)
+   - create/update: スタック状態ガード(§7)→ 残存変更セット回収 → 変更セット作成 → `DescribeChangeSet` で差分確定。**変更セットは削除せず保持する**(FR-5-5a)。`plan`(内部フラグ `DeployOptions.dryRun`)の場合だけは保持せず、describe 直後に自身の変更セットを削除する(FR-5-20c、§5.2)
    - 変更セット作成に失敗した場合は §5.3.1 に従い fail-closed に中断する
    - リソース差分 0 件だが成功した変更セット(Outputs / Export のみの変更): **「変更あり」として実行対象に含める**(§5.3.1、FR-5-7a)
    - 空変更セット(既知の「変更なし」定型文で `FAILED`): 変更セットを削除し、「変更なし」として差分へ積み、**再同期をここで保存する**(FR-5-5b1)
@@ -251,7 +259,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
    - delete: `DescribeStacks` で実在を確認し、削除プレビューを差分へ積む。既に存在しない場合は**ステートからの除去をここで保存する**(FR-5-5b2)
    - Phase A が行う AWS の変更操作は「自ステートの残存変更セットの回収」と「変更セットの作成・削除」だけであり、`ExecuteChangeSet` / `DeleteStack` は行わない(FR-5-5a)。ステート保存は**既成事実の再同期に限り**許され(FR-5-5b1〜b3)、実行の成功記録は行わない(FR-5-5c)
    - Phase A で 1 件でも失敗した場合、承認を求めず §5.3.3 のクリーンアップを行って exit 1(FR-5-12a / FR-5-12b / FR-5-12c。`--on-failure continue` でも同じ)
-4. **承認**(FR-5-2a): Phase B に `ExecuteChangeSet` または `DeleteStack` が 1 件以上予定されている場合にだけ、`DeployDeps.approve`(§5.3.2)を**実行全体で 1 回だけ**呼ぶ。`--auto-approve` 指定時(FR-5-2b)、`--dry-run` 時(FR-5-9a)、および実行予定が 0 件の場合(FR-5-8a)は呼ばない
+4. **承認**(FR-5-2a): Phase B に `ExecuteChangeSet` または `DeleteStack` が 1 件以上予定されている場合にだけ、`DeployDeps.approve`(§5.3.2)を**実行全体で 1 回だけ**呼ぶ。`--auto-approve` 指定時(FR-5-2b)、`plan` 時(FR-5-9a)、および実行予定が 0 件の場合(FR-5-8a)は呼ばない
    - 拒否された場合は §5.3.3
    - `approve` が reject / throw した場合は承認処理の失敗として §5.3.3 のクリーンアップを行い、Phase B へ進まず exit 1 とする(FR-5-19)
 5. **Phase B(承認後)**: 実行計画の順(FR-9 の依存順)に:
@@ -270,7 +278,7 @@ plan report を生成できた場合は、exit 0 / 1 / 2 のいずれでも既�
    各段階(変更セット作成開始・差分確定・実行開始・完了)は `onProgress`(FR-5-4)で標準エラーへ通知する。失敗時に通知するメッセージは、report に格納する `errorMessage` と同じ redactor 適用済みの公開本文を再利用する。`CfnSyncError` は `publicMessage` だけを入力とし、stackKey / region は stack entry の構造化フィールドへ分離する。内部 cause は保持しても report / progress / JSON へ昇格させず、分類不能な例外は固定の安全な文言に置換する。これにより NoEcho 実値や AWS 生メッセージが未マスクのまま progress チャネルへ漏れないようにする(NFR-4)。
    2 フェーズ化により、**あるスタックについての phase の相対順序は変わらない**(`changeset-create-start` → `diff-ready` → `execute-start` → `done`)が、複数スタックがある場合は全対象の `diff-ready` が最初の `execute-start` に先行する。承認そのものには `ProgressPhase` を追加しない — `ProgressEvent` は stackKey / region を必須とするスタック単位の契約であり、実行全体で 1 回の承認は該当しないためである。承認要求の発生は `approve` ポートの呼び出しとして観測でき、拒否後の未実行対象は既存の `skipped` phase で通知される。
 6. `deleted` の処理は `--allow-delete` 指定時のみ、全作成・更新の後に逆順で実行(§8.3)。削除の安全装置(削除保護・依存情報の欠落)による拒否は Phase B の失敗として扱う — 拒否は不可逆な副作用を伴わないため、条件を Phase A へ二重実装せず、`DeleteStack` 直前の fail-closed 再検証に一本化する
-7. `--dry-run` は Phase A だけを実行し、**変更セットを保持せず `plan` と同一の変更セットライフサイクル**(describe 直後に自身の変更セットを削除)で動作する(FR-5-3 / FR-5-9a / FR-5-9b)。承認を行わない以上、変更セットを保持する理由がない。保持経路を流用すると変更セットの生存期間・同時残存数・クラッシュ時の残骸・`REVIEW_IN_PROGRESS` の殻の滞留時間が `plan` と食い違い、「plan と同一動作」という記述が事実でなくなるため、経路自体を `plan` へ統一する
+7. `plan` は Phase A だけを実行し、**変更セットを保持せず** describe 直後に自身の変更セットを削除する(FR-5-9a / FR-5-20b / FR-5-20c)。承認を行わない以上、変更セットを保持する理由がない。保持経路を流用すると変更セットの生存期間・同時残存数・クラッシュ時の残骸・`REVIEW_IN_PROGRESS` の殻の滞留時間が長くなるため、`plan` は保持経路を用いない
 
 人間可読な text 差分の色と無色化の優先順位は plan と同じとする(FR-3-4 / FR-3-5)。
 deploy report を生成できた場合は、fail-closed の失敗 report および承認拒否 report を含めて既存 report JSON を stdout へ出力する。report 生成前の例外だけ §9 の共通エラー JSON を使用し、成功・失敗 report を `{ok,data}` で包み直さない。
@@ -336,7 +344,7 @@ Phase A の失敗を除外して独立対象だけを縮退実行する方式も
 
 文言は `(変更なし)`(真の変更なし)とも FR-5-7b の 0 件注記(`(CloudFormation リソース差分 0 件 — …)`)とも区別できるものにする。同一の出力に 3 者が混在しうるためである。判別条件は **`operation === 'delete' && resources.length === 0`** とし、`no-change`(`(変更なし)` が正しい表示)には及ばない。
 
-**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です` / `dry-run のため削除を実行しません`)が担う。
+**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です` / `plan のため削除を実行しません`)が担う。
 
 この区別も FR-5-7d と同様に**レンダラ限定**とする。`StackDiff.warnings` へ削除向けの文言を積む、`operation` を変える等、`DeployReport` のデータ側を変更してはならない — FR-5-16 の JSON 非回帰に違反する。
 
@@ -430,6 +438,21 @@ export interface DeployOptions {
 `options.dryRun !== true` かつ `options.autoApprove !== true` かつ `deps.approve === undefined` の場合、usecase は **STS・ステートバックエンド・CloudFormation への一切のアクセスの前に** `GuardError` で fail-closed に停止し、AWS 副作用ゼロの失敗 report(exit 1)を返す(FR-5-13)。承認手段の欠如は「承認の可否を検証できない状況」であり、警告して続行してはならない。
 
 これは CLI 境界の非 TTY チェック(§9)と重複するが、多層防御として両方を維持する — CLI 境界のチェックは利用者への明確な案内、usecase のチェックは埋め込み利用も含めた不変条件である。
+
+`options.dryRun === true` は `plan` 経路(§5.3.5)を表す内部フラグであり、承認手段の検証はこの経路には適用しない。`plan` は `approve` を呼ばず、`ExecuteChangeSet` / `DeleteStack` も行わないため、承認手段の有無を問う意味がないからである(FR-5-9a / FR-5-20b)。
+
+#### 5.3.5 差分確認経路の内部表現(`DeployOptions.dryRun`)
+
+公開 CLI から `deploy --dry-run` を廃止した後も(FR-5-20a / FR-12-8d)、`plan` は `usecase/deploy` の同一実装を `DeployOptions.dryRun = true` で呼び出す。この内部フラグは **`plan` 経路を表す実装上の印**であり、`cli/index` の `plan` サブコマンドだけが設定する。`deploy` サブコマンドはこのフィールドを一切設定せず、利用者はいかなる引数でもこれを true にできない。
+
+**この構造を選ぶ理由**:
+
+- `plan` と `deploy` の Phase A は、変更検知・依存グラフ・実行計画・AccountGuard・ステートロック・残存変更セット回収・`REVIEW_IN_PROGRESS` 保護・物理スタック衝突検出・fencing・CAS まで完全に同一であり、差異は「差分確定の直後に自身の変更セットを削除して停止するか(FR-5-20c)、保持して承認・実行へ進むか(FR-5-5a)」の 1 点だけである。
+- 別ユースケースへ分離すると、この共有部分が二重実装になる。上記はいずれも安全不変条件(§4.5 / §7 / §8.3)であり、片方だけが退行しても型検査では検出できない。公開 CLI の重複を解消する変更に、安全不変条件の重複実装というリスクを持ち込まない。
+- 公開 CLI の重複は CLI 境界(サブコマンドのオプション定義)だけで解消でき、内部フラグの存在は利用者から観測できない。**公開インターフェースの廃止と内部構造の整理は独立に判断できる**ため、本変更では前者だけを行う。
+- `plan` 専用ユースケースへの分離(あるいは `dryRun` を `planOnly` 等へ改名して意図を明示すること)は、共有部分の抽出方針を含む別の設計判断であり、今回のスコープ外とする。
+
+**この判断が課す制約**: `DeployOptions.dryRun` を CLI の公開オプションへ再び結び付けてはならない。差分確認の公開経路は `plan` だけである(FR-5-20a)。
 
 ### 5.4 `cfnsync import`
 
@@ -543,7 +566,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 |---|---|
 | 0 | 成功(変更なしを含む) |
 | 1 | エラー(検証・ガード・AWS 操作の失敗) |
-| 2 | 差分あり(plan / dry-run 時のみ) |
+| 2 | 差分あり(`plan` 時のみ) |
 
 - エラーは型で分類する: `ConfigError` / `GuardError` / `StateConflictError` / `DependencyCycleError` / `StackStateError` / `AwsError`。`CfnSyncError` はコンストラクタへ渡された未装飾の公開本文(`publicMessage`)を読み取り専用で保持し、既存の `message` にはスタックキー・リージョン・原因を装飾して text 診断に使用し、`Error.cause` も保持する。ただし同じ情報を公開本文 inline と `context.cause` の双方へ重複投入してはならない。AWS adapter が SDK 例外を変換する場合も操作失敗の公開本文と `context.cause` を分離する。特に zod 検証失敗から作る `ConfigError` は対象キーと先頭 issue の安全な本文を公開本文に一度だけ含め、zod issue 配列を cause に保持しない。CLI filesystem adapter は既存の `ConfigError` を再ラップせずそのまま送出する。設定ファイル自体の読込失敗では OS error の cause を内部保持してよい。
 - 有効な `--output json` でコマンド固有 result を生成する前に例外が発生した場合、CLI は次の共通エラー schema を stdout へちょうど 1 回出力する。`message` は `CfnSyncError.publicMessage` のみを使用し、`stackKey` / `region` は既知の場合だけ構造化フィールドへ含める。`message` に `(stackKey: ...)` / `(region: ...)` / `(cause: ...)` を含めず、`cause`、stack trace、zod issue 配列、credential も含めない。
@@ -603,7 +626,7 @@ export interface DeployReport {
 
   **text 出力にも同じ内容を開示する**(FR-5-18b): `renderText` は再同期が 1 件以上ある場合に専用セクションを追加し、対象のスタックキー・種別・ステート更新の有無を列挙する。既定の出力形式は text であり、JSON だけに開示すると**既定の利用者が state の変化を観測できない**実装が仕様適合になってしまうためである。承認拒否時の text 出力(stderr の `Deployment cancelled.` + stdout の report)にもこのセクションを含める。再同期が 0 件の実行ではセクション自体を追加せず、既存の text 出力を変更しない(FR-5-18c)。
 - `deploy` の承認要約(FR-5-6a〜e)とプロンプトは常に stderr へ出す(FR-5-6f)。有効な JSON 選択の有無で要約の出力先を変えず、stdout の単一 JSON document 契約(FR-12-6a / FR-12-6b)を維持する。
-- 非 TTY かつ `--auto-approve` なしの `deploy`(`--dry-run` なし)は、CLI 境界で `CliUsageError` として §9 の共通エラー schema を stdout(JSON 選択時)へ 1 個出力し exit 1 とする(FR-12-3b)。usecase へ到達しないため deploy report は生成されない。
+- 非 TTY かつ `--auto-approve` なしの `deploy` は、CLI 境界で `CliUsageError` として §9 の共通エラー schema を stdout(JSON 選択時)へ 1 個出力し exit 1 とする(FR-12-3b)。usecase へ到達しないため deploy report は生成されない。
 
 - AWS API のスロットリングは SDK v3 の adaptive retry mode + 指数バックオフで吸収(NFR-3)。
 - デプロイ失敗時は失敗リソースの `ResourceStatusReason` をスタックイベントから抽出して表示し、ロールバックの発生と結果を報告する(FR-4)。
@@ -681,7 +704,7 @@ jobs:
 | FR-2 変更セット作成 | usecase/executor, §7 |
 | FR-3 差分表示 | report, §5.2 |
 | FR-4 デプロイ実行 | usecase/executor, §5.3, §9 |
-| FR-5 一括実行・承認 | usecase(deploy = plan+approve+apply), §5.3, §5.3.1〜§5.3.4, report(ApprovalRequest) |
+| FR-5 一括実行・承認 | usecase(deploy = plan+approve+apply), §5.2, §5.3, §5.3.1〜§5.3.5, report(ApprovalRequest) |
 | FR-6 削除 | §8.3, core/graph(旧グラフ統合) |
 | FR-7 認証・誤接続防止 | usecase/guard, §8.1, cli/commands(リージョン解決。§3) |
 | FR-8 依存マッピング | core/template, core/graph, §6 |
