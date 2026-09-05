@@ -816,7 +816,7 @@ describe('T-22 承認フロー — Phase A の再同期(FR-5-5b)', () => {
     expect(result.report.reconciliations).toBeUndefined();
     const failure = result.report.result?.stacks[0];
     expect(failure?.outcome).toBe('failed');
-    expect(failure?.errorMessage).toContain('入力同一性を証明できない');
+    expect(failure?.errorMessage).toContain('Cannot prove input equivalence');
     expect(failure?.errorMessage).toContain('--reconcile local');
     expect(failure?.errorMessage).not.toContain('desired-secret-value');
   });
@@ -897,7 +897,7 @@ describe('T-22 承認フロー — Phase A の再同期(FR-5-5b)', () => {
       oldHash,
     );
     expect(s.approvals).toHaveLength(0);
-    expect(result.report.result?.stacks[0].errorMessage).toContain('所有権');
+    expect(result.report.result?.stacks[0].errorMessage).toContain('owner');
   });
 
   it('FR-5-5b6: 再同期の保存が CAS で行われ、世代競合時は保存されず StateConflictError になる', async () => {
@@ -935,7 +935,9 @@ describe('T-22 承認フロー — Phase A の再同期(FR-5-5b)', () => {
       oldHash,
     );
     expect(s.approvals).toHaveLength(0);
-    expect(result.report.result?.stacks[0].errorMessage).toContain('CAS');
+    expect(result.report.result?.stacks[0].errorMessage).toContain(
+      'compare-and-swap',
+    );
   });
 });
 
@@ -1155,7 +1157,7 @@ describe('T-22 承認フロー — 承認要求の内容(FR-5-6)', () => {
     expect(request.diffs[0].resources[0].replacement).toBe(true);
     const summaryText = renderApprovalSummary(request, { color: false });
     expect(summaryText).toContain('[REPLACEMENT]');
-    expect(summaryText).toContain('リソース置換(Replacement)が 1 件');
+    expect(summaryText).toContain('Warning: 1 resource replacement(s)');
   });
 
   it('FR-5-6e: --allow-delete あり/なしで削除対象の提示が「削除する」/「警告のみ」と区別される', async () => {
@@ -1172,13 +1174,13 @@ describe('T-22 承認フロー — 承認要求の内容(FR-5-6)', () => {
     });
 
     expect(withDelete.s.approvals[0].allowDelete).toBe(true);
-    expect(allowed).toContain('削除します');
-    expect(allowed).toContain('--allow-delete 指定あり');
+    expect(allowed).toContain('will be deleted');
+    expect(allowed).toContain('--allow-delete set');
     expect(withoutDelete.s.approvals[0].allowDelete).toBe(false);
     expect(refused).toContain(
-      '--allow-delete 未指定のため削除しません(警告のみ)',
+      'not deleted because --allow-delete is not set (warning only)',
     );
-    expect(refused).not.toContain('— 削除します');
+    expect(refused).not.toContain('-- will be deleted');
     // 削除しない場合でも削除対象は要約に現れる(利用者が判断できること)。
     expect(refused).toContain('[delete]');
     expect(withoutDelete.fake.callsOf('deleteStack')).toHaveLength(0);
@@ -1310,10 +1312,10 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
     const text = renderText(result.report, { color: false });
     const lines = text.split('\n');
     const noteIndex = lines.findIndex((line) =>
-      line.includes('CloudFormation リソース差分 0 件'),
+      line.includes('0 CloudFormation resource diffs'),
     );
     const unchangedIndex = lines.findIndex((line) =>
-      line.includes('(変更なし)'),
+      line.includes('(no changes)'),
     );
     expect(noteIndex).toBeGreaterThanOrEqual(0);
     expect(unchangedIndex).toBeGreaterThanOrEqual(0);
@@ -1323,7 +1325,7 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
     expect(lines[unchangedIndex - 1]).toContain(`[no-change] b.yaml@${REGION}`);
     // 承認要約でも同じ判別表示を使う。
     expect(renderApprovalSummary(s.approvals[0], { color: false })).toContain(
-      'CloudFormation リソース差分 0 件',
+      '0 CloudFormation resource diffs',
     );
   });
 
@@ -1346,11 +1348,11 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
     expect(deleteLineIndex).toBeGreaterThanOrEqual(0);
     // FR-5-7e: 0 件注記の対象外であることは維持しつつ、削除専用の表示を出す。
     const deleteDiffLine = summaryText.split('\n')[deleteLineIndex + 1];
-    expect(deleteDiffLine).not.toContain('CloudFormation リソース差分 0 件');
-    expect(deleteDiffLine).not.toBe('  (変更なし)');
-    expect(deleteDiffLine).toContain('削除対象');
+    expect(deleteDiffLine).not.toContain('0 CloudFormation resource diffs');
+    expect(deleteDiffLine).not.toBe('  (no changes)');
+    expect(deleteDiffLine).toContain('targeted for deletion');
     expect(summaryText).not.toContain(
-      '注記: CloudFormation リソース差分が 0 件の create / update',
+      'Note: 2 create/update target(s) have 0 CloudFormation resource diffs',
     );
   });
 
@@ -1380,10 +1382,10 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
     expect(json.diffs[0].resources).toEqual([]);
     expect(json.diffs[0].warnings).toEqual([]);
     // JSON には注記文言が一切現れない(データ側で区別していない証拠)。
-    expect(JSON.stringify(json)).not.toContain('リソース差分 0 件');
+    expect(JSON.stringify(json)).not.toContain('resource diffs');
     // text 出力だけが変わる。
     expect(renderText(result.report, { color: false })).toContain(
-      'CloudFormation リソース差分 0 件',
+      '0 CloudFormation resource diffs',
     );
   });
 });
@@ -1546,7 +1548,7 @@ describe('T-22 承認フロー — 承認拒否(FR-5-10 / FR-5-11)', () => {
       s.progress
         .filter((event) => event.phase === 'skipped')
         .map((event) => event.message),
-    ).toContain('承認が得られなかったため実行しませんでした');
+    ).toContain('Not executed because approval was not granted');
   });
 
   it('FR-5-11: 拒否後の DeleteChangeSet が失敗したら警告を報告し exit 1(次回の残存回収に委ねる)', async () => {
@@ -1574,9 +1576,9 @@ describe('T-22 承認フロー — 承認拒否(FR-5-10 / FR-5-11)', () => {
     );
     expect(cleanup?.outcome).toBe('failed');
     expect(cleanup?.errorMessage).toContain(
-      '事前作成した変更セットの削除に失敗しました',
+      'Failed to delete pre-created change sets',
     );
-    expect(cleanup?.errorMessage).toContain('次回実行の残存回収');
+    expect(cleanup?.errorMessage).toContain('reclaimed on the next run');
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
   });
 });
@@ -1746,7 +1748,7 @@ describe('承認フロー — 承認処理の失敗(FR-5-19)', () => {
       ),
     ).toMatchObject({
       outcome: 'failed',
-      errorMessage: expect.stringContaining('次回実行の残存回収'),
+      errorMessage: expect.stringContaining('reclaimed on the next run'),
     });
   });
 
@@ -1789,7 +1791,7 @@ describe('承認フロー — 承認処理の失敗(FR-5-19)', () => {
     );
 
     expect(approvalFailure?.errorMessage).toBe(
-      '承認処理に失敗しました: 承認ポートが **** / **** を返しました',
+      'Approval processing failed: 承認ポートが **** / **** を返しました',
     );
     expect(rendered).toContain('****');
     expect(rendered).not.toContain(secretA);
@@ -1814,7 +1816,7 @@ describe('承認フロー — 承認処理の失敗(FR-5-19)', () => {
     );
 
     expect(approvalFailure?.errorMessage).toBe(
-      '承認処理に失敗しました: 予期しないエラーが発生しました',
+      'Approval processing failed: An unexpected error occurred',
     );
   });
 });
@@ -1996,7 +1998,9 @@ describe('T-22 承認フロー — 承認手段とロック(FR-5-13 / FR-5-14)',
     expect(s.timeline).toEqual([]);
     const failure = result.report.result?.stacks[0];
     expect(failure?.outcome).toBe('failed');
-    expect(failure?.errorMessage).toContain('承認手段が与えられていない');
+    expect(failure?.errorMessage).toContain(
+      'no approval mechanism is provided',
+    );
     expect(failure?.errorMessage).toContain('--auto-approve');
   });
 
@@ -2168,7 +2172,7 @@ describe('T-22 承認フロー — 実行直前の再検査(FR-5-17)', () => {
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
     expect(s.backend.saveCalls).toHaveLength(0);
     expect(result.report.result?.stacks[0].errorMessage).toContain(
-      '実行直前の再検査',
+      'The re-inspection immediately before execution',
     );
   });
 
@@ -2187,7 +2191,7 @@ describe('T-22 承認フロー — 実行直前の再検査(FR-5-17)', () => {
     expect(result.exitCode).toBe(1);
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
     expect(result.report.result?.stacks[0].errorMessage).toContain(
-      '実行直前の再検査',
+      'The re-inspection immediately before execution',
     );
   });
 
@@ -2208,7 +2212,7 @@ describe('T-22 承認フロー — 実行直前の再検査(FR-5-17)', () => {
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
     expect(result.report.result?.stacks[0].errorMessage).toContain(
-      '実行直前の再検査',
+      'The re-inspection immediately before execution',
     );
   });
 
@@ -2305,7 +2309,7 @@ describe('T-22 承認フロー — 実行直前の再検査(FR-5-17)', () => {
       (result.report.result?.stacks ?? [])
         .map((stack) => stack.errorMessage ?? '')
         .join('\n'),
-    ).toContain('所有権');
+    ).toContain('owner');
     expect((await s.backend.readLock())?.runId).toBe('replacement-owner');
   });
 });
@@ -2495,9 +2499,9 @@ describe('T-22 承認フロー — JSON 非回帰と再同期の開示(FR-5-16 /
     const result = await s.run();
 
     const text = renderText(result.report, { color: false });
-    expect(text).toContain('== 再同期(state) ==');
+    expect(text).toContain('== Reconciliation (state) ==');
     expect(text).toContain(
-      `  a.yaml@${REGION} (${REGION}): 空変更セット(変更なし確認) / state 更新: あり`,
+      `  a.yaml@${REGION} (${REGION}): Empty change set (no-change confirmation) / state updated: yes`,
     );
   });
 
@@ -2508,8 +2512,8 @@ describe('T-22 承認フロー — JSON 非回帰と再同期の開示(FR-5-16 /
     const result = await s.run();
 
     const text = renderText(result.report, { color: false });
-    expect(text).toContain('== 再同期(state) ==');
-    expect(text).toContain(`  a.yaml@${REGION} (${REGION}): 空変更セット`);
+    expect(text).toContain('== Reconciliation (state) ==');
+    expect(text).toContain(`  a.yaml@${REGION} (${REGION}): Empty change set`);
   });
 
   it('FR-5-18c: 再同期が発生しない実行の JSON に reconciliations フィールドが存在しない', async () => {
@@ -2542,7 +2546,7 @@ describe('T-22 承認フロー — JSON 非回帰と再同期の開示(FR-5-16 /
 
     const text = renderText(result.report, { color: false });
     expect(text).not.toContain('再同期');
-    expect(text.split('\n')[0]).toBe('== 接続先 ==');
+    expect(text.split('\n')[0]).toBe('== Connection ==');
   });
 
   it('FR-5-18d: 初回 accountId binding は reconciliations にも text 開示にも現れない', async () => {
@@ -2716,7 +2720,9 @@ describe('T-22 承認フロー — (リージョン, スタック名)の一意�
     const failure = (result.report.result?.stacks ?? []).find(
       (stack) => stack.outcome === 'failed',
     );
-    expect(failure?.errorMessage).toMatch(/管理対象|リネーム|パス変更/);
+    expect(failure?.errorMessage).toMatch(
+      /managed under a different|template path/,
+    );
   });
 
   it('FR-11-10c: 異名リネーム(delete 旧名 + create 新名)は拒否されない', async () => {
@@ -2869,14 +2875,14 @@ describe('T-22 承認フロー — 0 件注記の境界(FR-5-7c)', () => {
       return lines[index + 1];
     };
 
-    expect(noteFor('create')).toContain('CloudFormation リソース差分 0 件');
-    expect(noteFor('update')).toContain('CloudFormation リソース差分 0 件');
+    expect(noteFor('create')).toContain('0 CloudFormation resource diffs');
+    expect(noteFor('update')).toContain('0 CloudFormation resource diffs');
     // 削除プレビューと no-change はリソース差分 0 件が正常であり、注記の対象にしない。
     // FR-5-7e: そのうえで削除は「変更なし」ではなく削除専用の表示にする。
-    expect(noteFor('delete')).not.toContain('CloudFormation リソース差分 0 件');
-    expect(noteFor('delete')).not.toBe('  (変更なし)');
-    expect(noteFor('delete')).toContain('削除対象');
-    expect(noteFor('no-change')).toBe('  (変更なし)');
+    expect(noteFor('delete')).not.toContain('0 CloudFormation resource diffs');
+    expect(noteFor('delete')).not.toBe('  (no changes)');
+    expect(noteFor('delete')).toContain('targeted for deletion');
+    expect(noteFor('no-change')).toBe('  (no changes)');
 
     const summary = buildApprovalSummary(report.diffs);
     expect(summary).toMatchObject({
@@ -2899,10 +2905,10 @@ describe('T-22 承認フロー — 0 件注記の境界(FR-5-7c)', () => {
     expect(
       summaryText
         .split('\n')
-        .filter((line) => line.includes('CloudFormation リソース差分 0 件')),
+        .filter((line) => line.trim().startsWith('(0 CloudFormation')),
     ).toHaveLength(2);
     expect(summaryText).toContain(
-      '注記: CloudFormation リソース差分が 0 件の create / update が 2 件あります',
+      'Note: 2 create/update target(s) have 0 CloudFormation resource diffs',
     );
   });
 });

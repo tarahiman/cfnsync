@@ -929,19 +929,19 @@ describe('FR-5-7e: 削除プレビューの表示', () => {
     const noChangeLine = diffLineOf(text, `[no-change] same.yaml@${REGION}`);
 
     // 削除対象はスタック全体が消えることが分かる表示になる。
-    expect(deleteLine).toContain('削除対象');
+    expect(deleteLine).toContain('targeted for deletion');
     // 3 者は互いに区別できる(同一出力に混在しうる)。
     expect(new Set([resourcelessLine, deleteLine, noChangeLine]).size).toBe(3);
-    expect(deleteLine).not.toBe('  (変更なし)');
-    expect(deleteLine).not.toContain('CloudFormation リソース差分 0 件');
+    expect(deleteLine).not.toBe('  (no changes)');
+    expect(deleteLine).not.toContain('0 CloudFormation resource diffs');
     // 回帰防止: 真の変更なしは従来どおりの表示のままである。
-    expect(noChangeLine).toBe('  (変更なし)');
-    expect(resourcelessLine).toContain('CloudFormation リソース差分 0 件');
+    expect(noChangeLine).toBe('  (no changes)');
+    expect(resourcelessLine).toContain('0 CloudFormation resource diffs');
 
     // 差分行は削除対象であることに留め、実行の可否を断定しない(--allow-delete を
     // renderText は知らない)。実行するか警告に留まるかは承認要約の見出し注記
     // (FR-5-6e)と warnings が担う。
-    expect(deleteLine).not.toContain('削除します');
+    expect(deleteLine).not.toContain('will be deleted');
 
     // 承認要約でも同一の差分行を共有する(allow-delete の有無で変わらない)。
     for (const allowDelete of [true, false]) {
@@ -959,7 +959,7 @@ describe('FR-5-7e: 削除プレビューの表示', () => {
       );
       // 削除は 0 件注記の集計対象にならない(FR-5-7c は維持)。
       expect(summaryText).toContain(
-        '注記: CloudFormation リソース差分が 0 件の create / update が 1 件あります',
+        'Note: 1 create/update target(s) have 0 CloudFormation resource diffs',
       );
     }
   });
@@ -974,7 +974,9 @@ describe('FR-5-7e: 削除プレビューの表示', () => {
     });
     // deploy が削除対象へ積む警告(--allow-delete 未指定時)。レンダラはこれを
     // 増減させてはならない。
-    diff.warnings.push('削除対象です。実削除には --allow-delete が必要です');
+    diff.warnings.push(
+      'Marked for deletion. --allow-delete is required to actually delete it',
+    );
     const deployReport = report([diff]);
     const before = structuredClone(deployReport);
 
@@ -990,14 +992,16 @@ describe('FR-5-7e: 削除プレビューの表示', () => {
     expect(json.diffs[0].operation).toBe('delete');
     expect(json.diffs[0].resources).toEqual([]);
     expect(json.diffs[0].warnings).toEqual([
-      '削除対象です。実削除には --allow-delete が必要です',
+      'Marked for deletion. --allow-delete is required to actually delete it',
     ]);
     // JSON には削除プレビューの表示文言が一切現れない。
-    expect(JSON.stringify(json)).not.toContain('スタック全体が削除対象');
+    expect(JSON.stringify(json)).not.toContain(
+      'entire stack is targeted for deletion',
+    );
     // text 出力だけが変わる。
     const text = renderText(deployReport, { color: false });
     expect(diffLineOf(text, `[delete] old.yaml@${REGION}`)).toContain(
-      '削除対象',
+      'targeted for deletion',
     );
     // レンダリングは DeployReport を書き換えない。
     expect(deployReport).toEqual(before);

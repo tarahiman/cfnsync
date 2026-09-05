@@ -189,7 +189,7 @@ function dependencies(
     forceUnlock: vi.fn(async () => ({
       exitCode: 0 as const,
       released: true,
-      message: 'ロックを解除しました。',
+      message: 'Lock released.',
     })),
     getStatus: vi.fn(getStatus),
     getGraph: vi.fn(getGraph),
@@ -651,7 +651,7 @@ describe('T-19 cli', () => {
     ).toBe(0);
     expect(prompt).toHaveBeenCalledTimes(1);
     // FR-3-7b / FR-5-6f: 承認要約は標準エラーへ出し、標準出力を汚さない。
-    expect(out.stderr()).toContain('== 実行内容の確認 ==');
+    expect(out.stderr()).toContain('== Confirm what will run ==');
     expect(deps.deploy).toHaveBeenCalledWith(
       expect.objectContaining({
         options: expect.objectContaining({ autoApprove: false }),
@@ -937,7 +937,7 @@ describe('T-19 cli', () => {
       ).toBe(0);
       expect(prompt).toHaveBeenCalledTimes(1);
       const stderr = out.stderr();
-      const start = stderr.indexOf('== 実行内容の確認 ==');
+      const start = stderr.indexOf('== Confirm what will run ==');
       expect(start).toBeGreaterThanOrEqual(0);
       return stderr.slice(start);
     };
@@ -949,7 +949,7 @@ describe('T-19 cli', () => {
     expect(colored).toContain('\x1b[31m- Remove');
     expect(colored).toContain('\x1b[1;31m [REPLACEMENT]\x1b[0m');
     expect(colored).toContain('\x1b[33mAppQueue は置換されます\x1b[0m');
-    expect(colored).toContain('\x1b[1;31m警告: リソース置換');
+    expect(colored).toContain('\x1b[1;31mWarning: 1 resource replacement');
 
     // FR-3-5 と同じ無色化規則。空文字の NO_COLOR も「存在する」ため無色化する。
     const noColor = {
@@ -970,7 +970,7 @@ describe('T-19 cli', () => {
     expect(plain).toContain('- Remove');
     expect(plain).toContain(' [REPLACEMENT]');
     expect(plain).toContain('AppQueue は置換されます');
-    expect(plain).toContain('警告: リソース置換(Replacement)が 1 件あります');
+    expect(plain).toContain('Warning: 1 resource replacement(s)');
   });
 
   it('FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない', async () => {
@@ -1008,7 +1008,7 @@ describe('T-19 cli', () => {
     ]);
 
     // 要約は標準エラーだけに出る。
-    expect(approved.stderr).toContain('== 実行内容の確認 ==');
+    expect(approved.stderr).toContain('== Confirm what will run ==');
     expect(approved.stderr).toContain('AppQueue');
     expect(autoApproved.stderr).toBe('');
     // 標準出力は要約の有無で 1 バイトも変わらず、ちょうど 1 個の JSON document。
@@ -1017,7 +1017,7 @@ describe('T-19 cli', () => {
     expect(JSON.parse(approved.stdout).diffs[0].resources[0].action).toBe(
       'Add',
     );
-    expect(approved.stdout).not.toContain('実行内容の確認');
+    expect(approved.stdout).not.toContain('Confirm what will run');
     // AppQueue は承認要約にしか現れない識別子(report 側は AppBucket のみ)。
     expect(approved.stdout).not.toContain('AppQueue');
   });
@@ -1167,7 +1167,7 @@ describe('T-19 cli', () => {
           io: out.io,
         }),
       ).toBe(1);
-      expect(out.stderr()).toContain('通常ファイル');
+      expect(out.stderr()).toContain('regular file');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1222,7 +1222,7 @@ describe('T-19 cli', () => {
       exitCode: 1,
       error: {
         type: 'AwsError',
-        message: 'CloudFormation DescribeStacks に失敗しました',
+        message: 'CloudFormation DescribeStacks failed',
         stackKey: 'app.yaml@ap-northeast-1',
         region: 'ap-northeast-1',
       },
@@ -1248,7 +1248,7 @@ describe('T-19 cli', () => {
     expect(await runCli(['status'], { deps, io: out.io })).toBe(1);
     expect(out.stdout()).toBe('');
     expect(out.stderr()).toContain(
-      'error: CloudFormation DescribeStacks に失敗しました',
+      'error: CloudFormation DescribeStacks failed',
     );
     expect(out.stderr()).toContain('(stackKey: app.yaml@ap-northeast-1)');
     expect(out.stderr()).toContain('(region: ap-northeast-1)');
@@ -1310,7 +1310,7 @@ describe('T-19 cli', () => {
       await runCli(['deploy'], { deps, io: out.io, isTTY: true, prompt }),
     ).toBe(0);
     expect(out.stderr()).toContain('Deployment cancelled.');
-    expect(out.stdout()).toContain('== 接続先 ==');
+    expect(out.stdout()).toContain('== Connection ==');
   });
 
   it.each([

@@ -31,7 +31,7 @@ export function getGraph(input: {
     const source = input.templates.get(target.templatePath);
     if (source === undefined) {
       throw new ConfigError(
-        `テンプレート内容が見つかりません: ${target.templatePath}`,
+        `Template content not found: ${target.templatePath}`,
         { stackKey: target.stackKey, region: target.region },
       );
     }

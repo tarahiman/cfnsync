@@ -817,7 +817,7 @@ describe('FR-10-9: ステートロックの取得', () => {
 
     expect(result.exitCode).toBe(1);
     expect(json).toContain(
-      'ロック解放に失敗しました: 予期しないエラーが発生しました',
+      'Failed to release the lock: An unexpected error occurred',
     );
     expect(json).not.toContain(internalMarker);
   });

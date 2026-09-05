@@ -340,33 +340,33 @@ Phase A の失敗を除外して独立対象だけを縮退実行する方式も
 
 **リソース差分 0 件の変更セット(FR-5-7a〜d)**: Outputs / Export のみを追加・変更した場合、`inputsHash` が変わるため `modified` と判定される一方、変更セットのリソース差分は 0 件になる。**これを「変更なし」として扱って実行を省略してはならない**(FR-5-7a) — 実行しなければ Export が作成されず、それを `Fn::ImportValue` する後続スタックの実行が失敗する。判定は既存の `createManagedChangeSet` の契約どおりとする: `noChanges: true`(= 変更なし)となるのは **Status が `FAILED` かつ既知の「変更なし」定型文かつ changes 0 件**のすべてを満たす場合だけであり(§7)、**成功した 0 件変更セットは通常どおり実行対象**である。
 
-現行の text 出力はこのケースを、本当に変更のないスタックと文字どおり同じ `(変更なし)` で表示する(QA が実機で確認。区別できるのは `[update]` / `[no-change]` タグだけ)。これは「変更がないのになぜ承認を求められるのか」という誤解を招き、承認判断を誤らせる。したがって承認要約・text 差分では「変更あり」として扱いつつ、**CloudFormation リソース差分が 0 件であること(Outputs 等の非リソース変更を含みうること)**を明示する(FR-5-7b。例: `[update] app.yaml@ap-northeast-1 (CloudFormation リソース差分 0 件 — Outputs 等の非リソース変更を含み得る)`)。断定的に「Outputs の変更」と言い切らないのは、0 件になる原因を CloudFormation の応答から特定できないためである。
+現行の text 出力はこのケースを、本当に変更のないスタックと文字どおり同じ `(no changes)` で表示する(QA が実機で確認。区別できるのは `[update]` / `[no-change]` タグだけ)。これは「変更がないのになぜ承認を求められるのか」という誤解を招き、承認判断を誤らせる。したがって承認要約・text 差分では「変更あり」として扱いつつ、**CloudFormation リソース差分が 0 件であること(Outputs 等の非リソース変更を含みうること)**を明示する(FR-5-7b。例: `[update] app.yaml@ap-northeast-1 (0 CloudFormation resource diffs -- may include non-resource changes such as Outputs)`)。断定的に「Outputs の変更」と言い切らないのは、0 件になる原因を CloudFormation の応答から特定できないためである(NFR-7 によりメッセージ本体は英語)。
 
 判別条件は **`(operation === 'create' || operation === 'update') && resources.length === 0`** とする(FR-5-7c)。`operation !== 'no-change'` では削除プレビュー(`operation === 'delete'` かつ `resources: []` が正常)まで巻き込み、削除対象を「リソース差分 0 件の変更」と誤表示する。
 
 この区別は**レンダラ(`renderText` / `renderApprovalSummary`)の表示ロジックとしてのみ**実装する(FR-5-7d)。`StackDiff.warnings` へ警告を積む、`operation` へ新しい値(`outputs-only` 等)を追加する等、`DeployReport` のデータ側を変更してはならない — `warnings` も `operation` も `renderJson` の出力対象フィールドであり(§9)、データ側で区別すると FR-5-16 の JSON 非回帰に違反する(ベースラインでは当該スタックが `"operation": "update"` / `"resources": []` / `"warnings": []` である)。
 
-**削除プレビューの表示(FR-5-7e)**: 同じ 0 件表示の欠陥は `operation === 'delete'` にも残る。削除は変更セットを介さず `DeleteStack` を直接呼ぶため `resources` は常に空であり、しかも FR-5-7c により 0 件注記の対象から明示的に外れる。その結果 `renderText` / `renderApprovalSummary` が共有する差分行は `(変更なし)` へ落ちる:
+**削除プレビューの表示(FR-5-7e)**: 同じ 0 件表示の欠陥は `operation === 'delete'` にも残る。削除は変更セットを介さず `DeleteStack` を直接呼ぶため `resources` は常に空であり、しかも FR-5-7c により 0 件注記の対象から明示的に外れる。その結果 `renderText` / `renderApprovalSummary` が共有する差分行は `(no changes)` へ落ちる:
 
 ```
 [delete] old.yaml@ap-northeast-1 (stack: Old)
-  (変更なし)
+  (no changes)
 ```
 
-これから消えるスタックに「変更なし」と出る。FR-5-7b が create / update について是正したのと同一の失敗様式であり、承認は削除の可否を人間に問う場面そのもので、削除は最も不可逆な操作であるため、誤らせたときの被害はより大きい。したがって削除対象には専用の行を出す(FR-5-7e。例):
+これから消えるスタックに「変更なし」と出る。FR-5-7b が create / update について是正したのと同一の失敗様式であり、承認は削除の可否を人間に問う場面そのもので、削除は最も不可逆な操作であるため、誤らせたときの被害はより大きい。したがって削除対象には専用の行を出す(FR-5-7e。例。NFR-7 によりメッセージ本体は英語):
 
 ```
 [delete] old.yaml@ap-northeast-1 (stack: Old)
-  (スタック全体が削除対象です — 削除は変更セットを介さないためリソース単位の差分はありません)
+  (the entire stack is targeted for deletion -- deletion bypasses change sets, so there is no per-resource diff)
 ```
 
-文言は `(変更なし)`(真の変更なし)とも FR-5-7b の 0 件注記(`(CloudFormation リソース差分 0 件 — …)`)とも区別できるものにする。同一の出力に 3 者が混在しうるためである。判別条件は **`operation === 'delete' && resources.length === 0`** とし、`no-change`(`(変更なし)` が正しい表示)には及ばない。
+文言は `(no changes)`(真の変更なし)とも FR-5-7b の 0 件注記(`(0 CloudFormation resource diffs -- …)`)とも区別できるものにする。同一の出力に 3 者が混在しうるためである。判別条件は **`operation === 'delete' && resources.length === 0`** とし、`no-change`(`(no changes)` が正しい表示)には及ばない。
 
-**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、`deploy` の承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です`)が担う。`plan` はこの注記を持たない(FR-5-20e) — 変更を一切実行しない(FR-5-20b)以上、削除対象にだけ「実行しない」と注記すると、同じく実行されない `create` / `update` との扱いが不整合になり、`--output json` の `warnings` にも定型のノイズが入るためである。`plan` で削除対象を判別する手段は本項の削除専用表示であり、削除待ちの由来は FR-6-11 の警告が別に担う。同じ理由で、`plan` は削除対象の `skipped` 進捗も出力しない(FR-5-20f。`DeployReport` の `outcome` は従来どおり `skipped`)。
+**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、`deploy` の承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`Marked for deletion. --allow-delete is required to actually delete it`。NFR-7 により英語)が担う。`plan` はこの注記を持たない(FR-5-20e) — 変更を一切実行しない(FR-5-20b)以上、削除対象にだけ「実行しない」と注記すると、同じく実行されない `create` / `update` との扱いが不整合になり、`--output json` の `warnings` にも定型のノイズが入るためである。`plan` で削除対象を判別する手段は本項の削除専用表示であり、削除待ちの由来は FR-6-11 の警告が別に担う。同じ理由で、`plan` は削除対象の `skipped` 進捗も出力しない(FR-5-20f。`DeployReport` の `outcome` は従来どおり `skipped`)。
 
 この区別も FR-5-7d と同様に**レンダラ限定**とする。`StackDiff.warnings` へ削除向けの文言を積む、`operation` を変える等、`DeployReport` のデータ側を変更してはならない — FR-5-16 の JSON 非回帰に違反する。
 
-**既知の副作用**: この変更により `plan` / `deploy` の**テキスト**差分出力は当該ケースで文言が変わる(`(変更なし)` → FR-5-7b の 0 件注記)。同じことが FR-5-7e の削除対象にも当てはまり、テキスト出力は削除対象の行についても変わる。いずれも意図した変更であり、FR-5-16 が非回帰を要求するのは **JSON 出力**である。**JSON は create / update / delete のいずれについても不変**である(`operation` / `resources` / `warnings` を変えないため)。テキスト出力のベースラインを回帰判定に使う場合は、この差分を許容する必要がある。
+**既知の副作用**: この変更により `plan` / `deploy` の**テキスト**差分出力は当該ケースで文言が変わる(`(no changes)` → FR-5-7b の 0 件注記)。同じことが FR-5-7e の削除対象にも当てはまり、テキスト出力は削除対象の行についても変わる。いずれも意図した変更であり、FR-5-16 が非回帰を要求するのは **JSON 出力**である。**JSON は create / update / delete のいずれについても不変**である(`operation` / `resources` / `warnings` を変えないため)。テキスト出力のベースラインを回帰判定に使う場合は、この差分を許容する必要がある。
 
 **`ApprovalSummary` の集計規則**: リソース差分 0 件の対象も、通常どおり `create` / `update` の件数に算入する(実行されるため)。そのうえで、注記の対象となった件数を `resourcelessChanges` として別に保持し、要約行に併記する。`ApprovalSummary` は承認要求専用の型であり `DeployReport` の JSON には現れないため、この追加は FR-5-16 に抵触しない。
 
@@ -592,6 +592,8 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 
 ## 9. エラー処理と終了コード
 
+ツールが組み立てる人間可読なメッセージ(進捗・エラー・警告・承認プロンプト・ヘルプ・report のテキスト表現、および JSON の固定列挙値)はすべて英語の固定文言とし、マルチバイト文字を含めない(NFR-7)。利用者の設定・テンプレート・AWS 応答由来の値(スタック名、パス、`ResourceStatusReason` 等)をそのまま提示する箇所はこの制約の対象外であり、独自に翻訳・変換してはならない。本節以降の JSON 例の `message` はこの規定に従った実際の出力形態(英語)を示す。
+
 デプロイ失敗 result の `rolledBack` は §7 の構造化 status 観測結果だけを写す。`ExecuteChangeSet` 前の拒否を含む通常の `StackStateError` / guard / config / lock error は `false` とし、エラーメッセージに `ROLLBACK` が含まれるかどうかでは判定しない。failed outcome は `rolledBack: true|false` を明示し、成功・skipped・no-change では省略してよい。`waitForStack` の例外を構造化失敗へラップする場合も、公開本文には元の `CfnSyncError.publicMessage` だけを使い、元例外は内部 cause として保持する。分類不能な元例外の公開本文は固定の安全な文言とする。
 
 | 終了コード | 意味 |
@@ -609,7 +611,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
   "exitCode": 1,
   "error": {
     "type": "ConfigError",
-    "message": "人間向けの安全なメッセージ",
+    "message": "A safe, human-readable message",
     "stackKey": "app.yaml@ap-northeast-1",
     "region": "ap-northeast-1"
   }

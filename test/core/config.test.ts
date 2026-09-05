@@ -231,7 +231,7 @@ describe('core/config', () => {
         validateConfig(
           minimalRaw({ stacks: { 'app.yaml': { dependsOn: ['app.yaml'] } } }),
         ),
-      ).toThrowError(/自分自身.*app\.yaml@ap-northeast-1/);
+      ).toThrowError(/cannot reference itself.*app\.yaml@ap-northeast-1/);
     });
 
     it.each(['', '.', 'a/..'])('FR-11-5: 退化パス %j を拒否する', (path) => {
@@ -248,7 +248,7 @@ describe('core/config', () => {
         validateConfig(
           minimalRaw({ stacks: { 'x/../app.yaml': {}, 'app.yaml': {} } }),
         ),
-      ).toThrow(/重複/);
+      ).toThrow(/Duplicate/);
     });
 
     it('FR-11-5: 必須項目(defaultRegion)の欠落は ConfigError になる(対象キーを含む)', () => {

@@ -53,7 +53,7 @@ Use pnpm 11.2.2. Tests must not require real AWS access.
 - `pnpm install` — install dependencies
 - `pnpm run build` — type-check + emit to `dist/` (`tsc`)
 - `pnpm test` — full Vitest suite (`vitest run`); `pnpm vitest run <file>` for one file
-- `pnpm run lint` — Biome check + `scripts/check-control-chars.mjs`
+- `pnpm run lint` — Biome check + `scripts/check-control-chars.mjs` + `scripts/check-message-language.mjs` (NFR-7: CLI message output must be English)
 - `pnpm run format` / `pnpm run format:check` — Biome format (write / verify-only)
 - `pnpm run check:docs` — validate local Markdown targets, heading anchors, and requirements ID structure
 - `pnpm run quality:check` — the full gate CI mirrors: skill-reference check → documentation/ID check → format check → lint → tests → build. Run this before considering a change done.

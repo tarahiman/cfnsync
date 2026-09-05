@@ -123,7 +123,7 @@ function toConfigError(error: z.ZodError): ConfigError {
       ? issue.path[1]
       : undefined;
   return new ConfigError(
-    `設定ファイルの検証に失敗しました: ${keyPath}: ${issue.message}`,
+    `Config file validation failed: ${keyPath}: ${issue.message}`,
     {
       stackKey,
     },
@@ -149,7 +149,7 @@ export function validateConfig(raw: unknown): CfnSyncConfig {
     const previous = normalizedPaths.get(normalized);
     if (previous !== undefined) {
       throw new ConfigError(
-        `正規化後のテンプレートパスが重複しています: ${previous}, ${templatePath} -> ${normalized}`,
+        `Duplicate template path after normalization: ${previous}, ${templatePath} -> ${normalized}`,
         {
           stackKey: templatePath,
         },
@@ -177,9 +177,9 @@ function assertUniquePhysicalStacks(targets: ResolvedStackTarget[]): void {
     const previous = byPhysicalId.get(physicalId);
     if (previous !== undefined) {
       throw new ConfigError(
-        `スタック名 '${target.stackName}'(${target.region})へ解決される対象が複数あります: ` +
-          `'${previous.stackKey}' と '${target.stackKey}'。同一リージョン内でスタック名は物理スタックの` +
-          `一意識別子のため、いずれかの stackName を変更してください`,
+        `Multiple targets resolve to the stack name '${target.stackName}' (${target.region}): ` +
+          `'${previous.stackKey}' and '${target.stackKey}'. A stack name is the unique physical stack ` +
+          `identifier within a region, so change one of the stackName values`,
         { stackKey: target.stackKey, region: target.region },
       );
     }
@@ -197,13 +197,13 @@ export function validateEffectiveConfig(config: CfnSyncConfig): void {
       const dependency = resolveDependsOnKey(rawDependency, target.region);
       if (dependency === target.stackKey) {
         throw new ConfigError(
-          `明示依存 dependsOn '${rawDependency}' は自分自身を参照できません`,
+          `Explicit dependsOn '${rawDependency}' cannot reference itself`,
           { stackKey: target.stackKey, region: target.region },
         );
       }
       if (!managed.has(dependency)) {
         throw new ConfigError(
-          `明示依存 dependsOn '${rawDependency}' は同一リージョンの管理対象へ解決できません: ${dependency}`,
+          `Explicit dependsOn '${rawDependency}' does not resolve to a managed target in the same region: ${dependency}`,
           { stackKey: target.stackKey, region: target.region },
         );
       }
@@ -222,7 +222,7 @@ export function parseConfig(content: string): CfnSyncConfig {
     raw = parseYaml(content, { logLevel: 'silent', strict: true });
   } catch {
     throw new ConfigError(
-      '設定ファイルの YAML 解析に失敗しました(構文またはサポート外のタグ)',
+      'Failed to parse the config file YAML (syntax error or unsupported tag)',
     );
   }
   return validateConfig(raw);

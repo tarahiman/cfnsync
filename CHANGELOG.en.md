@@ -160,6 +160,15 @@ Fixes a bug where renaming `stackName` and leaving the old stack undeleted dropp
 
 **Simplified after a third-round review (`FR-6-9a`, P2)**: keeping the pending-deletion record's existence and `originStackKey` match as conditions caused a different bug — when the same physical stack has both the pending deletion's own delete action and this run's rename-pair delete action planned against it, and the former runs first and consumes the pending-deletion record, the latter was wrongly reported as failed (exit code 1) purely because "no record exists", even though the paired create had actually succeeded and the physical deletion had already completed. The condition is now simplified to just: **the stack key that would receive the paired create currently holds a `stackId` different from the one being deleted.** Since a rename pair's `added` side always shares the same stack key as its old-name side, this single condition is both necessary and sufficient, and it also lets the duplicate delete converge correctly (as a successful "already gone" reconciliation) instead of failing.
 
+#### 11. CLI message output is now English (Issue #8)
+
+All human-readable text cfnsync assembles (progress, errors, warnings, the approval prompt, help text, and the report's text rendering) is now English (requirements: NFR-7 in [docs/spec/requirements.md](./docs/spec/requirements.md)).
+
+- **Before**: many of these messages were fixed Japanese text.
+- **After**: they are all fixed English text. This does not apply to values echoed verbatim from user config, templates, or AWS responses (stack names, paths, `ResourceStatusReason`, etc.) — those keep whatever characters they already have. Fixed enum-like values in `--output json` (the `error.type` value, `ReconciliationRecord.kind` values, etc.) are included. JSON field names, structure, and exit codes are unchanged.
+
+**Migration**: if a script greps stdout/stderr for specific Japanese message text, update it to match the new English text. Prefer relying on exit codes and JSON fields (`error.type`, `outcome`, etc.) for machine-readable checks instead. This changelog, the README, the spec documents, and source code comments are out of scope and remain in Japanese.
+
 ### Added
 
 - `--auto-approve` (`-y`) on `deploy`.

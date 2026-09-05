@@ -54,7 +54,7 @@ export function assertMutationAllowed(config: CfnSyncConfig): void {
     config.allowedAccounts.length === 0
   ) {
     throw new GuardError(
-      'allowedAccounts が設定されていません。変更系操作(変更セットの作成・実行・スタック削除)には許可アカウントの設定が前提条件です(fail-closed)',
+      'allowedAccounts is not configured. Mutating operations (change set create/execute, stack delete) require allowed accounts to be configured (fail-closed)',
     );
   }
   if (
@@ -62,7 +62,7 @@ export function assertMutationAllowed(config: CfnSyncConfig): void {
     config.allowedRegions.length === 0
   ) {
     throw new GuardError(
-      'allowedRegions が設定されていません。変更系操作(変更セットの作成・実行・スタック削除)には許可リージョンの設定が前提条件です(fail-closed)',
+      'allowedRegions is not configured. Mutating operations (change set create/execute, stack delete) require allowed regions to be configured (fail-closed)',
     );
   }
 }
@@ -98,7 +98,7 @@ export function assertAccountAllowed(
   const allowed = config.allowedAccounts ?? [];
   if (!allowed.includes(accountId)) {
     throw new GuardError(
-      `接続先アカウント (${accountId}) は許可アカウント一覧(allowedAccounts)に含まれていません(fail-closed)`,
+      `The connected account (${accountId}) is not in the allowed accounts list (allowedAccounts) (fail-closed)`,
     );
   }
 }
@@ -119,7 +119,7 @@ export function assertRegionsAllowed(
   const disallowed = regions.filter((region) => !allowed.has(region));
   if (disallowed.length > 0) {
     throw new GuardError(
-      `許可されていないリージョンが対象に含まれています(allowedRegions 外): ${disallowed.join(', ')}(fail-closed)`,
+      `Targets include region(s) not allowed (outside allowedRegions): ${disallowed.join(', ')} (fail-closed)`,
     );
   }
 }
@@ -158,7 +158,7 @@ export async function verifyStateAccount(input: {
 
   if (result === 'mismatch') {
     throw new GuardError(
-      `ステートに記録されたアカウント (${state.accountId}) と接続先アカウント (${input.accountId}) が一致しません(fail-closed)`,
+      `The account recorded in the state (${state.accountId}) does not match the connected account (${input.accountId}) (fail-closed)`,
     );
   }
 
@@ -171,7 +171,7 @@ export async function verifyStateAccount(input: {
     } catch (cause) {
       if (cause instanceof LockError) throw cause;
       throw new StatePersistenceError(
-        'ステートへの初回アカウント ID 保存に失敗しました',
+        'Failed to save the initial account ID to the state',
         { cause },
       );
     }

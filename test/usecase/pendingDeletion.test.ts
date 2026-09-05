@@ -409,7 +409,7 @@ describe('usecase/deploy — FR-1-19 / FR-6-7: 削除の拒否では削除待ち
       expect.objectContaining({
         stackKey: PENDING_OLD_KEY,
         outcome: 'failed',
-        errorMessage: expect.stringContaining('削除保護'),
+        errorMessage: expect.stringContaining('termination protection'),
       }),
     );
     // 保存自体が起きないため、state 上の削除待ちは残ったままである。
@@ -690,7 +690,7 @@ describe('usecase/deploy — FR-6-10: 削除待ちと create/update の物理ス
     expect(result.report.result?.stacks).toContainEqual(
       expect.objectContaining({
         outcome: 'failed',
-        errorMessage: expect.stringContaining('削除待ち'),
+        errorMessage: expect.stringContaining('pending deletion'),
       }),
     );
   });
@@ -724,7 +724,7 @@ describe('usecase/deploy — FR-6-11: 削除待ちの表示と JSON 出力契約
     expect(diff?.operation).toBe('delete');
     expect(diff?.stackName).toBe('Old');
     expect(diff?.warnings.join(' / ')).toContain(`a.yaml@${REGION}`);
-    expect(diff?.warnings.join(' / ')).toContain('削除待ち');
+    expect(diff?.warnings.join(' / ')).toContain('pending deletion');
   });
 
   it('FR-6-11 / FR-5-16: 削除待ちがある実行の JSON も既存フィールドだけを持つ', async () => {

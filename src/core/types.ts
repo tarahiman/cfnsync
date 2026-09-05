@@ -19,7 +19,7 @@ export function parseStackKey(key: StackKey): {
 } {
   const at = key.lastIndexOf('@');
   if (at <= 0 || at === key.length - 1) {
-    throw new ConfigError(`不正なスタックキーです: ${key}`, {
+    throw new ConfigError(`Invalid stack key: ${key}`, {
       stackKey: key,
     });
   }

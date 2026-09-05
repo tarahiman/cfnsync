@@ -401,7 +401,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       }
       if (Date.now() >= deadline) {
         throw new AwsError(
-          `変更セットの完了待機がタイムアウトしました: ${changeSetName}`,
+          `Timed out waiting for the change set to complete: ${changeSetName}`,
           {
             stackKey: stackName,
           },
@@ -581,7 +581,7 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
       if (isStackTerminal(summary.status)) return summary;
       if (Date.now() >= deadline) {
         throw new AwsError(
-          `スタックの完了待機がタイムアウトしました: ${stackName}`,
+          `Timed out waiting for the stack to complete: ${stackName}`,
           { stackKey: stackName },
         );
       }

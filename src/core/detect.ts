@@ -124,12 +124,9 @@ function getTemplateContent(
 ): string {
   const content = templates.get(templatePath);
   if (content === undefined) {
-    throw new InvariantError(
-      `テンプレート内容が見つかりません: ${templatePath}`,
-      {
-        stackKey: templatePath,
-      },
-    );
+    throw new InvariantError(`Template content not found: ${templatePath}`, {
+      stackKey: templatePath,
+    });
   }
   return content;
 }

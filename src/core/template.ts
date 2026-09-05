@@ -157,7 +157,7 @@ export function parseCfnTemplate(source: string): unknown {
   } catch (cause) {
     // ソース断片を含む可能性のある元例外メッセージは surface せず固定文に正規化する。
     throw new TemplateParseError(
-      'テンプレートの解析に失敗しました(構文またはサポート外のタグ)',
+      'Failed to parse the template (syntax error or unsupported tag)',
       { cause },
     );
   }
@@ -214,7 +214,7 @@ export function extractParameterDefaults(
   if (parameters === undefined) return {};
   if (!isRecord(parameters)) {
     throw new TemplateParseError(
-      'テンプレートの Parameters が object ではないため Default を比較できません',
+      'Cannot compare Default because the template Parameters is not an object',
     );
   }
 
@@ -222,7 +222,7 @@ export function extractParameterDefaults(
   for (const [name, definition] of Object.entries(parameters)) {
     if (!isRecord(definition)) {
       throw new TemplateParseError(
-        `Parameter '${name}' の定義が object ではないため Default を比較できません`,
+        `Cannot compare Default because the definition of Parameter '${name}' is not an object`,
       );
     }
     if (!Object.hasOwn(definition, 'Default')) continue;
@@ -234,7 +234,7 @@ export function extractParameterDefaults(
       typeof value !== 'boolean'
     ) {
       throw new TemplateParseError(
-        `Parameter '${name}' の Default は scalar ではないため比較できません`,
+        `Cannot compare because the Default of Parameter '${name}' is not a scalar`,
       );
     }
     defaults[name] = String(value);
@@ -296,16 +296,18 @@ function resolveParameter(
   const declaration = analysis.parameterDeclarations[name];
   if (declaration === undefined) {
     return unresolved(
-      `Ref '${name}' はテンプレートの Parameters に宣言されたパラメータではありません`,
+      `Ref '${name}' is not a parameter declared in the template's Parameters`,
     );
   }
   if (declaration.type !== 'String' && declaration.type !== 'Number') {
     return unresolved(
-      `Parameter '${name}' の Type '${String(declaration.type)}' は対応範囲外です`,
+      `Parameter '${name}' has Type '${String(declaration.type)}', which is out of supported range`,
     );
   }
   if (declaration.noEcho) {
-    return unresolved(`Parameter '${name}' は NoEcho のため解決しません`);
+    return unresolved(
+      `Parameter '${name}' is NoEcho, so it will not be resolved`,
+    );
   }
 
   const parameters = ctx.parameters ?? {};
@@ -313,14 +315,16 @@ function resolveParameter(
     const value = parameters[name];
     if (value === REQUIRED_PLACEHOLDER) {
       return unresolved(
-        `Parameter '${name}' の明示値が ${REQUIRED_PLACEHOLDER} のため値が確定できません`,
+        `Cannot determine the value of Parameter '${name}' because its explicit value is ${REQUIRED_PLACEHOLDER}`,
       );
     }
     return { resolved: true, value };
   }
 
   if (!declaration.hasDefault) {
-    return unresolved(`Parameter '${name}' に明示値も Default 値もありません`);
+    return unresolved(
+      `Parameter '${name}' has neither an explicit value nor a Default value`,
+    );
   }
   const value = declaration.defaultValue;
   if (
@@ -328,9 +332,7 @@ function resolveParameter(
     typeof value !== 'number' &&
     typeof value !== 'boolean'
   ) {
-    return unresolved(
-      `Parameter '${name}' の Default は scalar ではありません`,
-    );
+    return unresolved(`The Default of Parameter '${name}' is not a scalar`);
   }
   return { resolved: true, value: String(value) };
 }
@@ -370,19 +372,25 @@ function resolveDependencyName(
 ): NameResolution {
   if (typeof value === 'string') return { resolved: true, value };
   if (!isRecord(value)) {
-    return unresolved('依存名の式が対応範囲外です');
+    return unresolved(
+      'The dependency name expression is out of supported range',
+    );
   }
   if (Object.hasOwn(value, 'Ref')) {
     return typeof value.Ref === 'string'
       ? resolveParameter(value.Ref, analysis, ctx)
-      : unresolved('Ref の参照先が文字列ではありません');
+      : unresolved('The Ref target is not a string');
   }
   if (Object.hasOwn(value, 'Fn::Sub')) {
     return typeof value['Fn::Sub'] === 'string'
       ? resolveSubTemplate(value['Fn::Sub'], analysis, ctx)
-      : unresolved('変数マップ形式の Fn::Sub は対応範囲外です');
+      : unresolved(
+          'The variable-map form of Fn::Sub is out of supported range',
+        );
   }
-  return unresolved('依存名の intrinsic 式が対応範囲外です');
+  return unresolved(
+    'The dependency name intrinsic expression is out of supported range',
+  );
 }
 
 /**
@@ -515,7 +523,7 @@ export function resolveStaticTemplateAnalysis(
     if (result.resolved) imports.push(result.value);
     else {
       warnings.push(
-        `${candidate.path} を解決できません(${result.reason}。この候補は import として扱いません)`,
+        `Cannot resolve ${candidate.path} (${result.reason}. This candidate will not be treated as an import)`,
       );
     }
   }
@@ -524,7 +532,7 @@ export function resolveStaticTemplateAnalysis(
     if (result.resolved) exports.push(result.value);
     else {
       warnings.push(
-        `${candidate.path} を解決できません(${result.reason}。この候補は export として扱いません)`,
+        `Cannot resolve ${candidate.path} (${result.reason}. This candidate will not be treated as an export)`,
       );
     }
   }

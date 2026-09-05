@@ -20,7 +20,7 @@ export async function assertFenced(
 ): Promise<void> {
   if (!(await backend.verifyLock(lock))) {
     throw new LockError(
-      'ステートロックの所有権を失いました。以降の副作用を中断します(fencing)',
+      'Lost ownership of the state lock. Aborting subsequent side effects (fencing)',
     );
   }
 }
@@ -113,7 +113,7 @@ export async function withFencedLock<T>(input: {
     const release = await input.backend.releaseLock(lock);
     if (!release.released) {
       throw new LockError(
-        `ステートロックを解放できませんでした: ${release.reason ?? '所有権が一致しません'}`,
+        `Could not release the state lock: ${release.reason ?? 'ownership mismatch'}`,
       );
     }
     return result;

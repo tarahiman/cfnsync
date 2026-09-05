@@ -105,24 +105,24 @@ export async function deleteManagedStack(
       state: input.state,
       version: input.version,
       errorMessage:
-        `スタック '${target.entry.stackName}' の依存情報(exports/imports)が state にありません。` +
-        `安全な削除順を復元できないため削除を拒否します。手動対応してください`,
+        `Stack '${target.entry.stackName}' has no dependency information (exports/imports) in the state. ` +
+        `Refusing to delete because a safe delete order cannot be reconstructed. Handle it manually`,
     };
   }
 
   if (!Array.isArray(target.entry.dependsOn)) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' の明示依存 dependsOn が旧 state で unknown です。` +
-        `安全な削除順を復元できないため削除を拒否します。cfnsync import または state 移行を実行してください`,
+      `The explicit dependsOn for stack '${target.entry.stackName}' is unknown in the legacy state. ` +
+        `Refusing to delete because a safe delete order cannot be reconstructed. Run cfnsync import or a state migration`,
     );
   }
 
   if (target.entry.dependencyAnalysisIncomplete) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' は依存解析が不完全です。` +
-        `明示 dependsOn で解消して再同期するか、手動対応してください`,
+      `Dependency analysis for stack '${target.entry.stackName}' is incomplete. ` +
+        `Resolve it with an explicit dependsOn and re-sync, or handle it manually`,
     );
   }
 
@@ -131,17 +131,17 @@ export async function deleteManagedStack(
   if (input.unresolvedDependsOn && input.unresolvedDependsOn.length > 0) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' の明示依存 ` +
-        `${input.unresolvedDependsOn.join(', ')} を依存グラフ上の管理対象へ解決できません。` +
-        `安全な削除順を復元できないため削除を拒否します。手動対応してください`,
+      `Cannot resolve the explicit dependsOn ` +
+        `${input.unresolvedDependsOn.join(', ')} of stack '${target.entry.stackName}' to a managed node in the dependency graph. ` +
+        `Refusing to delete because a safe delete order cannot be reconstructed. Handle it manually`,
     );
   }
 
   if (!target.entry.stackId) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' の state に stackId(ARN) が記録されていません。` +
-        `同名スタックの差し替えを検証できないため削除を拒否します。cfnsync import または state 移行を実行してください`,
+      `The state for stack '${target.entry.stackName}' has no recorded stackId (ARN). ` +
+        `Refusing to delete because a same-named stack replacement cannot be verified. Run cfnsync import or a state migration`,
     );
   }
 
@@ -157,9 +157,9 @@ export async function deleteManagedStack(
   if (liveOwner) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' の物理スタックは、現在テンプレートパス ` +
-        `'${liveOwner[0]}' で管理対象として追跡されています。生きた管理対象を誤って` +
-        `削除しないため削除を拒否します`,
+      `The physical stack for '${target.entry.stackName}' is currently tracked as managed under ` +
+        `template path '${liveOwner[0]}'. Refusing to delete to avoid deleting a live managed stack ` +
+        `by mistake`,
     );
   }
 
@@ -174,16 +174,16 @@ export async function deleteManagedStack(
   if (summary.stackId !== target.entry.stackId) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' の stackId(ARN) が state と一致しません。` +
-        `同名スタックが差し替えられた可能性があるため DeleteStack を拒否します。cfnsync import を実行してください`,
+      `The stackId (ARN) of stack '${target.entry.stackName}' does not match the state. ` +
+        `A stack with the same name may have been replaced, so refusing DeleteStack. Run cfnsync import`,
     );
   }
 
   if (summary.status === 'REVIEW_IN_PROGRESS') {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' は REVIEW_IN_PROGRESS 状態です。` +
-        `変更セット未実行の空スタックに DeleteStack は実行できないため削除を拒否します`,
+      `Stack '${target.entry.stackName}' is in REVIEW_IN_PROGRESS state. ` +
+        `Refusing to delete because DeleteStack cannot be run on an empty stack with no executed change set`,
     );
   }
 
@@ -192,8 +192,8 @@ export async function deleteManagedStack(
   if (!DELETABLE_STACK_STATUSES.has(summary.status)) {
     return refused(
       input,
-      `スタック '${target.entry.stackName}' は ${summary.status || '(不明)'} 状態です。` +
-        `削除可能な安全な状態と確認できないため削除を拒否します。状態確認後に再実行してください`,
+      `Stack '${target.entry.stackName}' is in ${summary.status || '(unknown)'} state. ` +
+        `Refusing to delete because it could not be confirmed as a safe, deletable state. Check the state and re-run`,
     );
   }
 
@@ -204,8 +204,8 @@ export async function deleteManagedStack(
       state: input.state,
       version: input.version,
       errorMessage:
-        `スタック '${target.entry.stackName}' は削除保護(Termination Protection)が有効です。` +
-        `自動解除せず削除を拒否します`,
+        `Stack '${target.entry.stackName}' has termination protection enabled. ` +
+        `Refusing to delete without automatically disabling it`,
     };
   }
 
@@ -217,7 +217,7 @@ export async function deleteManagedStack(
   const final = await cfn.waitForStack(summary.stackId);
   if (final.status !== 'DELETE_COMPLETE') {
     throw new StackStateError(
-      `スタック '${target.entry.stackName}' の削除が完了しませんでした(final status: ${final.status})`,
+      `Deletion of stack '${target.entry.stackName}' did not complete (final status: ${final.status})`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -255,8 +255,8 @@ async function saveDeletedState(
     nextVersion = await backend.save(nextState, input.version);
   } catch (cause) {
     throw new StatePersistenceError(
-      `スタック '${target.entry.stackName}' は削除済みですが state の CAS 保存に失敗しました。` +
-        `後続削除を中断し、再実行で復旧してください`,
+      `Stack '${target.entry.stackName}' was deleted, but the compare-and-swap state save failed. ` +
+        `Aborting subsequent deletions; recover by re-running`,
       { stackKey: target.stackKey, region: target.region, cause },
     );
   }

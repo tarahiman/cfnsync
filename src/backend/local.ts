@@ -77,7 +77,7 @@ export class LocalStateBackend implements StateBackend {
     } catch (cause) {
       if (isAlreadyExists(cause)) {
         throw new StateConflictError(
-          `local ステート保存ロック '${saveLockPath}' を取得できません。別プロセスが保存中のため競合として中断します`,
+          `Cannot acquire the local state save lock '${saveLockPath}'. Aborting as a conflict because another process is saving`,
           { cause },
         );
       }
@@ -92,7 +92,7 @@ export class LocalStateBackend implements StateBackend {
         // 初回作成: 不存在時のみ成立(既にあれば他者が作成済み = 競合)。
         if (current !== undefined) {
           throw new StateConflictError(
-            'ステートが既に存在します(初回作成の前提が崩れています)。他の実行が作成した可能性があります',
+            'The state already exists (the assumption of first-time creation is broken). Another run may have created it',
           );
         }
       } else if (
@@ -102,9 +102,9 @@ export class LocalStateBackend implements StateBackend {
       ) {
         // 読込時点の世代と一致しなければ競合。ファイル消失も検証不能として競合扱い。
         throw new StateConflictError(
-          `ステートの世代が読込時点(${expected.generation})から変化しています(現在: ${
-            current ?? '不明(消失)'
-          })。他の実行によって変更された可能性があります`,
+          `The state generation has changed since it was read (${expected.generation}) (current: ${
+            current ?? '(unknown - missing)'
+          }). It may have been changed by another run`,
         );
       }
 

@@ -325,7 +325,7 @@ describe('T-18 concurrency', () => {
     const result = await s.run();
 
     expect(result.exitCode).toBe(1);
-    expect(reportErrors(result)).toContain('所有権を失いました');
+    expect(reportErrors(result)).toContain('Lost ownership');
     expect(s.cfn.callsOf('waitForStack')).toHaveLength(1);
     expect(s.backend.saveCalls).toHaveLength(0);
     expect(
@@ -388,7 +388,9 @@ describe('T-18 concurrency', () => {
     const result = await s.run();
 
     expect(result.exitCode).toBe(1);
-    expect(reportErrors(result)).toContain('実行直前の再検査');
+    expect(reportErrors(result)).toContain(
+      'The re-inspection immediately before execution',
+    );
     expect(s.cfn.callsOf('listChangeSets')).toHaveLength(2);
     expect(s.cfn.callsOf('executeChangeSet')).toHaveLength(0);
     expect(s.backend.saveCalls).toHaveLength(0);
