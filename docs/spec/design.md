@@ -362,7 +362,7 @@ Phase A の失敗を除外して独立対象だけを縮退実行する方式も
 
 文言は `(変更なし)`(真の変更なし)とも FR-5-7b の 0 件注記(`(CloudFormation リソース差分 0 件 — …)`)とも区別できるものにする。同一の出力に 3 者が混在しうるためである。判別条件は **`operation === 'delete' && resources.length === 0`** とし、`no-change`(`(変更なし)` が正しい表示)には及ばない。
 
-**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です` / `plan のため削除を実行しません`)が担う。
+**実行の可否を断定しない**: この行は `renderText` と `renderApprovalSummary` で共有され、`renderText` は `--allow-delete` を知らない(当該情報は `DeployReport` になく、承認要約だけが `ApprovalRequest.allowDelete` を持つ)。したがって文言は「削除対象である」ことに留め、「削除します」と断定してはならない。実際に削除するのか警告に留まるのかは、`deploy` の承認要約では FR-5-6e の見出し注記が、text 差分では `warnings`(`削除対象です。実削除には --allow-delete が必要です`)が担う。`plan` はこの注記を持たない(FR-5-20e) — 変更を一切実行しない(FR-5-20b)以上、削除対象にだけ「実行しない」と注記すると、同じく実行されない `create` / `update` との扱いが不整合になり、`--output json` の `warnings` にも定型のノイズが入るためである。`plan` で削除対象を判別する手段は本項の削除専用表示であり、削除待ちの由来は FR-6-11 の警告が別に担う。同じ理由で、`plan` は削除対象の `skipped` 進捗も出力しない(FR-5-20f。`DeployReport` の `outcome` は従来どおり `skipped`)。
 
 この区別も FR-5-7d と同様に**レンダラ限定**とする。`StackDiff.warnings` へ削除向けの文言を積む、`operation` を変える等、`DeployReport` のデータ側を変更してはならない — FR-5-16 の JSON 非回帰に違反する。
 

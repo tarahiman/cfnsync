@@ -16,7 +16,7 @@
 | FR-5 一括実行・承認 | §5.3〜§5.3.4 | `usecase/deploy`, `ports`, `report`, `cli` | `test/usecase/approval.test.ts`, `test/usecase/deploy.test.ts`, `test/cli/cli.test.ts` |
 | FR-5-19 承認処理失敗 | §5.3, §5.3.3 | `usecase/deploy` | `test/usecase/approval.test.ts` (`FR-5-19a`〜`FR-5-19i`) |
 | FR-5-5b7 / FR-5-18e 削除待ちの再同期 | §5.2, §5.3 | `usecase/deploy` | `test/usecase/pendingDeletion.test.ts` (`FR-5-5b7`, `FR-5-18e`) |
-| FR-5-20 差分確認の `plan` 一本化 | §3, §5.2, §5.3.5 | `cli/index`(`plan` / `deploy` のオプション定義), `usecase/deploy`(内部 `DeployOptions.dryRun`) | `test/cli/cli.test.ts` (`FR-12-8d`), `test/usecase/deploy.test.ts` (`FR-5-20b`〜`FR-5-20d`), `test/usecase/approval.test.ts` (`FR-5-20b`, `FR-5-20c`) |
+| FR-5-20 差分確認の `plan` 一本化 | §3, §5.2, §5.3.5, §5.5 | `cli/index`(`plan` / `deploy` のオプション定義), `usecase/deploy`(内部 `DeployOptions.dryRun`, 削除プレビューの注記) | `test/cli/cli.test.ts` (`FR-12-8d`), `test/usecase/deploy.test.ts` (`FR-5-20b`〜`FR-5-20d`, `FR-5-20e`, `FR-5-20f`), `test/usecase/approval.test.ts` (`FR-5-20b`, `FR-5-20c`) |
 | FR-6 削除 | §5.3, §8.3 | `core/graph`, `usecase/delete`, `usecase/deploy` | `test/core/graph.test.ts`, `test/usecase/delete.test.ts`, `test/usecase/approval.test.ts` |
 | FR-6-7〜FR-6-12 削除待ちの削除 | §5.2, §5.5, §8.3 | `usecase/deploy`(統合グラフ・物理衝突判定), `usecase/delete` | `test/usecase/pendingDeletion.test.ts` (`FR-6-7`〜`FR-6-11`), `test/usecase/delete.test.ts` (`FR-6-8`), `test/usecase/status-graph.test.ts` (`FR-6-12`) |
 | FR-7 認証・接続 | §8.1 | `usecase/guard`, `aws/sts` | `test/usecase/guard.test.ts`, `test/aws/sts.test.ts` |

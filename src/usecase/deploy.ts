@@ -1612,24 +1612,28 @@ async function planDeletion(
   }
 
   if (!ctx.options.allowDelete || ctx.options.dryRun) {
-    diff.warnings.push(
-      ctx.options.dryRun
-        ? 'plan のため削除を実行しません'
-        : '削除対象です。実削除には --allow-delete が必要です',
-    );
+    // FR-5-20e / FR-5-20f: plan は変更を一切実行しない(FR-5-20b)ため、削除対象にだけ
+    // 実行可否を注記しない。注記すると、同じく実行されない create / update と扱いが
+    // 不整合になり、--output json の warnings にも定型のノイズが入る。削除対象である
+    // ことの判別は FR-5-7e の表示が、削除待ちの由来は FR-6-11 の警告が担う。
+    // 進捗も同様に出さない(plan が意図どおり実行しないことはスキップではない)。
+    if (!ctx.options.dryRun) {
+      const message = '削除対象です。実削除には --allow-delete が必要です';
+      diff.warnings.push(message);
+      emitProgress(
+        ctx.deps,
+        operation.stackKey,
+        operation.region,
+        'skipped',
+        message,
+      );
+    }
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
       stackName: record.stackName,
       outcome: 'skipped',
     });
-    emitProgress(
-      ctx.deps,
-      operation.stackKey,
-      operation.region,
-      'skipped',
-      diff.warnings[diff.warnings.length - 1],
-    );
     return { hasDiff: true };
   }
 
