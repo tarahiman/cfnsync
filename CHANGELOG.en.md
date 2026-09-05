@@ -87,6 +87,25 @@ If several templates resolve to the same `stackName` in the same region, cfnsync
 
 When a change set succeeds but contains zero CloudFormation resource differences — for example when only Outputs / Exports changed — the text output changes from `(変更なし)` ("no changes") to a note stating that there are zero CloudFormation resource differences and that non-resource changes such as Outputs may be included. **Such targets are still executed** (skipping them would leave the Export uncreated, breaking any downstream stack that uses `Fn::ImportValue`). The distinction is made in the renderer only, so **the JSON output is unchanged** (`operation` stays `update`, `warnings` stays empty). If you use text output as a regression baseline, allow for this difference.
 
+#### 8. `AWS_REGION` / `AWS_DEFAULT_REGION` no longer override the default region
+
+- **Before**: the target region was resolved as `--region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `defaultRegion` from the config file. With one of those variables set, the same config file produced a different stack key `<template-path>@<region>` — that is, a different unit of management.
+- **After**: the target region comes from `--region` (when given) or `defaultRegion`, and nothing else. `AWS_REGION` / `AWS_DEFAULT_REGION` are never used to resolve it (they only affect the AWS SDK's own default region resolution). `AWS_PROFILE` is still read when `--profile` is omitted.
+- **Rationale**: when an environment variable silently changes the stack key, a multi-region setup that passes the `allowedRegions` fail-closed check plans the region recorded in state as a deletion and the environment variable's region as an addition. The managed targets swap without any config change, so the config file is the source of truth for the region and only an explicit CLI flag may override it.
+- The acceptance criteria retire the former FR-7-3 (an implicit ID: "the region can be given as a CLI option, an environment variable, or in the config file") and replace it with FR-7-9a–FR-7-9d. The old ID is never reused.
+
+**Migration**: if you switched cfnsync's target region with `AWS_REGION` / `AWS_DEFAULT_REGION`, replace it with one of the following. **Runs that relied on those variables alone now target the region from the config file.**
+
+```sh
+# Before: switch the target region with an environment variable
+AWS_REGION=us-east-1 cfnsync plan
+# After (a): state it explicitly on the CLI
+cfnsync plan --region us-east-1
+# After (b): make the config file the source of truth (express multiple regions with stacks.<template>.regions / regionOverrides)
+```
+
+After migrating, run `cfnsync status` and confirm that the region in the `STACK KEY` column is the one you intend and that no unexpected `added` / `deleted` entries appear.
+
 ### Added
 
 - `--auto-approve` (`-y`) on `deploy`.

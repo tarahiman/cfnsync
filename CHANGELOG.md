@@ -87,6 +87,25 @@ cfnsync deploy --auto-approve
 
 Outputs / Export のみを変更した場合など、成功したが CloudFormation リソース差分が 0 件の Change Set の text 表示が `(変更なし)` から「CloudFormation リソース差分 0 件（Outputs 等の非リソース変更を含み得る）」旨の注記へ変わります。**この対象は従来どおり実行されます**（実行しないと Export が作成されず、それを `Fn::ImportValue` する後続スタックが失敗するため）。表示の変更はレンダラのみで行うため、**JSON 出力は変わりません**（`operation` は `update` のまま、`warnings` は空）。テキスト出力を回帰判定のベースラインに使っている場合は、この差分を許容してください。
 
+#### 8. `AWS_REGION` / `AWS_DEFAULT_REGION` による既定リージョン上書きの廃止
+
+- **変更前**: 対象リージョンの優先順位は `--region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → 設定ファイルの `defaultRegion` でした。環境変数が設定されていると、同じ設定ファイルでも管理単位のスタックキー `<テンプレートパス>@<リージョン>` そのものが変わりました。
+- **変更後**: 対象リージョンは `--region`（指定した場合）または `defaultRegion` だけで決まります。`AWS_REGION` / `AWS_DEFAULT_REGION` はリージョンの決定に使いません（AWS SDK 自身の既定リージョン解決にのみ影響します）。`--profile` を省略したときに `AWS_PROFILE` を読む挙動は変わりません。
+- **根拠**: 環境変数で暗黙にスタックキーが変わると、`allowedRegions` の fail-closed 検証を通過する複数リージョン運用で、ステートに記録済みの旧リージョンが削除候補、環境変数のリージョンが追加候補として計画されます。設定を変えていないのに管理対象が入れ替わるため、リージョンは設定ファイルを正本とし、上書きは CLI で明示した場合に限ります。
+- 受入基準は旧 FR-7-3（暗黙 ID。「リージョンを CLI オプション・環境変数・設定ファイルのいずれかで指定できる」）を廃止し、FR-7-9a〜FR-7-9d へ置き換えました。旧 ID は再利用しません。
+
+**移行**: `AWS_REGION` / `AWS_DEFAULT_REGION` で cfnsync の対象リージョンを切り替えていた場合は、次のいずれかへ置き換えてください。**環境変数だけに頼っていた実行は、移行しないと設定ファイルのリージョンを対象にします。**
+
+```sh
+# 変更前: 環境変数で対象リージョンを切り替える
+AWS_REGION=us-east-1 cfnsync plan
+# 変更後 (a): CLI で明示する
+cfnsync plan --region us-east-1
+# 変更後 (b): 設定ファイルを正本にする（複数リージョンは stacks.<template>.regions / regionOverrides で表現する）
+```
+
+移行後は `cfnsync status` を実行し、`STACK KEY` 列のリージョンが意図どおりで、想定外の `added` / `deleted` が出ないことを確認してください。
+
 ### 追加
 
 - `deploy` に `--auto-approve`（`-y`）を追加しました。

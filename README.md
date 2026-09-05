@@ -67,6 +67,8 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 全サブコマンドで共通オプション `--config <path>`（既定 `./cfnsync.yaml`）、`--profile <name>`、`--region <region>`、`--output <text|json>` を使えます。
 
+対象リージョンは設定ファイルが正本です。`--region` は `defaultRegion` を上書きする**唯一の**手段で、`AWS_REGION` / `AWS_DEFAULT_REGION` は cfnsync の対象リージョンを変えません（管理単位のスタックキー `<テンプレートパス>@<リージョン>` が実行環境によって変わらないようにするためです）。これらの環境変数は AWS SDK 自身の既定リージョン解決にのみ影響します。`--profile` を省略したときに `AWS_PROFILE` を読む挙動は従来どおりです。
+
 | コマンド | 説明 |
 |---|---|
 | `status` | ステートとローカルのテンプレートを比較し、`added` / `modified` / `deleted` / `unchanged` を表示します。 |
@@ -135,6 +137,8 @@ jobs:
       - run: npx @tarahi/cfnsync deploy --auto-approve --no-color
         working-directory: templates
 ```
+
+`aws-actions/configure-aws-credentials` の `aws-region` は AWS SDK の既定リージョンと認証情報の取得先を決めるだけで、cfnsync の対象リージョンは変えません。対象リージョンは `cfnsync.yaml`（`defaultRegion` / `regions` / `regionOverrides`）と `--region` だけで決まります。
 
 実行ロールには `sts:GetCallerIdentity`、CloudFormation の Change Set / スタック / テンプレート系 Action、（`s3` バックエンド時）state / lock キーへの `s3:GetObject` / `PutObject` / `DeleteObject` が必要です。テンプレートが作成するリソースに応じて追加権限（例: `iam:PassRole`）が必要になる場合があります。詳細は [`docs/config-reference.md`](./docs/config-reference.md) と [`docs/spec/design.md`](./docs/spec/design.md) を参照してください。
 

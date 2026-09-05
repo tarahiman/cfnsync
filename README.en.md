@@ -67,6 +67,8 @@ The npm package is scoped (`@tarahi/cfnsync`), but the installed command is `cfn
 
 Every subcommand accepts the common options `--config <path>` (default `./cfnsync.yaml`), `--profile <name>`, `--region <region>`, and `--output <text|json>`.
 
+The config file is the source of truth for the target region. `--region` is the **only** way to override `defaultRegion`: `AWS_REGION` / `AWS_DEFAULT_REGION` never change the region cfnsync targets, so the stack key `<template-path>@<region>` (the unit of management) stays the same no matter which environment you run in. Those variables only affect the AWS SDK's own default region resolution. `AWS_PROFILE` is still read when `--profile` is omitted.
+
 | Command | Description |
 |---|---|
 | `status` | Compare state with local templates and print `added` / `modified` / `deleted` / `unchanged`. |
@@ -135,6 +137,8 @@ jobs:
       - run: npx @tarahi/cfnsync deploy --auto-approve --no-color
         working-directory: templates
 ```
+
+The `aws-region` input of `aws-actions/configure-aws-credentials` only sets the AWS SDK's default region and where the credentials are obtained; it does not change the region cfnsync targets. That comes solely from `cfnsync.yaml` (`defaultRegion` / `regions` / `regionOverrides`) and `--region`.
 
 The execution role needs `sts:GetCallerIdentity`, the CloudFormation change-set / stack / template actions, and (for the `s3` backend) `s3:GetObject` / `PutObject` / `DeleteObject` on the state and lock keys. Your templates may require additional permissions (e.g. `iam:PassRole`) depending on the resources they create. See [`docs/config-reference.md`](./docs/config-reference.md) and [`docs/spec/design.md`](./docs/spec/design.md) for details.
 

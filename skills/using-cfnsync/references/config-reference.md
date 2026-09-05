@@ -9,7 +9,7 @@
 | `version` | `1`(リテラル) | 必須 | - | 現状 `1` 固定。将来のスキーマ変更に備えたバージョンタグ |
 | `allowedAccounts` | `string[]` | 任意(**変更系操作は事実上必須**) | なし | STS `GetCallerIdentity` で解決した接続先アカウント ID と照合する。未設定または空配列の場合、`deploy`/`import` 等の変更系操作は fail-closed で拒否される |
 | `allowedRegions` | `string[]` | 任意(**変更系操作は事実上必須**) | なし | 実行計画中の全対象リージョンがこの集合に含まれるか照合する。未設定または対象リージョンが集合外の場合は拒否される |
-| `defaultRegion` | `string` | 必須 | - | `stacks.<templatePath>.regions` を省略したスタックのデプロイ先リージョン |
+| `defaultRegion` | `string` | 必須 | - | `stacks.<templatePath>.regions` を省略したスタックのデプロイ先リージョン。上書きできるのは CLI の `--region` だけで、`AWS_REGION` / `AWS_DEFAULT_REGION` はリージョンの決定に使われない(スタックキー `<templatePath>@<region>` が実行環境で変わらないようにするため) |
 | `stackNamePrefix` | `string` | 任意 | なし(空文字相当) | `stackName` を省略したスタックの名前接頭辞 |
 | `defaultTags` | `Record<string, string \| number \| boolean>` | 任意 | `{}` | すべての管理対象スタックへ既定で付与するタグ。値の扱いは `stacks.<templatePath>.tags` と同様に文字列へ正規化される。実効タグへのマージ順は `defaultTags` < `tags` < `regionOverrides.<region>.tags`(後勝ち)で、同名キーの重複は設定エラーにならず、より狭いスコープの値が優先される。`defaultTags` の変更はそれを付与される全スタックの変更検知(`inputsHash`)に反映され、`modified` として検知される |
 | `state` | object | 任意 | `{ backend: local }` | ステートバックエンドの設定。詳細は下記「`state`」参照 |

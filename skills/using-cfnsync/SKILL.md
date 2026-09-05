@@ -26,8 +26,10 @@ Run commands as `cfnsync <command> [options]`. Every subcommand accepts these co
 |---|---|
 | `--config <path>` | Read configuration from this path (default `./cfnsync.yaml`) |
 | `--profile <name>` | Use this AWS shared-config profile |
-| `--region <region>` | Override `defaultRegion` |
+| `--region <region>` | Override `defaultRegion` (the only way to override it) |
 | `--output <text|json>` | Select human-readable or machine-readable output (default `text`) |
+
+`AWS_REGION` / `AWS_DEFAULT_REGION` do not change the region cfnsync targets: the config file is the source of truth, so the stack key `<template-path>@<region>` is identical in every environment. `AWS_PROFILE` is still used when `--profile` is omitted.
 
 Use `--output json` for automation. Run `cfnsync --help` or `cfnsync <command> --help` to verify the options supported by the installed version.
 

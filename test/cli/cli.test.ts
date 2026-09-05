@@ -473,7 +473,7 @@ describe('T-19 cli', () => {
     expect(out.stderr()).toContain('--auto-approve');
   });
 
-  it('FR-7-1〜3: CLI の profile/region を AWS 依存へ伝播する', async () => {
+  it('FR-7-1 / FR-7-9a / FR-7-9d: CLI の --profile / --region を AWS 依存へ明示的に伝播する', async () => {
     const deps = dependencies();
     (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
       async (input) => {
@@ -546,9 +546,30 @@ describe('T-19 cli', () => {
     expect(deps.createCfn).toHaveBeenCalledTimes(1);
   });
 
-  it('FR-7-1〜3: AWS_PROFILE/AWS_REGION を明示オプション未指定時に伝播する', async () => {
+  it('FR-7-1 / FR-7-9c: AWS_PROFILE は伝播するが AWS_REGION / AWS_DEFAULT_REGION はリージョン決定に使わない', async () => {
     vi.stubEnv('AWS_PROFILE', 'environment-profile');
     vi.stubEnv('AWS_REGION', 'eu-west-1');
+    vi.stubEnv('AWS_DEFAULT_REGION', 'us-east-1');
+    const deps = dependencies();
+    (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
+      async (input) => {
+        input.deps.cfnFactory(input.config.defaultRegion);
+        return { exitCode: 0, report, hasDiff: false };
+      },
+    );
+    await runCli(['deploy', '--auto-approve'], { deps });
+    // FR-7-9c: 環境変数は設定ファイルの defaultRegion を上書きしない。
+    expect(deps.createCfn).toHaveBeenCalledWith({
+      region: 'ap-northeast-1',
+      profile: 'environment-profile',
+    });
+    expect(deps.createSts).toHaveBeenCalledWith({
+      region: 'ap-northeast-1',
+      profile: 'environment-profile',
+    });
+  });
+
+  it('FR-7-9b: --region 未指定なら設定ファイルの defaultRegion を採用する', async () => {
     const deps = dependencies();
     (deps.deploy as ReturnType<typeof vi.fn>).mockImplementation(
       async (input) => {
@@ -558,13 +579,45 @@ describe('T-19 cli', () => {
     );
     await runCli(['deploy', '--auto-approve'], { deps });
     expect(deps.createCfn).toHaveBeenCalledWith({
-      region: 'eu-west-1',
-      profile: 'environment-profile',
+      region: 'ap-northeast-1',
+      profile: undefined,
     });
     expect(deps.createSts).toHaveBeenCalledWith({
-      region: 'eu-west-1',
-      profile: 'environment-profile',
+      region: 'ap-northeast-1',
+      profile: undefined,
     });
+  });
+
+  it('FR-7-9a / FR-7-9c: --region は環境変数より優先し、環境変数だけではスタックキーが変わらない', async () => {
+    vi.stubEnv('AWS_REGION', 'eu-west-1');
+    vi.stubEnv('AWS_DEFAULT_REGION', 'eu-central-1');
+    const withEnv = capture();
+    const deps = dependencies();
+    expect(
+      await runCli(['status', '--output', 'json'], { deps, io: withEnv.io }),
+    ).toBe(0);
+    // FR-7-9c: 管理単位のスタックキーは設定ファイルの defaultRegion のまま。
+    expect(JSON.parse(withEnv.stdout()).entries).toEqual([
+      expect.objectContaining({
+        stackKey: 'app.yaml@ap-northeast-1',
+        region: 'ap-northeast-1',
+      }),
+    ]);
+
+    // FR-7-9a: 明示した --region だけがスタックキーを移す。
+    const withOption = capture();
+    expect(
+      await runCli(['status', '--output', 'json', '--region', 'us-east-1'], {
+        deps: dependencies(),
+        io: withOption.io,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(withOption.stdout()).entries).toEqual([
+      expect.objectContaining({
+        stackKey: 'app.yaml@us-east-1',
+        region: 'us-east-1',
+      }),
+    ]);
   });
 
   it('FR-5-2a: TTY の deploy は approve を注入し、承認要約を stderr へ出してプロンプトする', async () => {
