@@ -27,8 +27,9 @@ ln -s "$dependencies_path" "${snapshot_directory}/node_modules"
   cd "$snapshot_directory"
   # pnpm verifies that node_modules belongs to the current directory and may
   # attempt to replace a symlinked modules directory. npm's script runner does
-  # not mutate dependencies, so use it to invoke the same four staged scripts
-  # that quality:check delegates to.
+  # not mutate dependencies, so use it to invoke the repository's staged
+  # quality checks against this isolated snapshot.
+  npm run check:docs
   npm run format:check
   npm run lint
   npm test

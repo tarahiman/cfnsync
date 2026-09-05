@@ -20,6 +20,7 @@ import {
 import { StackStateError } from '../../src/core/errors.js';
 import { makeStackKey } from '../../src/core/types.js';
 import {
+  type CreatedChangeSetRef,
   changeSetName,
   createManagedChangeSet,
   type ExecutorContext,
@@ -512,6 +513,110 @@ describe('createManagedChangeSet', () => {
     expect(result.noChanges).toBe(false);
     expect(result.detail.status).toBe('CREATE_COMPLETE');
     expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+  });
+
+  it('FR-5-12c: onCreated は CreateChangeSet 成功直後(待機より前)に name/ARN/stackId を通知する', async () => {
+    const fake = new FakeCloudFormationGateway();
+    fake.stacks.set(
+      STACK,
+      makeStackSummary({
+        stackName: STACK,
+        stackId: 'arn:aws:cloudformation:stack/my-network/live',
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
+    const notified: Array<{ ref: CreatedChangeSetRef; seen: string[] }> = [];
+
+    const result = await createManagedChangeSet(makeCtx(fake), {
+      target: makeTarget(),
+      templateBody: 'TEMPLATE',
+      kind: 'update',
+      onCreated: (ref) => notified.push({ ref, seen: fake.methodSequence() }),
+    });
+
+    expect(notified).toHaveLength(1);
+    expect(notified[0].ref).toEqual({
+      name: result.name,
+      id: result.id,
+      stackId: 'arn:aws:cloudformation:stack/my-network/live',
+    });
+    // 通知時点で待機はまだ始まっていない = 待機以降のどの失敗でも回収対象に載っている。
+    expect(notified[0].seen).toEqual(['createChangeSet']);
+  });
+
+  it('FR-5-12c: 待機例外・name/ARN 不一致・非空 FAILED のどれで中断しても作成済み ARN を通知済みにする', async () => {
+    const injections: Array<{
+      label: string;
+      inject: (fake: FakeCloudFormationGateway) => void;
+    }> = [
+      {
+        label: '待機例外',
+        inject: (fake) => {
+          fake.waitForChangeSet = async () => {
+            throw new Error('CloudFormation DescribeChangeSet に失敗しました');
+          };
+        },
+      },
+      {
+        label: 'name/ARN 不一致',
+        inject: (fake) => {
+          fake.waitForChangeSet = async () =>
+            makeChangeSetDetail({
+              name: 'cfnsync-replaced-change-set',
+              id: 'arn:aws:cloudformation:changeSet/replaced',
+            });
+        },
+      },
+      {
+        label: '非空 FAILED',
+        inject: (fake) => {
+          fake.defaultChangeSetDetail = makeChangeSetDetail({
+            status: 'FAILED',
+            statusReason:
+              'Template format error: Unresolved resource dependencies [Foo].',
+            changes: [
+              {
+                action: 'Modify',
+                logicalResourceId: 'Bucket',
+                resourceType: 'AWS::S3::Bucket',
+                scope: ['Properties'],
+                details: [],
+              },
+            ],
+          });
+        },
+      },
+    ];
+
+    for (const { label, inject } of injections) {
+      const fake = new FakeCloudFormationGateway();
+      inject(fake);
+      const notified: CreatedChangeSetRef[] = [];
+
+      await expect(
+        createManagedChangeSet(makeCtx(fake), {
+          target: makeTarget(),
+          templateBody: 'TEMPLATE',
+          kind: 'update',
+          onCreated: (ref) => notified.push(ref),
+        }),
+        label,
+      ).rejects.toThrow();
+
+      // 変更セットは AWS 上に作成済みなので、呼び出し側が回収できなければならない(FR-5-12c)。
+      expect(notified, label).toHaveLength(1);
+      expect(notified[0].id, label).toBe(
+        `arn:aws:cloudformation:changeSet/${
+          (
+            fake.callsOf('createChangeSet')[0].args[0] as {
+              changeSetName: string;
+            }
+          ).changeSetName
+        }`,
+      );
+      // 回収そのものは呼び出し側の責務(この関数は削除しない)。
+      expect(fake.callsOf('deleteChangeSet'), label).toHaveLength(0);
+    }
   });
 
   it("FR-2-3: 空変更セット(didn't contain changes)→ 変更なし・変更セット削除・エラーにしない", async () => {

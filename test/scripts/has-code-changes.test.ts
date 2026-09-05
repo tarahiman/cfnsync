@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import {
   hasCodeRelatedPaths,
@@ -38,6 +40,23 @@ describe('code-related path detection', () => {
     expect(hasCodeRelatedPaths(['README.md', 'src/core/plan.ts'])).toBe(true);
     expect(hasCodeRelatedPaths(['README.md', 'docs/spec/design.md'])).toBe(
       false,
+    );
+  });
+});
+
+describe('pull request documentation gate', () => {
+  it('runs documentation validation before the conditional code-quality gate', () => {
+    const workflow = readFileSync(
+      new URL('../../.github/workflows/pull-request.yml', import.meta.url),
+      'utf8',
+    );
+    const documentationStep =
+      '      - name: Validate documentation\n' +
+      '        run: node scripts/check-doc-links.mjs && node scripts/check-spec-ids.mjs';
+
+    expect(workflow).toContain(documentationStep);
+    expect(workflow.indexOf(documentationStep)).toBeLessThan(
+      workflow.indexOf('      - name: Detect code-related changes'),
     );
   });
 });

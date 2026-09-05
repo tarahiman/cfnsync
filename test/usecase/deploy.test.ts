@@ -28,7 +28,11 @@ import type {
   CloudFormationGateway,
   StackEvent,
 } from '../../src/ports/index.js';
-import { renderJson, renderText } from '../../src/report/index.js';
+import {
+  type ApprovalRequest,
+  renderJson,
+  renderText,
+} from '../../src/report/index.js';
 import { deploy } from '../../src/usecase/deploy.js';
 import { MANAGEMENT_TAG_KEY } from '../../src/usecase/executor.js';
 import {
@@ -206,6 +210,11 @@ function setup(
       allowDelete?: boolean;
       onFailure?: 'stop' | 'continue';
     } = {},
+    // 承認待ちの競合窓(FR-5-14b / FR-5-17)を再現する場合だけ approve を注入する。
+    // 未指定なら従来どおり --auto-approve 相当で走る。
+    extraDeps: {
+      approve?: (request: ApprovalRequest) => Promise<boolean>;
+    } = {},
   ) =>
     deploy({
       config,
@@ -219,8 +228,12 @@ function setup(
         runId: () => RUN_ID,
         onEvent: (event) => emitted.push(event),
         onProgress: (event) => progress.push(event),
+        ...extraDeps,
       },
-      options,
+      options: {
+        autoApprove: extraDeps.approve === undefined,
+        ...options,
+      },
     });
   return { timeline, emitted, progress, backend, gateways, cfnFactory, run };
 }
@@ -336,7 +349,9 @@ describe('deploy — T-14 integration', () => {
     const result = await s.run();
 
     expect(result.exitCode).toBe(0);
-    expect(fake.callsOf('describeStack')).toHaveLength(1);
+    // Phase A の復旧判定で 1 回、Phase B の実行直前再検査(FR-5-17c)で 1 回。
+    // Phase A 内で状態ガードへ結果を引き渡す(＝2 回呼ばない)ことが本テストの主旨。
+    expect(fake.callsOf('describeStack')).toHaveLength(2);
   });
 
   it('回帰(実 AWS 疎通で判明): 真の新規 CREATE(スタック不存在)は ListChangeSets より先に CreateChangeSet へ進む', async () => {
@@ -371,7 +386,7 @@ describe('deploy — T-14 integration', () => {
     ).toBe('CREATE');
   });
 
-  it('FR-5-1 / FR-5-2: 変更検知から実行まで依存順に非対話で一括実行する', async () => {
+  it('FR-5-1 / FR-5-2a: 全変更セット作成が全実行に先行し、実行は依存順になる', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A' },
       'b.yaml': { stackName: 'B' },
@@ -391,10 +406,12 @@ describe('deploy — T-14 integration', () => {
     const result = await s.run();
 
     expect(result.exitCode).toBe(0);
+    // FR-5-5a: Phase A で全対象の変更セットを作成してから、Phase B で依存順に実行する。
+    // 2 フェーズ化前は create:A → execute:A → create:B → execute:B の逐次だった。
     expect(mutationOrder(fake)).toEqual([
       'create:A',
-      'execute:A',
       'create:B',
+      'execute:A',
       'execute:B',
     ]);
     expect(result.report.diffs.map((diff) => diff.stackName)).toEqual([
@@ -470,16 +487,17 @@ Resources:
     const result = await s.run();
 
     expect(result.exitCode).toBe(0);
+    // FR-5-5a: Phase A で全変更セットを作成してから Phase B で依存順に実行する。
     expect(mutationOrder(gatewayFor(s, REGION))).toEqual([
       'create:Provider',
-      'execute:Provider',
       'create:Consumer',
+      'execute:Provider',
       'execute:Consumer',
     ]);
     expect(mutationOrder(gatewayFor(s, REGION_2))).toEqual([
       'create:Provider',
-      'execute:Provider',
       'create:Consumer',
+      'execute:Provider',
       'execute:Consumer',
     ]);
     expect(
@@ -1166,13 +1184,15 @@ Resources:
     ]);
 
     const result = await s.run({ onFailure });
-    const created = fake
-      .callsOf('createChangeSet')
-      .map((call) => (call.args[0] as { stackName: string }).stackName);
+    // FR-5-5a: 変更セットは Phase A で全対象ぶん作成されるため、失敗伝播の観測対象は
+    // 「実行されたか」(ExecuteChangeSet)であって「変更セットが作られたか」ではない。
+    const executed = fake
+      .callsOf('executeChangeSet')
+      .map((call) => call.args[0] as string);
 
     expect(result.exitCode).toBe(1);
-    expect(created).not.toContain('B');
-    expect(created.includes('C')).toBe(executesC);
+    expect(executed).not.toContain('B');
+    expect(executed.includes('C')).toBe(executesC);
   });
 
   it('FR-1-7(統合): 正常終了でも途中エラーでも finally で releaseLock を呼ぶ', async () => {
@@ -1234,12 +1254,14 @@ Resources:
     s.backend.saveError = new Error('injected CAS failure');
 
     const result = await s.run({ onFailure: 'continue' });
-    const created = fake
-      .callsOf('createChangeSet')
-      .map((call) => (call.args[0] as { stackName: string }).stackName);
+    // FR-5-5a: 変更セット作成は Phase A で全対象ぶん先に済む。CAS 保存失敗によって
+    // 中断されるべき「後続 AWS 副作用」は ExecuteChangeSet 以降である。
+    const executed = fake
+      .callsOf('executeChangeSet')
+      .map((call) => call.args[0] as string);
 
     expect(result.exitCode).toBe(1);
-    expect(created).toEqual(['A']);
+    expect(executed).toEqual(['A']);
     expect(s.backend.releaseCalls).toBe(1);
   });
 
@@ -1325,7 +1347,9 @@ Resources:
     );
 
     expect(result.exitCode).toBe(1);
-    expect(created).toEqual(['C']);
+    // FR-5-12b: 計画段階の失敗は --on-failure の値にかかわらず実行全体を中断する。
+    // 2 フェーズ化前は独立スタック C だけが実行されていた(破壊的変更)。
+    expect(created).toEqual([]);
     expect(failed).toEqual(
       expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
     );
@@ -1373,9 +1397,13 @@ Resources:
       .map((call) => (call.args[0] as { stackName: string }).stackName);
 
     expect(result.exitCode).toBe(1);
-    expect(created).toEqual(['Independent']);
+    // FR-5-12b: 計画段階の失敗では独立スタックも実行しない(破壊的変更)。
+    expect(created).toEqual([]);
     expect(result.report.result?.stacks).toContainEqual(
       expect.objectContaining({ stackName: 'Consumer', outcome: 'skipped' }),
+    );
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({ stackName: 'Independent', outcome: 'skipped' }),
     );
   });
 
@@ -1476,7 +1504,7 @@ Outputs:
     ).toBe(false);
   });
 
-  it('§7 CREATE 復旧: added 既存スタックが完全一致なら NoEcho/dependsOn 除外を警告し SYNC 保存する', async () => {
+  it('FR-5-5b4: CREATE 復旧は NoEcho / dependsOn があると入力同一性を証明できず fail-closed になる', async () => {
     const config = configOf({
       'external.yaml': { stackName: 'ExternalStack' },
       'secret.yaml': {
@@ -1509,21 +1537,59 @@ Outputs:
 
     const result = await s.run();
 
-    expect(result.exitCode).toBe(0);
+    // 管理タグ・テンプレート・可視パラメータ・タグ・Capabilities はすべて一致するが、
+    // NoEcho の実値と dependsOn は AWS 側と照合できない。これらを比較から除外したまま
+    // 「適用済み」として state を保存すると、未適用の希望値を適用済みと記録して
+    // 変更が失われる(虚偽収束)。2 フェーズ化前は警告して続行していた(破壊的変更)。
+    expect(result.exitCode).toBe(1);
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
     expect(
-      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].lastAction,
-    ).toBe('SYNC');
-    expect(
-      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].stackId,
-    ).toBe(fake.stacks.get('SecretStack')?.stackId);
-    expect(
-      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'].dependsOn,
-    ).toEqual(['external.yaml@ap-northeast-1']);
-    const secretDiff = result.report.diffs.find(
-      (diff) => diff.stackKey === 'secret.yaml@ap-northeast-1',
+      s.backend.stored?.state.stacks['secret.yaml@ap-northeast-1'],
+    ).toBeUndefined();
+    const failure = result.report.result?.stacks.find(
+      (stack) => stack.stackKey === 'secret.yaml@ap-northeast-1',
     );
-    expect(secretDiff?.warnings.join('\n')).toMatch(/Secret|dependsOn/);
+    expect(failure?.outcome).toBe('failed');
+    expect(failure?.errorMessage).toContain('入力同一性を証明できない');
+    // FR-5-5b4: 案内は「import を実行せよ」では不十分で、import が NoEcho を
+    // __REQUIRED__ へ書き換えることまで含めた手順でなければならない。
+    expect(failure?.errorMessage).toContain('--reconcile local');
+    expect(failure?.errorMessage).toContain('__REQUIRED__');
+    // NFR-4: NoEcho の実値を診断へ漏らさない。
+    expect(failure?.errorMessage).not.toContain('desired');
+  });
+
+  it('FR-5-5b3: CREATE 復旧は NoEcho / dependsOn がなければ全入力を照合できるので SYNC 保存する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const initial = recordedState(config, templates);
+    delete initial.stacks[`a.yaml@${REGION}`];
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        status: 'CREATE_COMPLETE',
+        tags: { [MANAGEMENT_TAG_KEY]: STATE_ID },
+      }),
+    );
+    fake.templates.set('A', TEMPLATE_A);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+    expect(s.backend.stored?.state.stacks[`a.yaml@${REGION}`].lastAction).toBe(
+      'SYNC',
+    );
+    // FR-5-18a: 承認前に保存した既成事実の再同期を report へ開示する。
+    expect(result.report.reconciliations).toContainEqual({
+      stackKey: `a.yaml@${REGION}`,
+      region: REGION,
+      kind: 'create-recovery',
+      stateUpdated: true,
+    });
   });
 
   it('§7 CREATE 復旧: 管理タグ欠如は他が一致しても fail-closed で import を案内する', async () => {
@@ -1812,16 +1878,21 @@ Outputs:
     const bPhases = s.progress
       .filter((p) => p.stackKey === `b.yaml@${REGION}`)
       .map((p) => p.phase);
-    expect(bPhases).toEqual(['skipped']);
-    expect(bPhases).not.toContain('changeset-create-start');
+    // FR-5-5a: 差分確定は承認前に全対象ぶん行われるため、B にも
+    // changeset-create-start → diff-ready が出る。A の実行失敗を受けて
+    // B は Phase B で実行されず skipped で終わる(相対順序は維持。FR-5-4)。
+    expect(bPhases).toEqual([
+      'changeset-create-start',
+      'diff-ready',
+      'skipped',
+    ]);
+    expect(bPhases).not.toContain('execute-start');
     expect(
-      fake
-        .callsOf('createChangeSet')
-        .map((call) => (call.args[0] as { stackName: string }).stackName),
+      fake.callsOf('executeChangeSet').map((call) => call.args[0] as string),
     ).not.toContain('B');
   });
 
-  it('FR-5-4: 削除は allowDelete 有無で delete-start→done / delete-start→skipped を通知する', async () => {
+  it('FR-5-4: 削除は allowDelete 指定時だけ delete-start→done、未指定は skipped のみ通知する', async () => {
     const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
     const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
     const config = configOf({});
@@ -1861,9 +1932,12 @@ Outputs:
       makeStackSummary({ stackName: 'Old', status: 'CREATE_COMPLETE' }),
     );
     await skip.run();
+    // delete-start は「実行開始」の通知であり Phase B でのみ出す。--allow-delete が
+    // ない場合は DeleteStack へ進まないため、開始を通知せず skipped だけを出す
+    // (2 フェーズ化前は delete-start → skipped の順で出していた)。
     expect(
       skip.progress.filter((p) => p.stackKey === key).map((p) => p.phase),
-    ).toEqual(['delete-start', 'skipped']);
+    ).toEqual(['skipped']);
   });
 
   it('FR-5-4: 削除保護で拒否された削除は delete-start→failed を通知する', async () => {
@@ -1923,5 +1997,282 @@ Outputs:
     expect(s.progress.some((p) => p.stackKey === `a.yaml@${REGION_2}`)).toBe(
       true,
     );
+  });
+});
+
+// ===========================================================================
+// T-22 実装レビュー(Codex)指摘の回帰固定。
+// いずれも「変更セットを事前作成して承認を挟む」2 フェーズ化に固有の欠陥であり、
+// 既存テストでは検出できていなかった。
+// ===========================================================================
+
+describe('deploy — Phase A / Phase B の変更セット回収と実行直前再検査', () => {
+  /** 実行で作成された自変更セットの ARN(名前は runId + 固定時刻から決まる)。 */
+  function createdChangeSetArn(fake: FakeCloudFormationGateway): string {
+    const input = fake.callsOf('createChangeSet')[0].args[0] as {
+      changeSetName: string;
+    };
+    return `arn:aws:cloudformation:changeSet/${input.changeSetName}`;
+  }
+
+  it('FR-5-12c: Phase A で失敗した対象自身が作成済みの変更セットも先行対象と一緒に回収する', async () => {
+    // createManagedChangeSet は CreateChangeSet 成功**後**にも throw しうる(待機例外 /
+    // name・ARN 不一致 / 非空 FAILED)。この 3 経路では変更セットが AWS 上に残るため、
+    // 先行対象の分だけでなく当該対象の分も削除されなければならない。
+    const injections: Array<{
+      label: string;
+      inject: (fake: FakeCloudFormationGateway) => void;
+    }> = [
+      {
+        label: '待機例外',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            if (stackName === 'C')
+              throw new AwsError(
+                'CloudFormation DescribeChangeSet に失敗しました',
+              );
+            return original(stackName, changeSetName);
+          };
+        },
+      },
+      {
+        label: 'name/ARN 不一致',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            const detail = await original(stackName, changeSetName);
+            if (stackName !== 'C') return detail;
+            return {
+              ...detail,
+              id: 'arn:aws:cloudformation:changeSet/replaced',
+            };
+          };
+        },
+      },
+      {
+        label: '非空 FAILED',
+        inject: (fake) => {
+          const original = fake.waitForChangeSet.bind(fake);
+          fake.waitForChangeSet = async (stackName, changeSetName) => {
+            const detail = await original(stackName, changeSetName);
+            if (stackName !== 'C') return detail;
+            return {
+              ...detail,
+              status: 'FAILED',
+              statusReason:
+                'Template format error: Unresolved resource dependencies [Foo].',
+              changes: changedDetail().changes,
+            };
+          };
+        },
+      },
+    ];
+
+    for (const { label, inject } of injections) {
+      const config = configOf({
+        'a.yaml': { stackName: 'A' },
+        'c.yaml': { stackName: 'C' },
+      });
+      const templates = templatesOf({
+        'a.yaml': TEMPLATE_A,
+        'c.yaml': TEMPLATE_C,
+      });
+      const s = setup(
+        config,
+        templates,
+        recordedState(config, templates, { modified: true }),
+      );
+      const fake = gatewayFor(s);
+      setExistingStacks(config, fake);
+      inject(fake);
+
+      const result = await s.run();
+
+      expect(result.exitCode, label).toBe(1);
+      expect(fake.callsOf('executeChangeSet'), label).toHaveLength(0);
+      // 先行対象 A だけでなく、失敗した C の作成済み変更セットも削除される(FR-5-12c)。
+      expect(
+        fake.callsOf('deleteChangeSet').map((call) => call.args[0]),
+        label,
+      ).toEqual(['A', 'C']);
+      for (const call of fake.callsOf('deleteChangeSet')) {
+        expect(call.args[1], label).toBe(createdChangeSetArn(fake));
+      }
+    }
+  });
+
+  it('FR-5-17c2: 承認待ちの間に REVIEW_IN_PROGRESS の殻が差し替えられたら実行しない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(config, templates);
+    const fake = gatewayFor(s);
+    // Phase A の CreateChangeSet(CREATE 型)が作る殻を模す。以後この ARN が「自身の
+    // 変更セットに対応する殻」の識別子になる。
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        stackId: 'arn:aws:cloudformation:stack/A/own-shell',
+        status: 'REVIEW_IN_PROGRESS',
+      }),
+    );
+
+    const result = await s.run(
+      {},
+      {
+        approve: async () => {
+          // 承認待ちの間に、同名・同状態だが別スタックの殻へ差し替えられる。
+          fake.stacks.set(
+            'A',
+            makeStackSummary({
+              stackName: 'A',
+              stackId: 'arn:aws:cloudformation:stack/A/foreign-shell',
+              status: 'REVIEW_IN_PROGRESS',
+            }),
+          );
+          return true;
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        stackName: 'A',
+        outcome: 'failed',
+        errorMessage: expect.stringMatching(/殻|stackId|import/),
+      }),
+    );
+    // 実行しなかった自変更セットは回収する(design §5.3)。
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [createdChangeSetArn(fake)],
+    );
+    // 成功記録は保存しない(保存されたのは初回 accountId の記録だけ。FR-5-18d)。
+    expect(s.backend.stored?.state.stacks).toEqual({});
+  });
+
+  it('FR-5-17e: 実行直前再検査は DescribeStacks → ListChangeSets → fencing → ExecuteChangeSet の順に連続する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(0);
+    const executeIndex = s.timeline.indexOf(`cfn:${REGION}.executeChangeSet`);
+    expect(executeIndex).toBeGreaterThanOrEqual(4);
+    // 規範順序 (1)〜(4) の間には AWS 呼び出しを一切挟まない。イベントカーソルの取得は
+    // 再検査の**前**に置く(FR-5-17e)。
+    expect(s.timeline.slice(executeIndex - 4, executeIndex + 1)).toEqual([
+      `cfn:${REGION}.getStackEventCursor`,
+      `cfn:${REGION}.describeStack`,
+      `cfn:${REGION}.listChangeSets`,
+      'backend.verifyLock',
+      `cfn:${REGION}.executeChangeSet`,
+    ]);
+  });
+
+  it('design §5.3: Phase B の状態不一致による実行前拒否でも未実行の変更セットを回収する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const describeStack = fake.describeStack.bind(fake);
+    fake.describeStack = async (stackName) => {
+      const summary = await describeStack(stackName);
+      // 変更セット作成後(= Phase B の再検査)だけ stackId が差し替わっている。
+      if (fake.callsOf('createChangeSet').length > 0 && summary) {
+        return {
+          ...summary,
+          stackId: 'arn:aws:cloudformation:replaced-before-execute',
+        };
+      }
+      return summary;
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    // ExecuteChangeSet を呼んでいないことが確定する拒否なので、回収対象に残す。
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [createdChangeSetArn(fake)],
+    );
+  });
+
+  it('design §5.3: ExecuteChangeSet の送信結果が不明な失敗では変更セットを削除しない', async () => {
+    // 実行前の fail-closed 拒否(回収する)と、送信済みかもしれない失敗(回収しない)を
+    // 区別する。後者を削除すると、AWS 側で受理された実行を横から取り消しかねない。
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const executeChangeSet = fake.executeChangeSet.bind(fake);
+    fake.executeChangeSet = async (stackName, changeSetName) => {
+      await executeChangeSet(stackName, changeSetName);
+      throw new AwsError(
+        'CloudFormation ExecuteChangeSet の応答を受け取れませんでした',
+      );
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
+    expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+  });
+
+  it('design §5.3: Phase B の実行直前再検査(他主体の変更セット検出)でも未実行の変更セットを回収する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const s = setup(
+      config,
+      templates,
+      recordedState(config, templates, { modified: true }),
+    );
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const ownArn = () => createdChangeSetArn(fake);
+    // 1 回目 = Phase A の残存回収、2 回目 = 実行直前再検査。承認待ちの間に他主体が
+    // 変更セットを追加した状況を再検査の直前に注入する。
+    fake.onListChangeSets = (stackName, callCount) => {
+      if (callCount !== 2) return;
+      fake.changeSets.set(stackName, [
+        ...(fake.changeSets.get(stackName) ?? []),
+        makeChangeSetSummary('human-raced-change-set'),
+      ]);
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('deleteChangeSet').map((call) => call.args[1])).toEqual(
+      [ownArn()],
+    );
+    // 他主体の変更セットには触れない(FR-2-7)。
+    expect(
+      fake.callsOf('deleteChangeSet').map((call) => call.args[1]),
+    ).not.toContain(makeChangeSetSummary('human-raced-change-set').id);
+    expect(s.backend.saveCalls).toHaveLength(0);
   });
 });

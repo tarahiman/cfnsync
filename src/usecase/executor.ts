@@ -242,20 +242,35 @@ function isNoChangeReason(reason: string | undefined): boolean {
   return NO_CHANGE_REASONS.some((pattern) => normalized === pattern);
 }
 
+/**
+ * `CreateChangeSet` が成功した直後に確定する、AWS 上に実在する自変更セットの識別子。
+ * 待機・整合検証より前に呼び出し側へ渡すことで、以降どこで失敗しても後始末できる(FR-5-12c)。
+ */
+export interface CreatedChangeSetRef {
+  /** 作成した変更セット名(命名規則により自ステート所有であることが判定できる)。 */
+  name: string;
+  /** CreateChangeSet が返した固有 ARN。以後の全操作をこの値へ固定する。 */
+  id: string;
+  /** 対象スタックの ARN。`CREATE` 型ではこの呼び出しが作った殻の ARN(FR-5-17c2)。 */
+  stackId?: string;
+}
+
 /** `createManagedChangeSet` の入力。`ResolvedStackTarget` からスタック名・入力を取り出す。 */
 export interface CreateManagedChangeSetInput {
   target: ResolvedStackTarget;
   templateBody: string;
   /** `prepareStack` の判定に対応。`create` → `CREATE`、`update` → `UPDATE`。 */
   kind: 'create' | 'update';
+  /**
+   * FR-5-12c: `CreateChangeSet` が ARN を返した直後(待機・整合検証より**前**)に 1 度だけ呼ぶ。
+   * この時点で変更セットは AWS 上に実在するため、以降の待機失敗・name/ARN 不一致・`FAILED` の
+   * どれで中断しても呼び出し側が回収対象として登録できる。同期的に完了し、例外を投げないこと。
+   */
+  onCreated?: (created: CreatedChangeSetRef) => void;
 }
 
 /** `createManagedChangeSet` の結果。`noChanges` が真なら空変更セット(削除済み)。 */
-export interface CreateManagedChangeSetResult {
-  /** 作成した変更セット名(実行直前再検査で自変更セットの識別に使う)。 */
-  name: string;
-  /** CreateChangeSet が返した固有 ARN。以後の全操作をこの値へ固定する。 */
-  id: string;
+export interface CreateManagedChangeSetResult extends CreatedChangeSetRef {
   /** 完了までポーリングした変更セット詳細(差分表示に使う)。 */
   detail: ChangeSetDetail;
   /** 空変更セット(実質差分なし)として削除・スキップしたか(FR-2-3)。 */
@@ -268,6 +283,11 @@ export interface CreateManagedChangeSetResult {
  * - `waitForChangeSet` の結果が `FAILED`、既知の「変更なし」定型文へ trim 後の完全一致、
  *   `changes.length === 0` の全条件を満たす場合だけ変更セットを削除し
  *   `noChanges: true` を返す(FR-2-3)。それ以外の `FAILED` は `StackStateError`。
+ *
+ * **`CreateChangeSet` が成功した後の失敗経路(待機例外 / name・ARN 不一致 / 非空 `FAILED`)では、
+ * 変更セットが AWS 上に残る**。この関数はそれを自分では削除しない(残骸の扱いは呼び出し側の
+ * ライフサイクル管理に属する)ため、作成直後に `input.onCreated` で ARN を通知し、呼び出し側が
+ * 例外経路でも確実に回収できるようにする(FR-5-12c / design §5.3.3)。
  */
 export async function createManagedChangeSet(
   ctx: ExecutorContext,
@@ -297,6 +317,13 @@ export async function createManagedChangeSet(
       { stackKey: target.stackKey, region: target.region },
     );
   }
+  // ここから先の失敗はすべて「AWS 上に変更セットが実在する」状態で起きる(FR-5-12c)。
+  const ref: CreatedChangeSetRef = {
+    name,
+    id: created.id,
+    stackId: created.stackId,
+  };
+  input.onCreated?.(ref);
 
   const rawDetail = await ctx.cfn.waitForChangeSet(
     target.stackName,
@@ -324,7 +351,7 @@ export async function createManagedChangeSet(
     ) {
       // 空変更セットはエラーではなく「変更なし」。作成された空の変更セットを削除する。
       await ctx.cfn.deleteChangeSet(target.stackName, created.id);
-      return { name, id: created.id, detail, noChanges: true };
+      return { ...ref, detail, noChanges: true };
     }
     throw new StackStateError(
       `スタック '${target.stackName}' の変更セット作成に失敗しました: ${detail.statusReason ?? '(理由不明)'}`,
@@ -332,7 +359,7 @@ export async function createManagedChangeSet(
     );
   }
 
-  return { name, id: created.id, detail, noChanges: false };
+  return { ...ref, detail, noChanges: false };
 }
 
 // ===========================================================================
@@ -345,13 +372,19 @@ export async function createManagedChangeSet(
  * `ExecuteChangeSet` は同一スタックの他の変更セットを暗黙に削除するため、他主体(他ツール・
  * 別ステート・命名から判定不能)の変更セットを巻き込まないための最終防衛線。
  * 再検査から実行までの競合窓は原理的に排除できないベストエフォート(§7、README に運用規約)。
+ *
+ * `beforeExecute` は再検査の直後・`ExecuteChangeSet` の直前に呼ぶフックであり、
+ * **AWS 呼び出しを行ってはならない**。FR-5-17e が規範として固定した再検査順序
+ * (`DescribeStacks` → `ListChangeSets` → fencing → `ExecuteChangeSet`)の
+ * `ListChangeSets` と副作用の間に別の AWS 呼び出しが挟まるためである。
+ * 用途は「ここから先は送信済みかもしれない」という呼び出し側の局所的な状態遷移に限る。
  */
 export async function executeWithReinspection(
   ctx: ExecutorContext,
   stackName: string,
   ownChangeSetName: string,
   ownChangeSetId: string,
-  beforeExecute?: () => Promise<void>,
+  beforeExecute?: () => void,
 ): Promise<void> {
   const summaries = await ctx.cfn.listChangeSets(stackName);
   const own = summaries.filter(
@@ -372,6 +405,6 @@ export async function executeWithReinspection(
     );
   }
 
-  await beforeExecute?.();
+  beforeExecute?.();
   await ctx.cfn.executeChangeSet(stackName, ownChangeSetId);
 }

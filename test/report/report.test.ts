@@ -11,10 +11,12 @@ import type { RegionGraph } from '../../src/core/graph.js';
 import { makeStackKey } from '../../src/core/types.js';
 import type { ChangeSetDetail, ResourceChange } from '../../src/ports/index.js';
 import {
+  buildApprovalSummary,
   buildStackDiff,
   type ConnectionInfo,
   type DeployReport,
   maskNoEcho,
+  renderApprovalSummary,
   renderGraphJson,
   renderGraphText,
   renderJson,
@@ -879,5 +881,125 @@ describe('FR-4-3: rollback 結果の JSON 表現', () => {
           typeof stack.rolledBack === 'boolean',
       ),
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-5-7e: 削除プレビューの表示(レンダラ限定)
+// ---------------------------------------------------------------------------
+
+/** 差分行(見出しの次の行)を取り出す。 */
+function diffLineOf(text: string, header: string): string {
+  const lines = text.split('\n');
+  const index = lines.findIndex((line) => line.startsWith(header));
+  expect(index).toBeGreaterThanOrEqual(0);
+  return lines[index + 1];
+}
+
+describe('FR-5-7e: 削除プレビューの表示', () => {
+  /** 0 件注記(create/update) / 削除対象 / 真の変更なし が同一出力に混在する構成。 */
+  function mixedReport(): DeployReport {
+    const diffOf = (
+      name: string,
+      operation: 'update' | 'delete' | 'no-change',
+    ): StackDiff =>
+      buildStackDiff({
+        stackKey: makeStackKey(`${name}.yaml`, REGION),
+        region: REGION,
+        stackName: name,
+        operation,
+        noEchoParams: [],
+      });
+    return report([
+      diffOf('resourceless', 'update'),
+      diffOf('old', 'delete'),
+      diffOf('same', 'no-change'),
+    ]);
+  }
+
+  it('FR-5-7e: delete の差分行が (変更なし) でも 0 件注記でもない、スタック全体が削除対象と分かる文言になる(text 差分・承認要約の両方)', () => {
+    const deployReport = mixedReport();
+    const text = renderText(deployReport, { color: false });
+
+    const resourcelessLine = diffLineOf(
+      text,
+      `[update] resourceless.yaml@${REGION}`,
+    );
+    const deleteLine = diffLineOf(text, `[delete] old.yaml@${REGION}`);
+    const noChangeLine = diffLineOf(text, `[no-change] same.yaml@${REGION}`);
+
+    // 削除対象はスタック全体が消えることが分かる表示になる。
+    expect(deleteLine).toContain('削除対象');
+    // 3 者は互いに区別できる(同一出力に混在しうる)。
+    expect(new Set([resourcelessLine, deleteLine, noChangeLine]).size).toBe(3);
+    expect(deleteLine).not.toBe('  (変更なし)');
+    expect(deleteLine).not.toContain('CloudFormation リソース差分 0 件');
+    // 回帰防止: 真の変更なしは従来どおりの表示のままである。
+    expect(noChangeLine).toBe('  (変更なし)');
+    expect(resourcelessLine).toContain('CloudFormation リソース差分 0 件');
+
+    // 差分行は削除対象であることに留め、実行の可否を断定しない(--allow-delete を
+    // renderText は知らない)。実行するか警告に留まるかは承認要約の見出し注記
+    // (FR-5-6e)と warnings が担う。
+    expect(deleteLine).not.toContain('削除します');
+
+    // 承認要約でも同一の差分行を共有する(allow-delete の有無で変わらない)。
+    for (const allowDelete of [true, false]) {
+      const summaryText = renderApprovalSummary(
+        {
+          connection: deployReport.connection,
+          diffs: deployReport.diffs,
+          summary: buildApprovalSummary(deployReport.diffs),
+          allowDelete,
+        },
+        { color: false },
+      );
+      expect(diffLineOf(summaryText, `[delete] old.yaml@${REGION}`)).toBe(
+        deleteLine,
+      );
+      // 削除は 0 件注記の集計対象にならない(FR-5-7c は維持)。
+      expect(summaryText).toContain(
+        '注記: CloudFormation リソース差分が 0 件の create / update が 1 件あります',
+      );
+    }
+  });
+
+  it('FR-5-7e: 削除対象の JSON は operation delete・resources 空・warnings 不変のままで text 出力だけが変わる', () => {
+    const diff = buildStackDiff({
+      stackKey: makeStackKey('old.yaml', REGION),
+      region: REGION,
+      stackName: 'old',
+      operation: 'delete',
+      noEchoParams: [],
+    });
+    // deploy が削除対象へ積む警告(--allow-delete 未指定時)。レンダラはこれを
+    // 増減させてはならない。
+    diff.warnings.push('削除対象です。実削除には --allow-delete が必要です');
+    const deployReport = report([diff]);
+    const before = structuredClone(deployReport);
+
+    const json = JSON.parse(renderJson(deployReport)) as {
+      diffs: Array<{
+        operation: string;
+        resources: unknown[];
+        warnings: string[];
+      }>;
+    };
+
+    // FR-5-7d と同一の制約: 判別はレンダラ限定でデータ側は不変(FR-5-16)。
+    expect(json.diffs[0].operation).toBe('delete');
+    expect(json.diffs[0].resources).toEqual([]);
+    expect(json.diffs[0].warnings).toEqual([
+      '削除対象です。実削除には --allow-delete が必要です',
+    ]);
+    // JSON には削除プレビューの表示文言が一切現れない。
+    expect(JSON.stringify(json)).not.toContain('スタック全体が削除対象');
+    // text 出力だけが変わる。
+    const text = renderText(deployReport, { color: false });
+    expect(diffLineOf(text, `[delete] old.yaml@${REGION}`)).toContain(
+      '削除対象',
+    );
+    // レンダリングは DeployReport を書き換えない。
+    expect(deployReport).toEqual(before);
   });
 });
