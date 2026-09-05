@@ -16,6 +16,7 @@
 | FR-5-19 承認処理失敗 | §5.3, §5.3.3 | `usecase/deploy` | `test/usecase/approval.test.ts` (`FR-5-19a`〜`FR-5-19i`) |
 | FR-6 削除 | §5.3, §8.3 | `core/graph`, `usecase/delete`, `usecase/deploy` | `test/core/graph.test.ts`, `test/usecase/delete.test.ts`, `test/usecase/approval.test.ts` |
 | FR-7 認証・接続 | §8.1 | `usecase/guard`, `aws/sts` | `test/usecase/guard.test.ts`, `test/aws/sts.test.ts` |
+| FR-7-9 リージョン解決 | §3, §4.2, §11 | `cli/commands`(`effectiveRegion`), `aws/sts`, `aws/cloudformation` | `test/cli/cli.test.ts` (`FR-7-9a`〜`FR-7-9d`), `test/aws/sts.test.ts` (`FR-7-9d`) |
 | FR-8 依存マッピング | §5.5, §6 | `core/template`, `core/graph`, `usecase/status-graph` | `test/core/template.test.ts`, `test/core/graph.test.ts`, `test/usecase/status-graph.test.ts` |
 | FR-9 依存順デプロイ | §5.3, §6 | `core/plan`, `usecase/deploy` | `test/core/plan.test.ts`, `test/usecase/deploy.test.ts`, `test/usecase/approval.test.ts` |
 | FR-10 インポート | §5.4 | `usecase/importer` | `test/usecase/importer.test.ts`, `test/cli/cli.test.ts` |

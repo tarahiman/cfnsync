@@ -82,6 +82,15 @@ CLI は `deploy`(`--dry-run` を伴わない)で `--auto-approve` がなく TTY 
 `CliUsageError` で exit 1 とする(FR-12-3b / FR-12-3c)。この判定は AWS・ステートバックエンドへの一切のアクセスより前に
 行い、変更セットを作ってから落ちて後始末が必要になる事態を構造的に避ける。TTY 判定は
 `process.stdin.isTTY && process.stderr.isTTY` を用いる(要約とプロンプトの出力先が stderr のため)。
+CLI は対象リージョンを `--region` と設定の `defaultRegion` だけで決定する
+(`cli/commands` の `effectiveRegion` = `--region ?? config.defaultRegion`。FR-7-9a / FR-7-9b)。
+`AWS_REGION` / `AWS_DEFAULT_REGION` は読まない(FR-7-9c)。これらを既定リージョンへ暗黙に反映すると、
+同じ設定ファイル・同じ引数でも実行環境によって管理単位のスタックキー(§4.1)が変わり、変更検知が
+旧リージョンを `deleted`、新リージョンを `added` と分類してステートの管理対象ごと入れ替わるためである。
+リージョンは設定ファイルを正本とし、上書きは CLI で明示したときに限る。解決したリージョンは
+CloudFormation / STS クライアントの生成時に明示的に渡し、SDK 既定のリージョン解決へ委ねない(FR-7-9d)。
+クレデンシャルのプロファイル解決はこの規約の対象外であり、`--profile` 未指定時に `AWS_PROFILE` を読む
+`effectiveProfile` の挙動は維持する(FR-7-1 / FR-7-2)。
 CLI は parse 前の引数列から有効な JSON 選択(`--output json` / `--output=json`)を判定し、複数指定時は最後の指定を採用する。事前 parser は Commander と同じく値を取るグローバル／サブコマンドオプション(`--config` / `--profile` / `--region` / `--output` / `--on-failure` / `--reconcile`)の arity を解釈し、他オプションの値として消費された `--output=json` を選択と誤認しない。サブコマンド前後のグローバルオプションを同様に扱う。この選択を action 内例外と Commander parse 例外の共通出力境界で共有し、JSON エラーを二重出力しない。
 
 ## 4. データ設計
@@ -132,7 +141,7 @@ stacks:
 - import(§5.4)は実スタックのタグを `stacks` 配下へ書き戻す。`defaultTags` と同名のキーであっても書き戻しは抑止しない(実スタックの値が失われないことを優先する)。この書き戻しと `defaultTags` の相互作用は、キーの重なりの有無で結果が異なる: (a) 実スタックのタグが `defaultTags` と同名のキーを持つ場合、書き戻された `tags` の値が優先されるため実効値は取り込み時点と一致し、当該スタックは事実上そのキーについて `defaultTags` の対象から外れる(ユーザーが設定ファイルを手動編集して `tags` からキーを削除しない限り、`defaultTags` 側の値は使われない)。(b) 実スタックが持たない `defaultTags` のキーは書き戻し対象にならないため、import 直後の次回変更検知は当該スタックを `modified` と判定し、次回デプロイで `defaultTags` の値が新規タグとして適用される。これは意図した挙動である(FR-10: 実環境とローカルの差異を隠蔽しない)。
 - インポート(FR-10)はこのファイルの `stacks` 配下を機械的に更新する。コメント・キー順を保持するため YAML の AST 編集(`yaml` パッケージの Document API)で書き戻す。
 - 設定オブジェクトは未知キーを拒否する。`stacks` のテンプレートパスは相対パスのみとし、絶対パス・NUL・空・正規化後の `.` / `..`、正規化後に重複するパスを config 検証で拒否する。通常の読取では対象が通常ファイルであることを確認する。import の `--write-template` だけは不存在を許可するが、読み取りおよび書き込みでは、対象(未作成なら既存の最長親)の realpath が設定ディレクトリ配下であることを CLI filesystem adapter が再検証し、シンボリックリンク経由の脱出も fail-closed に拒否する。
-- CLI の `--region` / 環境変数による既定リージョン上書き後にも実効設定全体を再検証する。明示依存は同一リージョンの管理対象へ解決できることを必須とし、自己依存も拒否する。
+- CLI の `--region` による既定リージョン上書き後にも実効設定全体を再検証する。明示依存は同一リージョンの管理対象へ解決できることを必須とし、自己依存も拒否する。
 - **(リージョン, スタック名)の一意性**(FR-11-10a): 解決済みターゲットのうち 2 つ以上が同一の (リージョン, スタック名) を指す設定は `ConfigError` で拒否する(スタック名の明示指定・導出規約・`regionOverrides` のいずれに由来しても同じ)。同一リージョン内でスタック名は物理スタックの一意識別子であり、複数のスタックキーが同一の物理スタックを指すことを許すと、**変更セットを事前作成する実行(§5.3 Phase A)で破綻する**: スタックキー A が物理スタック S へ変更セットを作成して保持した後、同じ S を指すスタックキー B の残存回収(§7)が A の未実行変更セットを「自ステート ID の残骸」と判定して削除し、Phase B の A が実行直前再検査(FR-5-17a)で自変更セットを見つけられず fail-closed に停止する。fail-closed には落ちるが原因が追いにくいため、AWS へアクセスする前の設定検証で弾く。
 - 設定検証で捕捉できない経路(テンプレートパスの変更により旧ステートのエントリと新しい設定が同一の物理スタックを指す等)は、変更検知の後・AWS 副作用の前に同じ観点で fail-closed に拒否する(FR-11-10b)。`usecase/deploy` が削除側について既に持つ「現に管理対象である物理スタックの削除を拒否する」判定(`survivingPhysicalIds`)と同一の物理識別子 `(region, stackName)` を用い、create/update 側にも適用範囲を広げる。
 
@@ -657,6 +666,7 @@ jobs:
         working-directory: templates
 ```
 
+- `aws-actions/configure-aws-credentials` の `aws-region` は SDK の既定リージョンと認証情報の取得先を設定するだけであり、cfnsync の対象リージョンには影響しない(FR-7-9c)。対象リージョンは設定ファイルと `--region` だけで決まる(§3)。
 - `deploy` は既定で承認を求めるため、CI では `--auto-approve` が**必須**である(FR-12-3b)。指定がない非 TTY 実行は AWS へ接続する前に exit 1 で停止する。
 - ステートは `s3` バックエンド(§4.5)に保存されるため、ワークフローは git への書き戻しを行わない。排他はツールのステートロックが保証し、`concurrency` グループは待ち時間の体験改善のための推奨構成に留まる(設定漏れでも安全性は損なわれない)。
 - **運用規約**(README に記載): cfnsync 管理対象のスタックに手動・他ツールで変更セットを作成しない。存在する場合、cfnsync は暗黙削除を避けるため fail-closed で停止する(§7)。
@@ -673,7 +683,7 @@ jobs:
 | FR-4 デプロイ実行 | usecase/executor, §5.3, §9 |
 | FR-5 一括実行・承認 | usecase(deploy = plan+approve+apply), §5.3, §5.3.1〜§5.3.4, report(ApprovalRequest) |
 | FR-6 削除 | §8.3, core/graph(旧グラフ統合) |
-| FR-7 認証・誤接続防止 | usecase/guard, §8.1 |
+| FR-7 認証・誤接続防止 | usecase/guard, §8.1, cli/commands(リージョン解決。§3) |
 | FR-8 依存マッピング | core/template, core/graph, §6 |
 | FR-9 依存順デプロイ | core/plan, §5.3 |
 | FR-10 インポート | usecase/importer, §5.4 |
