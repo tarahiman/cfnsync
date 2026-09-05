@@ -3,7 +3,8 @@ dist/
 npm-shrinkwrap.json
 *.tgz
 templates/
-.claude/
+.claude/*
+!.claude/commands/
 .codex/
 *.tsbuildinfo
 cfnsync.state.json
