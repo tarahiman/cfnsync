@@ -28,7 +28,10 @@ ln -s "$dependencies_path" "${snapshot_directory}/node_modules"
   # pnpm verifies that node_modules belongs to the current directory and may
   # attempt to replace a symlinked modules directory. npm's script runner does
   # not mutate dependencies, so use it to invoke the repository's staged
-  # quality checks against this isolated snapshot.
+  # quality checks against this isolated snapshot. For the same reason
+  # "quality:check" itself chains its steps with npm: a nested "pnpm run" here
+  # aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY, and on a terminal it
+  # would delete the contributor's real node_modules through the symlink.
   # Single gate definition: the hook runs exactly what CI runs, so any step
   # added to "quality:check" is picked up here without touching this script.
   npm run quality:check

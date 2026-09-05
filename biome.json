@@ -93,6 +93,18 @@
                   },
                   {
                     "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../ports/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../ports/**",
+                      "../../report/**",
+                      "../../usecase/**",
                       "../aws/**",
                       "../backend/**",
                       "../cli/**",
@@ -124,6 +136,16 @@
                   },
                   {
                     "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
                       "../aws/**",
                       "../backend/**",
                       "../cli/**",
@@ -154,6 +176,14 @@
                   },
                   {
                     "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../usecase/**",
                       "../aws/**",
                       "../backend/**",
                       "../cli/**",
@@ -182,7 +212,17 @@
                     "message": "src/usecase orchestrates through src/ports. Concrete AWS SDK calls belong to src/aws."
                   },
                   {
-                    "group": ["../aws/**", "../backend/**", "../cli/**"],
+                    "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../aws/**",
+                      "../backend/**",
+                      "../cli/**"
+                    ],
                     "message": "src/usecase may depend on src/core, src/ports and src/report only. Adapters are injected by src/cli."
                   }
                 ]
@@ -203,6 +243,14 @@
                 "patterns": [
                   {
                     "group": [
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
                       "../backend/**",
                       "../cli/**",
                       "../report/**",
@@ -232,6 +280,14 @@
                   },
                   {
                     "group": [
+                      "../../../aws/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
                       "../aws/**",
                       "../cli/**",
                       "../report/**",
