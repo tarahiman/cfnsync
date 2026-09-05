@@ -9,7 +9,7 @@
 | `version` | `1`(リテラル) | 必須 | - | 現状 `1` 固定。将来のスキーマ変更に備えたバージョンタグ |
 | `allowedAccounts` | `string[]` | 任意(**変更系操作は事実上必須**) | なし | STS `GetCallerIdentity` で解決した接続先アカウント ID と照合する。未設定または空配列の場合、`deploy`/`import` 等の変更系操作は fail-closed で拒否される |
 | `allowedRegions` | `string[]` | 任意(**変更系操作は事実上必須**) | なし | 実行計画中の全対象リージョンがこの集合に含まれるか照合する。未設定または対象リージョンが集合外の場合は拒否される |
-| `defaultRegion` | `string` | 必須 | - | `stacks.<templatePath>.regions` を省略したスタックのデプロイ先リージョン |
+| `defaultRegion` | `string` | 必須 | - | `stacks.<templatePath>.regions` を省略したスタックのデプロイ先リージョン。上書きできるのは CLI の `--region` だけで、`AWS_REGION` / `AWS_DEFAULT_REGION` はリージョンの決定に使われない(スタックキー `<templatePath>@<region>` が実行環境で変わらないようにするため) |
 | `stackNamePrefix` | `string` | 任意 | なし(空文字相当) | `stackName` を省略したスタックの名前接頭辞 |
 | `defaultTags` | `Record<string, string \| number \| boolean>` | 任意 | `{}` | すべての管理対象スタックへ既定で付与するタグ。値の扱いは `stacks.<templatePath>.tags` と同様に文字列へ正規化される。実効タグへのマージ順は `defaultTags` < `tags` < `regionOverrides.<region>.tags`(後勝ち)で、同名キーの重複は設定エラーにならず、より狭いスコープの値が優先される。`defaultTags` の変更はそれを付与される全スタックの変更検知(`inputsHash`)に反映され、`modified` として検知される |
 | `state` | object | 任意 | `{ backend: local }` | ステートバックエンドの設定。詳細は下記「`state`」参照 |
@@ -29,6 +29,14 @@
   | `s3.region` | `string`(1文字以上) | バケットのリージョン |
 
   CI など複数の実行環境から共有する場合は `s3` バックエンドを使用してください。S3 の条件付き書き込み(ETag/`If-Match`)による CAS とロックにより、並行実行時の競合を検出します。
+
+### ステートの `schemaVersion` と削除待ちスタック
+
+ステートファイルの現行 `schemaVersion` は `3` です。`1` / `2` のステートはそのまま読め、最初の成功保存で `3` へ正規化されます。**`3` を保存したステートは旧バージョンの cfnsync では読めません**(移行と復旧手順はリポジトリの `CHANGELOG.md` を参照)。
+
+`schemaVersion: 3` は `stacks` に加えて `pendingDeletions`(削除待ち)を持ちます。`stackName` を変更したときに旧スタックが削除されずに残った場合、cfnsync は旧スタックをここへ記録し、実際に削除されるまで `status` / `plan` / `deploy` の削除候補として提示し続けます。削除待ちのスタックキーは `cfnsync:pending/<スタック名>@<リージョン>` の形で表示されます。
+
+削除待ちの解消は通常の削除と同じで、`cfnsync deploy --allow-delete` が必要です(削除順序・削除保護・依存情報の検証といった安全装置もすべて同じものを通ります)。
 
 ## `stacks.<templatePath>` エントリ
 
@@ -52,6 +60,7 @@
 - NUL 文字を含むパス
 - 正規化後に親ディレクトリを脱出するもの(`../` の連続などで基準ディレクトリの外に出るもの)
 - 正規化後に空文字列になるもの(例: `.` や空文字)
+- 予約プレフィックス `cfnsync:` で始まるもの — cfnsync 自身が削除待ちスタック(下記)へ与えるスタックキー名前空間 `cfnsync:pending/<スタック名>@<リージョン>` と衝突させないため
 
 これらはコンパイル時ではなく `cfnsync` 実行時にエラーとして検出されます。加えて、シンボリックリンクを経由したディレクトリ脱出は CLI 側のファイルシステム adapter が realpath 検証で別途拒否します(こちらは `src/core/` の純粋ロジックの範囲外)。
 

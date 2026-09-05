@@ -9,17 +9,23 @@
 | 要件 | 主な設計箇所 | 主な実装 | 主な受入テスト・証跡 |
 |---|---|---|---|
 | FR-1 変更検知・ステート | §4.3〜§4.5, §7 | `core/detect`, `core/state`, `backend/local`, `aws/s3state`, `usecase/deploy` | `test/core/detect.test.ts`, `test/core/state.test.ts`, `test/backend/local.test.ts`, `test/aws/s3state.test.ts`, `test/usecase/recovery.test.ts`, `test/usecase/concurrency.test.ts` |
+| FR-1-16〜FR-1-23 削除待ち(pending deletion) | §4.3, §4.4, §5.3, §7, §8.3 | `core/state`(`pendingDeletions`), `core/detect`, `usecase/deploy`, `usecase/delete`, `usecase/status` | `test/core/state.test.ts` (`FR-1-16`, `FR-1-17`), `test/core/detect.test.ts` (`FR-1-21`, `FR-1-22`), `test/usecase/pendingDeletion.test.ts` (`FR-1-18`〜`FR-1-20`), `test/usecase/status-graph.test.ts` (`FR-1-23`) |
 | FR-2 変更セット作成 | §7, §8.4 | `usecase/executor`, `aws/cloudformation` | `test/usecase/executor.test.ts`, `test/aws/cloudformation.test.ts`, `test/usecase/concurrency.test.ts` |
 | FR-3 差分表示 | §5.2, §9 | `report`, `usecase/deploy` | `test/report/report.test.ts`, `test/usecase/approval.test.ts`, `test/cli/cli.test.ts` |
 | FR-4 デプロイ実行 | §5.3, §7, §9 | `usecase/deploy`, `usecase/executor`, `report` | `test/usecase/deploy.test.ts`, `test/usecase/executor.test.ts`, `test/report/report.test.ts` |
 | FR-5 一括実行・承認 | §5.3〜§5.3.4 | `usecase/deploy`, `ports`, `report`, `cli` | `test/usecase/approval.test.ts`, `test/usecase/deploy.test.ts`, `test/cli/cli.test.ts` |
 | FR-5-19 承認処理失敗 | §5.3, §5.3.3 | `usecase/deploy` | `test/usecase/approval.test.ts` (`FR-5-19a`〜`FR-5-19i`) |
+| FR-5-5b7 / FR-5-18e 削除待ちの再同期 | §5.2, §5.3 | `usecase/deploy` | `test/usecase/pendingDeletion.test.ts` (`FR-5-5b7`, `FR-5-18e`) |
+| FR-5-20 差分確認の `plan` 一本化 | §3, §5.2, §5.3.5, §5.5 | `cli/index`(`plan` / `deploy` のオプション定義), `usecase/deploy`(内部 `DeployOptions.dryRun`, 削除プレビューの注記) | `test/cli/cli.test.ts` (`FR-12-8d`), `test/usecase/deploy.test.ts` (`FR-5-20b`〜`FR-5-20d`, `FR-5-20e`, `FR-5-20f`), `test/usecase/approval.test.ts` (`FR-5-20b`, `FR-5-20c`) |
 | FR-6 削除 | §5.3, §8.3 | `core/graph`, `usecase/delete`, `usecase/deploy` | `test/core/graph.test.ts`, `test/usecase/delete.test.ts`, `test/usecase/approval.test.ts` |
+| FR-6-7〜FR-6-13 削除待ちの削除 | §5.2, §5.5, §8.3 | `usecase/deploy`(統合グラフ・物理衝突判定、対の create 成功の stackId 判定), `usecase/delete`(物理スタック二重所有チェック) | `test/usecase/pendingDeletion.test.ts` (`FR-6-7`〜`FR-6-9a`, `FR-6-11`), `test/usecase/delete.test.ts` (`FR-6-8`, `FR-6-13`), `test/usecase/status-graph.test.ts` (`FR-6-12`) |
 | FR-7 認証・接続 | §8.1 | `usecase/guard`, `aws/sts` | `test/usecase/guard.test.ts`, `test/aws/sts.test.ts` |
+| FR-7-9 リージョン解決 | §3, §4.2, §11 | `cli/commands`(`effectiveRegion`), `aws/sts`, `aws/cloudformation` | `test/cli/cli.test.ts` (`FR-7-9a`〜`FR-7-9d`), `test/aws/sts.test.ts` (`FR-7-9d`) |
 | FR-8 依存マッピング | §5.5, §6 | `core/template`, `core/graph`, `usecase/status-graph` | `test/core/template.test.ts`, `test/core/graph.test.ts`, `test/usecase/status-graph.test.ts` |
 | FR-9 依存順デプロイ | §5.3, §6 | `core/plan`, `usecase/deploy` | `test/core/plan.test.ts`, `test/usecase/deploy.test.ts`, `test/usecase/approval.test.ts` |
 | FR-10 インポート | §5.4 | `usecase/importer` | `test/usecase/importer.test.ts`, `test/cli/cli.test.ts` |
 | FR-11 設定ファイル | §4.2 | `core/config`, `core/dependency`, `core/templatePath` | `test/core/config.test.ts`, `test/usecase/deploy.test.ts`, `test/usecase/importer.test.ts` |
+| FR-11-11 予約テンプレートパス | §4.2 | `core/templatePath` | `test/core/config.test.ts` (`FR-11-11`) |
 | FR-12 CLI | §3, §5, §9 | `cli`, `report`, `usecase/cliBoundary` | `test/cli/cli.test.ts`, `test/core/errors.test.ts` |
 | FR-13 マルチリージョン | §4.1, §4.2, §5, §6 | `core/config`, `core/detect`, `core/graph`, `core/plan`, `usecase/deploy` | `test/core/config.test.ts`, `test/core/detect.test.ts`, `test/core/graph.test.ts`, `test/core/plan.test.ts`, `test/usecase/deploy.test.ts` |
 | NFR-1 CI/CD | §3, §9, §11 | `cli`, `report` | `test/cli/cli.test.ts`, `test/report/report.test.ts`, README / GitHub Actions 例 |

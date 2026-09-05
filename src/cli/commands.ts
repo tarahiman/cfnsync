@@ -42,17 +42,19 @@ function effectiveProfile(
   return options.profile ?? env.AWS_PROFILE;
 }
 
+/**
+ * FR-7-9a〜FR-7-9d / design §3: 対象リージョンは `--region` と設定の `defaultRegion`
+ * だけで決まる。`AWS_REGION` / `AWS_DEFAULT_REGION` は読まない — 環境変数を既定リージョンへ
+ * 暗黙に反映すると、同じ設定ファイルでも実行環境によって管理単位のスタックキー
+ * `<template>@<region>` が変わり、変更検知が旧リージョンを `deleted`、新リージョンを
+ * `added` と分類してしまうためである(FR-7-9c)。これらの環境変数は AWS SDK 側の既定
+ * リージョン解決にのみ影響し、cfnsync は解決済みリージョンを常に明示的に渡す(FR-7-9d)。
+ */
 function effectiveRegion(
   options: CommonOptions,
   config: CfnSyncConfig,
-  env: NodeJS.ProcessEnv,
 ): string {
-  return (
-    options.region ??
-    env.AWS_REGION ??
-    env.AWS_DEFAULT_REGION ??
-    config.defaultRegion
-  );
+  return options.region ?? config.defaultRegion;
 }
 
 function loadBaseInputs(
@@ -75,7 +77,7 @@ function loadBaseInputs(
     Object.keys(loadOptions).length === 0
       ? ctx.deps.loadConfig(options.config)
       : ctx.deps.loadConfig(options.config, loadOptions);
-  const region = effectiveRegion(options, loaded, ctx.env);
+  const region = effectiveRegion(options, loaded);
   const config =
     region === loaded.defaultRegion
       ? loaded
@@ -183,6 +185,8 @@ function deploymentDeps(
 export async function runDeployment(
   ctx: CommandContext,
   options: CommonOptions & {
+    /** FR-5-20a / design §5.3.5: plan 経路を表す内部フラグ。plan サブコマンドだけが
+     *  設定し、公開 CLI オプション(旧 `deploy --dry-run`)としては提供しない。 */
     dryRun?: boolean;
     allowDelete?: boolean;
     onFailure?: 'stop' | 'continue';

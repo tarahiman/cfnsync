@@ -11,6 +11,7 @@ import {
   type CfnSyncState,
   createInitialState,
   type StackEntry,
+  upsertPendingDeletion,
   upsertStackEntry,
   withAccountId,
 } from '../../src/core/state.js';
@@ -148,7 +149,9 @@ describe('delete / deploy integration — T-15', () => {
     expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
   });
 
-  it('FR-6-2: allowDelete 指定時だけ削除して DELETE_COMPLETE を待つ。dry-run は指定ありでも削除しない', async () => {
+  it('FR-6-2 / FR-5-20b: allowDelete 指定時だけ削除して DELETE_COMPLETE を待つ。plan は指定ありでも削除しない', async () => {
+    // plan には --allow-delete がないため CLI からこの組み合わせは作れないが、
+    // 「plan 経路は DeleteStack を 1 件も行わない」は usecase 側の不変条件として保つ。
     const dry = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     makeExisting(dry, ['A']);
     expect((await dry.run({ allowDelete: true, dryRun: true })).exitCode).toBe(
@@ -503,5 +506,167 @@ describe('delete / deploy integration — T-15', () => {
         expect.objectContaining({ stackName: 'A', outcome: 'failed' }),
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-6-7 / FR-6-8: 削除待ち(pending deletion)の削除契約(usecase/delete 単体)
+// ---------------------------------------------------------------------------
+
+describe('usecase/delete — FR-6-7 / FR-6-8: 削除待ちの削除', () => {
+  const pendingEntry = {
+    stackName: 'Old',
+    stackId: `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/Old/managed`,
+    region: REGION,
+    exports: [],
+    imports: [],
+    dependsOn: [] as string[] | null,
+    dependencyAnalysisIncomplete: false,
+  };
+
+  function directSetup(state: CfnSyncState) {
+    const timeline: string[] = [];
+    const backend = new FakeStateBackend(timeline, state);
+    const cfn = new FakeCloudFormationGateway(timeline, 'cfn');
+    cfn.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: pendingEntry.stackId,
+        status: 'UPDATE_COMPLETE',
+      }),
+    );
+    cfn.waitResults.set('Old', [
+      makeStackSummary({ stackName: 'Old', status: 'DELETE_COMPLETE' }),
+    ]);
+    return { timeline, backend, cfn };
+  }
+
+  it('FR-6-8: 削除待ちの dependsOn を統合グラフ上のノードへ解決できない場合は DeleteStack を呼ばず拒否する', async () => {
+    const state = upsertPendingDeletion(
+      withAccountId(createInitialState(), ACCOUNT),
+      'Old@ap-northeast-1',
+      {
+        ...pendingEntry,
+        dependsOn: ['gone.yaml@ap-northeast-1'],
+        originStackKey: 'a.yaml@ap-northeast-1',
+        reason: 'rename',
+        recordedAt: '2026-07-19T00:00:00.000Z',
+      },
+    );
+    const s = directSetup(state);
+    const lock = await s.backend.acquireLock({
+      runId: 'run16',
+      startedAt: '2026-07-20T12:00:00.000Z',
+      owner: 'test',
+    });
+
+    const result = await deleteManagedStack({
+      target: {
+        stackKey: 'cfnsync:pending/Old@ap-northeast-1',
+        region: REGION,
+        entry: state.pendingDeletions['Old@ap-northeast-1'],
+      },
+      cfn: s.cfn,
+      backend: s.backend,
+      lock,
+      state,
+      version: s.backend.stored?.version,
+      pendingDeletionId: 'Old@ap-northeast-1',
+      unresolvedDependsOn: ['gone.yaml@ap-northeast-1'],
+    });
+
+    expect(result.outcome).toBe('refused');
+    expect(result.errorMessage).toContain('gone.yaml@ap-northeast-1');
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
+  it('FR-6-7: 削除待ちの削除成功は pendingDeletions からのみ除去し、stacks には触れない', async () => {
+    let state = withAccountId(createInitialState(), ACCOUNT);
+    state = upsertStackEntry(state, 'a.yaml@ap-northeast-1', entry('New'));
+    state = upsertPendingDeletion(state, 'Old@ap-northeast-1', {
+      ...pendingEntry,
+      originStackKey: 'a.yaml@ap-northeast-1',
+      reason: 'rename',
+      recordedAt: '2026-07-19T00:00:00.000Z',
+    });
+    const s = directSetup(state);
+    const lock = await s.backend.acquireLock({
+      runId: 'run16',
+      startedAt: '2026-07-20T12:00:00.000Z',
+      owner: 'test',
+    });
+
+    const result = await deleteManagedStack({
+      target: {
+        stackKey: 'cfnsync:pending/Old@ap-northeast-1',
+        region: REGION,
+        entry: state.pendingDeletions['Old@ap-northeast-1'],
+      },
+      cfn: s.cfn,
+      backend: s.backend,
+      lock,
+      state,
+      version: s.backend.stored?.version,
+      pendingDeletionId: 'Old@ap-northeast-1',
+    });
+
+    expect(result.outcome).toBe('deleted');
+    expect(result.state.pendingDeletions['Old@ap-northeast-1']).toBeUndefined();
+    expect(result.state.stacks['a.yaml@ap-northeast-1']).toBeDefined();
+    // FR-6-7: DeleteStack の直前と CAS 保存の直前にそれぞれ fencing を通す。
+    expect(s.timeline).toEqual([
+      'backend.acquireLock',
+      'cfn.describeStack',
+      'backend.verifyLock',
+      'cfn.deleteStack',
+      'cfn.waitForStack',
+      'backend.verifyLock',
+      'backend.save',
+    ]);
+  });
+
+  it('FR-6-13(敵対的レビュー): 削除待ちが指す物理スタックが別キーの stacks で生きている場合は DeleteStack を拒否する', async () => {
+    // Old が過去のリネームの残骸として削除待ちに残る一方、同じ物理スタック(同一 stackId)が
+    // import 等により別のテンプレートキー 'other.yaml' の下で生きた管理対象として
+    // 再び追跡されている状況を再現する。削除待ちの由来(originStackKey)にかかわらず、
+    // 生きた管理対象を誤って削除してはならない。
+    let state = withAccountId(createInitialState(), ACCOUNT);
+    state = upsertStackEntry(state, 'other.yaml@ap-northeast-1', {
+      ...entry('Old'),
+      stackId: pendingEntry.stackId,
+    });
+    state = upsertPendingDeletion(state, 'Old@ap-northeast-1', {
+      ...pendingEntry,
+      originStackKey: 'a.yaml@ap-northeast-1',
+      reason: 'rename',
+      recordedAt: '2026-07-19T00:00:00.000Z',
+    });
+    const s = directSetup(state);
+    const lock = await s.backend.acquireLock({
+      runId: 'run16',
+      startedAt: '2026-07-20T12:00:00.000Z',
+      owner: 'test',
+    });
+
+    const result = await deleteManagedStack({
+      target: {
+        stackKey: 'cfnsync:pending/Old@ap-northeast-1',
+        region: REGION,
+        entry: state.pendingDeletions['Old@ap-northeast-1'],
+      },
+      cfn: s.cfn,
+      backend: s.backend,
+      lock,
+      state,
+      version: s.backend.stored?.version,
+      pendingDeletionId: 'Old@ap-northeast-1',
+    });
+
+    expect(result.outcome).toBe('refused');
+    expect(result.errorMessage).toContain('other.yaml@ap-northeast-1');
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
   });
 });

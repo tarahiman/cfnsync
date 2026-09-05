@@ -5,14 +5,18 @@
  * 実削除について、依存情報・削除保護を fail-closed に検証し、DeleteStack と state CAS
  * 保存のそれぞれの直前に fencing を置く。fencing はベストエフォートであり、state 正本の
  * 一貫性は StateBackend.save の CAS が担う。
+ *
+ * FR-6-7: 削除待ち(design §4.3 `pendingDeletions`)の削除もこの同一経路・同一安全装置を
+ * 通す。違いは削除成功時に state のどこを更新するか(`stacks` か `pendingDeletions` か)だけである。
  */
 
 import { StackStateError, StatePersistenceError } from '../core/errors.js';
 import {
   type CfnSyncState,
+  type DeletableStackRecord,
   prepareSave,
+  removePendingDeletion,
   removeStackEntry,
-  type StackEntry,
 } from '../core/state.js';
 import type { StackKey } from '../core/types.js';
 import type {
@@ -45,7 +49,8 @@ const DELETABLE_STACK_STATUSES = new Set<string>([
 export interface ManagedDeleteTarget {
   stackKey: StackKey;
   region: string;
-  entry: StackEntry;
+  /** 通常の `StackEntry` と削除待ち(`PendingDeletionEntry`)の共通部分だけを使う。 */
+  entry: DeletableStackRecord;
 }
 
 export interface DeleteManagedStackInput {
@@ -57,9 +62,18 @@ export interface DeleteManagedStackInput {
   version: StateVersion | undefined;
   /** 呼び出し直前に取得済みの同一スタック要約。重複 DescribeStacks を避ける。 */
   knownSummary?: StackSummary;
-  /** リネーム対の削除では true。旧物理スタックは削除するが、同一スタックキーの
-   * create が保存した新エントリを維持するため state からエントリを除去しない。 */
-  preserveStateEntry?: boolean;
+  /**
+   * FR-1-20 / FR-6-7: 削除待ち(リネーム対の旧スタック・過去実行の積み残し)の削除では、
+   * `stacks` のエントリではなくこの ID の削除待ち記録を除去して保存する。
+   * リネーム対では同一スタックキーの create が保存した新エントリを維持する必要があるため、
+   * `stacks` には触れない。
+   */
+  pendingDeletionId?: string;
+  /**
+   * FR-6-8: 削除待ちの `dependsOn` のうち、統合依存グラフ上のノードへ解決できなかったもの。
+   * 1 件でもあれば安全な削除順を復元できないため、副作用の前に削除を拒否する(FR-6-5)。
+   */
+  unresolvedDependsOn?: string[];
 }
 
 export interface DeleteManagedStackResult {
@@ -112,6 +126,17 @@ export async function deleteManagedStack(
     );
   }
 
+  // FR-6-8: 削除待ちの明示依存が統合グラフへ解決できない場合、安全な削除順を
+  // 復元できないため FR-6-5 に従って当該対象の削除を拒否する。
+  if (input.unresolvedDependsOn && input.unresolvedDependsOn.length > 0) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の明示依存 ` +
+        `${input.unresolvedDependsOn.join(', ')} を依存グラフ上の管理対象へ解決できません。` +
+        `安全な削除順を復元できないため削除を拒否します。手動対応してください`,
+    );
+  }
+
   if (!target.entry.stackId) {
     return refused(
       input,
@@ -120,14 +145,29 @@ export async function deleteManagedStack(
     );
   }
 
+  // FR-6-9(敵対的レビュー指摘): 削除待ちの ID は (region, stackName) だけで決まるため、
+  // 無関係な過去のリネーム・import による再取り込みと衝突しうる。削除対象と同じ
+  // stackId(ARN) を、現在 `stacks` の別キーが指している場合、その物理スタックは
+  // いま生きた管理対象として追跡されているということであり、削除待ちの由来
+  // (今回のリネームか、過去の積み残しか)にかかわらず削除してはならない。
+  const liveOwner = Object.entries(input.state.stacks).find(
+    ([key, entry]) =>
+      key !== target.stackKey && entry.stackId === target.entry.stackId,
+  );
+  if (liveOwner) {
+    return refused(
+      input,
+      `スタック '${target.entry.stackName}' の物理スタックは、現在テンプレートパス ` +
+        `'${liveOwner[0]}' で管理対象として追跡されています。生きた管理対象を誤って` +
+        `削除しないため削除を拒否します`,
+    );
+  }
+
   // FR-2 / FR-2-10: DeleteStack の直前に実状態を再取得し、並行操作と
   // REVIEW_IN_PROGRESS を fail-closed に拒否する。競合で既に消えた場合は復旧成功扱い。
   const summary =
     input.knownSummary ?? (await cfn.describeStack(target.entry.stackName));
   if (summary === undefined || summary.status === 'DELETE_COMPLETE') {
-    if (input.preserveStateEntry) {
-      return { outcome: 'deleted', state: input.state, version: input.version };
-    }
     return saveDeletedState(input);
   }
 
@@ -182,10 +222,6 @@ export async function deleteManagedStack(
     );
   }
 
-  // リネーム対の削除では、同一スタックキーの create が保存済みの新エントリを維持する。
-  if (input.preserveStateEntry) {
-    return { outcome: 'deleted', state: input.state, version: input.version };
-  }
   return saveDeletedState(input);
 }
 
@@ -207,7 +243,13 @@ async function saveDeletedState(
   const { target, backend, lock } = input;
   // §8.3 / FR-1-9: 削除完了(不存在復旧を含む)後、state CAS 保存の直前に fencing。
   await assertFenced(backend, lock);
-  const nextState = prepareSave(removeStackEntry(input.state, target.stackKey));
+  // FR-1-20 / FR-6-7: 削除待ちの削除は pendingDeletions の当該記録だけを除去し、
+  // `stacks`(リネーム対では新スタック名のエントリ)には触れない。
+  const nextState = prepareSave(
+    input.pendingDeletionId === undefined
+      ? removeStackEntry(input.state, target.stackKey)
+      : removePendingDeletion(input.state, input.pendingDeletionId),
+  );
   let nextVersion: StateVersion;
   try {
     nextVersion = await backend.save(nextState, input.version);

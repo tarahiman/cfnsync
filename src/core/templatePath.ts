@@ -1,5 +1,12 @@
 import { ConfigError } from './errors.js';
 
+/**
+ * FR-11-11: 予約プレフィックス。削除待ちのスタックキー名前空間
+ * (`cfnsync:pending/<スタック名>@<リージョン>`、core/state)と設定由来の
+ * スタックキーが衝突しないよう、このプレフィックスで始まるテンプレートパスを拒否する。
+ */
+export const RESERVED_TEMPLATE_PATH_PREFIX = 'cfnsync:';
+
 /** OS に依存しない字句正規化。実パス検証は filesystem adapter が担う。 */
 export function normalizeTemplatePath(templatePath: string): string {
   const segments: string[] = [];
@@ -11,8 +18,14 @@ export function normalizeTemplatePath(templatePath: string): string {
   return segments.join('/');
 }
 
-/** OS に依存せず絶対パス・親ディレクトリ参照を fail-closed に拒否する。 */
+/** OS に依存せず絶対パス・親ディレクトリ参照・予約プレフィックスを fail-closed に拒否する。 */
 export function assertSafeTemplatePath(templatePath: string): void {
+  if (templatePath.startsWith(RESERVED_TEMPLATE_PATH_PREFIX)) {
+    throw new ConfigError(
+      `テンプレートパスに予約プレフィックス '${RESERVED_TEMPLATE_PATH_PREFIX}' は使用できません: ${templatePath}`,
+      { stackKey: templatePath },
+    );
+  }
   const portable = templatePath.replaceAll('\\', '/');
   const normalized = normalizeTemplatePath(templatePath);
   let depth = 0;

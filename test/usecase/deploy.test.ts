@@ -514,7 +514,7 @@ Resources:
     ).toEqual(['west-shared']);
   });
 
-  it('FR-5-3: dry-run は差分 describe 後に変更セットを削除し、実行しない', async () => {
+  it('FR-5-20b / FR-5-20c / FR-5-20d: plan は差分 describe 後に変更セットを削除し、実行しない', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(
@@ -1661,6 +1661,73 @@ Outputs:
     ]);
   });
 
+  it('FR-5-20e / FR-5-20f: plan は削除対象へ実行可否の注記も skipped 進捗も付けない', async () => {
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const config = configOf({});
+    const state = recordedState(oldConfig, oldTemplates);
+    const s = setup(config, new Map(), state);
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: state.stacks[`old.yaml@${REGION}`].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
+    );
+
+    const result = await s.run({ dryRun: true });
+
+    // 削除対象であること自体は差分に残る(FR-5-7e の表示が担う)。
+    const diff = result.report.diffs.find((entry) => entry.stackName === 'Old');
+    expect(diff).toMatchObject({ operation: 'delete' });
+    // FR-5-20e: 実行可否の注記は付けない。plan は何も実行しないため自明である。
+    expect(diff?.warnings ?? []).toEqual([]);
+    // FR-5-20f: skipped 進捗も出さない。ただし report の outcome は skipped のまま。
+    expect(
+      s.progress.filter(
+        (event) =>
+          event.stackKey === `old.yaml@${REGION}` && event.phase === 'skipped',
+      ),
+    ).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({ stackName: 'Old', outcome: 'skipped' }),
+    );
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+  });
+
+  it('FR-6-2 / FR-5-20e: deploy で --allow-delete がなければ従来どおり注記と skipped 進捗を出す', async () => {
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const config = configOf({});
+    const state = recordedState(oldConfig, oldTemplates);
+    const s = setup(config, new Map(), state);
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'Old',
+      makeStackSummary({
+        stackName: 'Old',
+        stackId: state.stacks[`old.yaml@${REGION}`].stackId ?? '',
+        status: 'CREATE_COMPLETE',
+      }),
+    );
+
+    const result = await s.run();
+
+    const diff = result.report.diffs.find((entry) => entry.stackName === 'Old');
+    expect(diff?.warnings).toContain(
+      '削除対象です。実削除には --allow-delete が必要です',
+    );
+    expect(
+      s.progress.filter(
+        (event) =>
+          event.stackKey === `old.yaml@${REGION}` && event.phase === 'skipped',
+      ),
+    ).toHaveLength(1);
+    expect(fake.callsOf('deleteStack')).toHaveLength(0);
+  });
+
   it('security(再レビュー2): テンプレートのパス変更で同一物理スタックを削除しない', async () => {
     // old.yaml(stackName: Shared)を new.yaml(stackName: Shared)へパス変更。
     // 旧キーは deleted、新キーは added だが同一 (region, stackName)。
@@ -1779,7 +1846,7 @@ Outputs:
     ).toEqual(['changeset-create-start', 'no-change']);
   });
 
-  it('FR-5-4: dry-run は changeset-create-start→diff-ready で止まり正常停止を skipped 通知しない', async () => {
+  it('FR-5-4: plan は changeset-create-start→diff-ready で止まり正常停止を skipped 通知しない', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(

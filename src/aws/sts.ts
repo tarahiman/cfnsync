@@ -9,9 +9,10 @@
  * プロファイル・リージョンの扱いは `src/aws/cloudformation.ts` の流儀に合わせる:
  * `profile` 指定時のみ `@aws-sdk/credential-provider-node` の `defaultProvider`
  * を既定クレデンシャルチェーンに適用し、未指定時は SDK 標準チェーン(環境変数 →
- * プロファイル → IAM ロール)に委ねる(FR-7-1, FR-7-2)。`region` は CLI・環境変数・
- * 設定ファイルいずれの指定も許容するため任意とし、未指定時は SDK の標準解決に
- * 委ねる(FR-7-3)。
+ * プロファイル → IAM ロール)に委ねる(FR-7-1, FR-7-2)。`region` は CLI 境界が
+ * `--region` または設定の `defaultRegion` から解決した値を常に明示的に渡す
+ * (FR-7-9a/FR-7-9b/FR-7-9d)。型としては任意で、未指定のまま生成した場合だけ SDK の
+ * 標準解決に委ねる。
  */
 
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';

@@ -26,8 +26,10 @@ Run commands as `cfnsync <command> [options]`. Every subcommand accepts these co
 |---|---|
 | `--config <path>` | Read configuration from this path (default `./cfnsync.yaml`) |
 | `--profile <name>` | Use this AWS shared-config profile |
-| `--region <region>` | Override `defaultRegion` |
+| `--region <region>` | Override `defaultRegion` (the only way to override it) |
 | `--output <text|json>` | Select human-readable or machine-readable output (default `text`) |
+
+`AWS_REGION` / `AWS_DEFAULT_REGION` do not change the region cfnsync targets: the config file is the source of truth, so the stack key `<template-path>@<region>` is identical in every environment. `AWS_PROFILE` is still used when `--profile` is omitted.
 
 Use `--output json` for automation. Run `cfnsync --help` or `cfnsync <command> --help` to verify the options supported by the installed version.
 
@@ -47,10 +49,12 @@ cfnsync plan [common options]
 
 Create and describe change sets, print the diff, then delete those change sets without executing them. Review Add/Modify/Remove operations, replacements, and deletion previews. A diff produces exit code `2`.
 
+**`plan` is the only command that previews a diff.** `deploy --dry-run` was removed; use `plan` instead.
+
 ### `deploy`
 
 ```sh
-cfnsync deploy [common options] [--dry-run] [--auto-approve] [--allow-delete] \
+cfnsync deploy [common options] [--auto-approve] [--allow-delete] \
   [--on-failure <stop|continue>]
 ```
 
@@ -58,14 +62,13 @@ Detect changes and resolve dependency order, then run in two stages: a **plannin
 
 | Option | Meaning |
 |---|---|
-| `--dry-run` | Behave like `plan`: create and show change sets without executing them; never asks for approval |
 | `--auto-approve` (`-y`) | Skip the approval prompt and apply directly; **required whenever there is no TTY** |
 | `--allow-delete` | Permit deletion of removed stacks; without it, only report deletions |
 | `--on-failure <stop|continue>` | Stop after a failure or continue with independent stacks (default `stop`). **Applies to execution-stage failures only** — a planning-stage failure always aborts the whole run |
 
 The approval prompt (`Do you want to perform these actions? [y/N]`) and the approval summary go to stderr; only `y` / `yes` approves. A rejected run deletes every change set it created, reports the unexecuted stacks as `skipped`, adds `cancelled: true` to the deploy report on stdout, and exits `0`. No approval is requested when nothing is scheduled for execution.
 
-**Without a TTY, `deploy` requires `--auto-approve`**: otherwise it stops with a `CliUsageError` (exit `1`) at the CLI boundary, before constructing any AWS client. This also happens when there are no changes at all, because the TTY check precedes change detection. `deploy --dry-run` and `plan` are exempt.
+**Without a TTY, `deploy` requires `--auto-approve`**: otherwise it stops with a `CliUsageError` (exit `1`) at the CLI boundary, before constructing any AWS client. This also happens when there are no changes at all, because the TTY check precedes change detection. `plan` is exempt — use it when you only want to inspect the diff. `deploy --dry-run` no longer exists: it is rejected as an unknown option (`CliUsageError`, exit `1`).
 
 While approval is pending the state lock stays held, so other runs are blocked with the `s3` backend. The approved diff is **not** guaranteed to match the actual state at execution time — the defense is the re-check performed immediately before each execution, and nothing stronger is claimed. Properties referencing an Export that this same run creates are shown as `{{changeSet:KNOWN_AFTER_APPLY}}`, so their final value is not settled at approval time; do not resolve or guess those values.
 
@@ -107,7 +110,7 @@ Conditionally release a stale S3 state lock only when it is owned by the specifi
 |---|---|---|
 | `status` | Inspect local changes quickly | State read only |
 | `plan` | Preview exact CloudFormation changes | Creates and deletes temporary change sets |
-| `deploy` | Detect changes, resolve dependency order, create/diff every change set, then execute in dependency order after one approval | Yes. `--dry-run` limits it to creation and diff only |
+| `deploy` | Detect changes, resolve dependency order, create/diff every change set, then execute in dependency order after one approval | Yes. To preview only, use `plan` instead |
 | `graph` | Inspect deployment order | State read only |
 | `import` | Adopt existing stacks | Reads CloudFormation; writes local config/templates and configured state, and manages an S3 lock when applicable |
 | `force-unlock` | Recover from a stale S3 lock | Conditionally deletes the lock |
@@ -127,7 +130,7 @@ Conditionally release a stale S3 state lock only when it is owned by the specifi
 |---|---|
 | `0` | Success (including "no changes" = no diff) |
 | `1` | Error (config validation, fail-closed guard, AWS operation failure, etc.) |
-| `2` | Diff exists (`plan`, and `deploy --dry-run` only; no actual changes were made) |
+| `2` | Diff exists (`plan` only; no actual changes were made) |
 
 CI pipelines branch on these exit codes, so note that `plan` returning `2` is not an "error" — it is the normal case indicating that a diff exists.
 
@@ -142,6 +145,7 @@ cfnsync's mutating operations are designed around the following defense-in-depth
 - **The management tag** `cfnsync:state-id=<stateID>` is auto-applied to every stack and is used for the provenance (ownership) check in CREATE recovery (when a stack is judged `added` but already exists). The tag proves only that a run of this state created the stack — never *which input values* it was created with. So CREATE recovery is **fail-closed when any input cannot be verified**: if the template declares a `NoEcho` parameter, or the stack has any `dependsOn`, cfnsync refuses to re-sync even when everything else matches.
 - **Planning-stage failures always abort the whole run**, whatever `--on-failure` says: cfnsync never asks for approval of an incomplete plan.
 - **Stack deletion** is performed only when `--allow-delete` is explicitly specified, in reverse order of the dependency graph merged from old and new config (dependencies deleted last). If dependency info cannot be reconstructed from state, deletion is refused.
+- **Pending deletions**: changing `stackName` is planned as "delete the old stack + create the new one". When the old stack is not actually deleted (no `--allow-delete`, termination protection, a failed `DeleteStack`, or a failed post-deletion state save), cfnsync records it in state as a pending deletion and keeps offering it as a deletion candidate under the key `cfnsync:pending/<stack name>@<region>` until the physical stack is gone. Clearing it is a normal `cfnsync deploy --allow-delete` and goes through every safeguard above. Never suggest hand-editing the state file to drop a pending deletion — that re-orphans the stack.
 
 ## Troubleshooting hints
 
@@ -149,5 +153,7 @@ cfnsync's mutating operations are designed around the following defense-in-depth
 - Errors about "another change set exists": a manual action or another tool created a change set on the target stack. Inspect that change set on the AWS side before executing, execute or delete it, then re-run cfnsync.
 - Lock acquisition failure: usually correct behavior (preventing concurrent runs). Do not `force-unlock` without confirming the previous run has truly terminated.
 - A `deploy` that fails partway: you may re-run with the same config. Already-succeeded stacks are automatically skipped as unchanged.
+- `status`/`plan` shows a `deleted` entry whose stack key starts with `cfnsync:pending/`: a stack left over from a `stackName` rename is still on AWS. Run `cfnsync deploy --allow-delete` to remove it, or resolve the reported refusal (termination protection, missing dependency info) first. It does not go away on its own.
+- `deploy` refuses with "the successful creation of the counterpart is not recorded in state": the renamed stack was not created in this run, so cfnsync will not delete the old one. Fix the creation failure first.
 - `deploy` exits `1` complaining that there is no TTY: add `--auto-approve` (`-y`). This happens even when there are no changes to apply. Never work around it by faking a TTY.
 - `deploy` exits `1` on an `added` stack that already exists and points at `import`: this is the fail-closed CREATE recovery above. **Running `import` alone does not fix it** — `import` rewrites existing `NoEcho` values in the config to `__REQUIRED__`, so the desired secrets are lost and the next `deploy` then stops on the leftover-`__REQUIRED__` check. Correct order: save a copy of `cfnsync.yaml` → `cfnsync import --reconcile local` → restore the `NoEcho` values that were rewritten to `__REQUIRED__` from that copy → `cfnsync plan` → `cfnsync deploy`. Restoring the secret values is manual by design.

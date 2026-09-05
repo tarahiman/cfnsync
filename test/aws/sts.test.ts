@@ -9,7 +9,7 @@ import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// FR-7-1〜3(オプション伝播): profile 指定時に `defaultProvider` が呼ばれることを
+// FR-7-1 / FR-7-2 / FR-7-9d(オプション伝播): profile 指定時に `defaultProvider` が呼ばれることを
 // 検証するためのモック。`src/aws/cloudformation.ts` と同じ流儀(profile 指定時のみ
 // 既定クレデンシャルチェーンに profile を適用)を `sts.ts` が踏襲しているかを確認する。
 const defaultProviderMock = vi.fn(() => async () => ({
@@ -84,11 +84,11 @@ describe('FR-7-6(基盤): GetCallerIdentity による接続先解決', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FR-7-1〜3(オプション伝播): region / profile がクライアント生成時に渡ること
+// FR-7-1 / FR-7-2 / FR-7-9d(オプション伝播): region / profile がクライアント生成時に渡ること
 // ---------------------------------------------------------------------------
 
-describe('FR-7-1〜3(オプション伝播): クライアント生成オプション', () => {
-  it('FR-7-3: region オプションが STSClient の config に渡る', async () => {
+describe('FR-7-1 / FR-7-2 / FR-7-9d(オプション伝播): クライアント生成オプション', () => {
+  it('FR-7-9d: region オプションが STSClient の config に渡る', async () => {
     const gateway = new StsGatewayImpl({ region: 'eu-west-1' });
     const regionProvider = gateway.client.config.region;
     const resolvedRegion =
@@ -108,7 +108,7 @@ describe('FR-7-1〜3(オプション伝播): クライアント生成オプシ�
     expect(defaultProviderMock).not.toHaveBeenCalled();
   });
 
-  it('FR-7-1〜3: region・profile を省略してもインスタンス化できる(SDK 標準チェーンに委ねる)', () => {
+  it('FR-7-1 / FR-7-2: region・profile を省略してもインスタンス化できる(SDK 標準チェーンに委ねる)', () => {
     expect(() => new StsGatewayImpl()).not.toThrow();
   });
 });

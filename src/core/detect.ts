@@ -10,7 +10,13 @@
 
 import type { ResolvedStackTarget } from './config.js';
 import { InvariantError } from './errors.js';
-import { type CfnSyncState, type StackEntry, sha256Hex } from './state.js';
+import {
+  type CfnSyncState,
+  type PendingDeletionEntry,
+  pendingDeletionStackKey,
+  type StackEntry,
+  sha256Hex,
+} from './state.js';
 import type { ChangeType, StackKey } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -20,6 +26,15 @@ import type { ChangeType, StackKey } from './types.js';
 /** FR-1-14: スタック名変更で `added` になったエントリが持つ、旧スタック名の記録。 */
 export interface RenamedFrom {
   oldStackName: string;
+  /** FR-1-18: 新エントリ保存と同一の CAS で削除待ちを記録するための旧ステートエントリ。 */
+  oldEntry: StackEntry;
+}
+
+/** FR-1-21: 削除待ち(pending deletion)由来の `deleted` 対象が持つ記録。 */
+export interface DetectedPendingDeletion {
+  /** ステートの `pendingDeletions` のキー(`<スタック名>@<リージョン>`)。 */
+  id: string;
+  entry: PendingDeletionEntry;
 }
 
 export interface DetectedEntry {
@@ -38,6 +53,8 @@ export interface DetectedEntry {
   /** FR-1-14: リネームによる `deleted`(旧名側)の場合のみ、新スタック名を保持する。
    * 同一スタックキーの create と対をなす複合操作であることを示す。 */
   renamedTo?: { newStackName: string };
+  /** FR-1-21: 削除待ち由来の `deleted` の場合のみ設定する(`stateEntry` は持たない)。 */
+  pendingDeletion?: DetectedPendingDeletion;
 }
 
 export interface DetectionResult {
@@ -128,10 +145,16 @@ function getTemplateContent(
  * 不一致の場合、上記の modified/unchanged 判定より優先して「旧名の deleted」+
  * 「新名の added」の対を計画する。
  *
+ * FR-1-21: ステートの削除待ち(`pendingDeletions`)も 1 件につき 1 つの `deleted`
+ * として生成する。スタックキーは予約プレフィックス付きの
+ * `cfnsync:pending/<スタック名>@<リージョン>` であり、設定・ステートのスタックキーと
+ * 衝突しない(FR-11-11 が `cfnsync:` で始まるテンプレートパスを拒否する)。
+ *
  * entries の順序は決定的: targets の順(= 設定記載順)を基本とし、targets に
  * 対応が一切ない純粋な `deleted`(ファイル削除・リージョン除外)はステートの
- * キー順(文字列昇順)で末尾に付加する。リネームで生じる `deleted` はその対象
- * target の処理順に含まれるため、末尾には回さない。
+ * キー順(文字列昇順)で付加する。リネームで生じる `deleted` はその対象
+ * target の処理順に含まれるため、後方には回さない。削除待ちはさらにその後へ
+ * ID の昇順で並べる。
  */
 export function detectChanges(input: DetectChangesInput): DetectionResult {
   const { targets, templates, state } = input;
@@ -179,7 +202,10 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
         target,
         templateHash,
         inputsHash,
-        renamedFrom: { oldStackName: stateEntry.stackName },
+        renamedFrom: {
+          oldStackName: stateEntry.stackName,
+          oldEntry: stateEntry,
+        },
       });
       continue;
     }
@@ -214,6 +240,16 @@ export function detectChanges(input: DetectChangesInput): DetectionResult {
       stackKey: key,
       changeType: 'deleted',
       stateEntry: state.stacks[key],
+    });
+  }
+
+  // FR-1-21: 削除待ちは 1 件につき `deleted` を 1 件生成する。設定・ステートの
+  // スタックキーとは衝突しない予約キーを与え、既存の削除経路(FR-6)へそのまま載せる。
+  for (const id of Object.keys(state.pendingDeletions).sort()) {
+    entries.push({
+      stackKey: pendingDeletionStackKey(id),
+      changeType: 'deleted',
+      pendingDeletion: { id, entry: state.pendingDeletions[id] },
     });
   }
 

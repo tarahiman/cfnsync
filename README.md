@@ -67,6 +67,8 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 全サブコマンドで共通オプション `--config <path>`（既定 `./cfnsync.yaml`）、`--profile <name>`、`--region <region>`、`--output <text|json>` を使えます。
 
+対象リージョンは設定ファイルが正本です。`--region` は `defaultRegion` を上書きする**唯一の**手段で、`AWS_REGION` / `AWS_DEFAULT_REGION` は cfnsync の対象リージョンを変えません（管理単位のスタックキー `<テンプレートパス>@<リージョン>` が実行環境によって変わらないようにするためです）。これらの環境変数は AWS SDK 自身の既定リージョン解決にのみ影響します。`--profile` を省略したときに `AWS_PROFILE` を読む挙動は従来どおりです。
+
 | コマンド | 説明 |
 |---|---|
 | `status` | ステートとローカルのテンプレートを比較し、`added` / `modified` / `deleted` / `unchanged` を表示します。 |
@@ -78,7 +80,7 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 `plan` / `deploy` の人間向け差分は、CI やリダイレクトを含めて既定で ANSI 色付きです。Add は緑、Modify は黄、Remove は赤、置換は太字の赤で表示します。色を無効にするには `--no-color` を指定するか、`NO_COLOR` 環境変数を設定してください（空文字も設定済みとして扱います）。JSON 出力は常に無色です。
 
-主な `deploy` フラグ: `--dry-run`（作成と差分表示のみ）、`--auto-approve` / `-y`（承認プロンプトを省略してそのまま実行。**CI では必須**）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`。**実行段階の失敗にのみ適用**）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。
+主な `deploy` フラグ: `--auto-approve` / `-y`（承認プロンプトを省略してそのまま実行。**CI では必須**）、`--allow-delete`（削除対象スタックの実削除を許可。省略時は表示のみ）、`--on-failure <stop|continue>`（既定 `stop`。**実行段階の失敗にのみ適用**）、`--no-color`（ANSI 差分色を無効化。`plan` でも使用可）。全フラグは `cfnsync <command> --help` を参照してください。**差分確認だけを行う場合は `cfnsync plan` を使ってください**（`deploy --dry-run` は廃止しました）。
 
 ### `deploy` の承認フロー
 
@@ -92,7 +94,7 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 
 計画段階で 1 件でも失敗した場合は、承認を求めずに実行全体を中断します（終了コード `1`）。`--on-failure continue` は**実行段階の失敗にのみ**適用され、計画段階の失敗には効きません。
 
-`--auto-approve`（`-y`）を指定すると承認を求めずに実行します。**TTY のない環境（CI など）では必須**で、指定せずに `deploy` を実行すると AWS へ一切アクセスせずエラー（終了コード `1`）になります。**変更が 1 件もない実行でも同じくエラー**になります（TTY の判定を変更検知より前に行うためです）。`deploy --dry-run` と `plan` は承認を求めないため対象外です。
+`--auto-approve`（`-y`）を指定すると承認を求めずに実行します。**TTY のない環境（CI など）では必須**で、指定せずに `deploy` を実行すると AWS へ一切アクセスせずエラー（終了コード `1`）になります。**変更が 1 件もない実行でも同じくエラー**になります（TTY の判定を変更検知より前に行うためです）。`plan` は承認を求めないため対象外です（差分確認だけを行う場合は `deploy` ではなく `plan` を使ってください）。
 
 #### 承認フローの運用上の注意
 
@@ -107,6 +109,8 @@ npm 上のパッケージ名はスコープ付きの `@tarahi/cfnsync` ですが
 全パラメータのリファレンスは [`docs/config-reference.md`](./docs/config-reference.md)、コメント付きのサンプルは [`docs/examples/cfnsync.sample.yaml`](./docs/examples/cfnsync.sample.yaml) を参照してください。
 
 ステートは既定で `local` バックエンド（設定の隣に `cfnsync.state.json`）です。CI や複数ランナーの構成では `s3` バックエンド（条件付き書き込みロック + compare-and-swap）を使用してください。S3 バケットのバージョニング有効化を推奨します。
+
+`stackName` を変更すると、cfnsync はそれを「旧スタックの削除 + 新スタックの作成」として扱います。`--allow-delete` を付けていない、削除保護が有効、削除が失敗したなどの理由で旧スタックが残った場合、cfnsync は旧スタックをステートの**削除待ち**として記録し続け、`status` / `plan` / `deploy` に削除候補として `cfnsync:pending/<スタック名>@<リージョン>` の形で提示します。削除は `cfnsync deploy --allow-delete` で行い、通常の削除とまったく同じ安全装置（依存順・削除保護・依存情報の検証）を通ります。
 
 ## CI での利用（GitHub Actions）
 
@@ -136,6 +140,8 @@ jobs:
         working-directory: templates
 ```
 
+`aws-actions/configure-aws-credentials` の `aws-region` は AWS SDK の既定リージョンと認証情報の取得先を決めるだけで、cfnsync の対象リージョンは変えません。対象リージョンは `cfnsync.yaml`（`defaultRegion` / `regions` / `regionOverrides`）と `--region` だけで決まります。
+
 実行ロールには `sts:GetCallerIdentity`、CloudFormation の Change Set / スタック / テンプレート系 Action、（`s3` バックエンド時）state / lock キーへの `s3:GetObject` / `PutObject` / `DeleteObject` が必要です。テンプレートが作成するリソースに応じて追加権限（例: `iam:PassRole`）が必要になる場合があります。詳細は [`docs/config-reference.md`](./docs/config-reference.md) と [`docs/spec/design.md`](./docs/spec/design.md) を参照してください。
 
 ### 終了コード
@@ -146,7 +152,7 @@ CI はこれらに依存します。
 |---|---|
 | `0` | 成功（変更なしを含む） |
 | `1` | エラー（検証・ガード・AWS 操作の失敗） |
-| `2` | 差分あり（`plan` / `--dry-run` 時のみ） |
+| `2` | 差分あり（`plan` 時のみ） |
 
 ## Claude Code プラグイン
 
@@ -178,6 +184,7 @@ codex plugin add cfnsync@cfnsync
 - ステートの一貫性は compare-and-swap（S3 の `If-Match`）が保証し、競合した側の保存を失敗させます。同一スタックへの同時操作は `*_IN_PROGRESS` ガードと CloudFormation 自身の進行中拒否により安全に失敗します。
 - 所有権 fencing（各副作用前の再検証）は**ベストエフォート**です。競合窓を狭めますが、CloudFormation API 上で完全には排除できません。IAM でも cfnsync の操作主体を分離してください。
 - 管理対象スタックに他主体の Change Set があると実行を停止します（Change Set 実行は他の Change Set を暗黙削除するため）。上書きせず fail-closed で止まります。
+- スタック削除は `--allow-delete` を明示したときだけ行い、新旧を統合した依存グラフの逆順で実行します。依存情報をステートから復元できない場合は削除を拒否します。リネームで残った旧スタックはステートの削除待ちとして追跡し続けるため、黙って管理外へ漏れることはありません。
 
 cfnsync 管理対象スタックへ、手動または他ツールで Change Set を作成しないでください。詳細な根拠は [`docs/spec/design.md`](./docs/spec/design.md) と [`docs/spec/requirements.md`](./docs/spec/requirements.md) にあります。
 
