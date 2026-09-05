@@ -185,6 +185,8 @@ function deploymentDeps(
 export async function runDeployment(
   ctx: CommandContext,
   options: CommonOptions & {
+    /** FR-5-20a / design §5.3.5: plan 経路を表す内部フラグ。plan サブコマンドだけが
+     *  設定し、公開 CLI オプション(旧 `deploy --dry-run`)としては提供しない。 */
     dryRun?: boolean;
     allowDelete?: boolean;
     onFailure?: 'stop' | 'continue';

@@ -130,6 +130,9 @@ export interface DeployDeps {
 }
 
 export interface DeployOptions {
+  /** FR-5-20a〜FR-5-20d / design §5.3.5: `plan` 経路を表す内部フラグ。
+   *  true なら差分確定の直後に自身の変更セットを削除して停止し、承認・実行へ進まない。
+   *  公開 CLI オプションとしては提供しない(旧 `deploy --dry-run` は FR-12-8d で廃止)。 */
   dryRun?: boolean;
   allowDelete?: boolean;
   onFailure?: 'stop' | 'continue';
@@ -293,7 +296,7 @@ export async function deploy(input: {
       targets,
       new GuardError(
         '承認手段が与えられていないため deploy を実行できません。' +
-          '非対話環境では --auto-approve を指定するか、--dry-run で差分確認だけを行ってください',
+          '非対話環境では --auto-approve を指定するか、cfnsync plan で差分確認だけを行ってください',
       ),
     );
   }
@@ -1211,7 +1214,7 @@ async function planCreateOrUpdate(
   );
 
   if (ctx.options.dryRun) {
-    // FR-5-9b: --dry-run は plan と同一経路とし、describe 直後に自身の変更セットを削除する。
+    // FR-5-20c: plan は describe 直後に自身の変更セットを削除し、保持経路を用いない。
     await cfn.deleteChangeSet(target.stackName, created.id);
     createdChangeSets.delete(changeSet);
     resultByOperation.set(operation, stackResult(target, 'skipped'));
@@ -1519,7 +1522,7 @@ async function planDeletion(
   if (!ctx.options.allowDelete || ctx.options.dryRun) {
     diff.warnings.push(
       ctx.options.dryRun
-        ? 'dry-run のため削除を実行しません'
+        ? 'plan のため削除を実行しません'
         : '削除対象です。実削除には --allow-delete が必要です',
     );
     resultByOperation.set(operation, {

@@ -80,7 +80,7 @@ The config file is the source of truth for the target region. `--region` is the 
 
 Human-readable diffs from `plan` and `deploy` use ANSI colors by default, including in CI and redirected output: Add is green, Modify yellow, Remove red, and replacements are bold red. Use `--no-color` or set `NO_COLOR` (an empty value also counts) to disable ANSI output. JSON output is always uncolored.
 
-Key `deploy` flags: `--dry-run` (create and diff only), `--auto-approve` / `-y` (skip the approval prompt and apply directly — **required in CI**), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`; **applies to execution-stage failures only**), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list.
+Key `deploy` flags: `--auto-approve` / `-y` (skip the approval prompt and apply directly — **required in CI**), `--allow-delete` (permit deletion of removed stacks — otherwise deletions are only reported), `--on-failure <stop|continue>` (default `stop`; **applies to execution-stage failures only**), `--no-color` (disable ANSI diff colors; also available on `plan`). Run `cfnsync <command> --help` for the full flag list. **To only inspect the diff, use `cfnsync plan`** (`deploy --dry-run` has been removed).
 
 ### The `deploy` approval flow
 
@@ -94,7 +94,7 @@ If nothing is scheduled for execution (every target is unchanged), no approval i
 
 If even one target fails during planning, the entire run aborts without asking for approval (exit code `1`). `--on-failure continue` applies **only to execution-stage failures**; it has no effect on planning-stage failures.
 
-Pass `--auto-approve` (`-y`) to apply without being asked. It is **required wherever there is no TTY (CI in particular)**: running `deploy` without it in such an environment fails (exit code `1`) without touching AWS at all. **A run with no changes at all fails the same way**, because the TTY check happens before change detection. `deploy --dry-run` and `plan` never ask for approval and are therefore exempt.
+Pass `--auto-approve` (`-y`) to apply without being asked. It is **required wherever there is no TTY (CI in particular)**: running `deploy` without it in such an environment fails (exit code `1`) without touching AWS at all. **A run with no changes at all fails the same way**, because the TTY check happens before change detection. `plan` never asks for approval and is therefore exempt; use `plan` instead of `deploy` when you only want to inspect the diff.
 
 #### Operational notes on the approval flow
 
@@ -150,7 +150,7 @@ CI depends on these:
 |---|---|
 | `0` | Success (including "no changes") |
 | `1` | Error (validation, guard, or AWS operation failure) |
-| `2` | Diff exists (`plan` / `--dry-run` only) |
+| `2` | Diff exists (`plan` only) |
 
 ## Claude Code plugin
 

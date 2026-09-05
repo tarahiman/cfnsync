@@ -148,7 +148,9 @@ describe('delete / deploy integration — T-15', () => {
     expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
   });
 
-  it('FR-6-2: allowDelete 指定時だけ削除して DELETE_COMPLETE を待つ。dry-run は指定ありでも削除しない', async () => {
+  it('FR-6-2 / FR-5-20b: allowDelete 指定時だけ削除して DELETE_COMPLETE を待つ。plan は指定ありでも削除しない', async () => {
+    // plan には --allow-delete がないため CLI からこの組み合わせは作れないが、
+    // 「plan 経路は DeleteStack を 1 件も行わない」は usecase 側の不変条件として保つ。
     const dry = setup(stateWith([['a.yaml@ap-northeast-1', entry('A')]]));
     makeExisting(dry, ['A']);
     expect((await dry.run({ allowDelete: true, dryRun: true })).exitCode).toBe(

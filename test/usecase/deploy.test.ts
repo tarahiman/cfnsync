@@ -514,7 +514,7 @@ Resources:
     ).toEqual(['west-shared']);
   });
 
-  it('FR-5-3: dry-run は差分 describe 後に変更セットを削除し、実行しない', async () => {
+  it('FR-5-20b / FR-5-20c / FR-5-20d: plan は差分 describe 後に変更セットを削除し、実行しない', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(
@@ -1779,7 +1779,7 @@ Outputs:
     ).toEqual(['changeset-create-start', 'no-change']);
   });
 
-  it('FR-5-4: dry-run は changeset-create-start→diff-ready で止まり正常停止を skipped 通知しない', async () => {
+  it('FR-5-4: plan は changeset-create-start→diff-ready で止まり正常停止を skipped 通知しない', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(

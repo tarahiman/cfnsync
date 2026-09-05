@@ -496,7 +496,7 @@ describe('T-22 承認フロー — 一連の流れと承認回数', () => {
     expect(fake.callsOf('executeChangeSet')).toHaveLength(1);
   });
 
-  it('FR-5-3: --dry-run は ExecuteChangeSet を呼ばずに差分を出して終了する', async () => {
+  it('FR-5-20b: plan は ExecuteChangeSet / DeleteStack を呼ばずに差分を出して終了する', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
     const s = setup(
@@ -1389,12 +1389,12 @@ describe('T-22 承認フロー — リソース差分 0 件(FR-5-7)', () => {
 });
 
 // ===========================================================================
-// FR-5-9: dry-run は承認を求めず plan と同一の変更セットライフサイクル
+// FR-5-9 / FR-5-20: plan は承認を求めず、差分取得の直後に変更セットを削除する
 // ===========================================================================
 
-describe('T-22 承認フロー — dry-run(FR-5-9)', () => {
-  it('FR-5-9a: deploy --dry-run と plan では approve が呼ばれない', async () => {
-    // plan は CLI が deploy --dry-run と同一経路へ委譲する(§5.2 / FR-5-9b)。
+describe('T-22 承認フロー — plan(FR-5-9 / FR-5-20)', () => {
+  it('FR-5-9a: plan では approve が呼ばれない', async () => {
+    // plan は CLI が同一 usecase を内部フラグ dryRun で呼び出す(§5.2 / §5.3.5)。
     const config = configOf({
       'a.yaml': { stackName: 'A' },
       'b.yaml': { stackName: 'B' },
@@ -1419,7 +1419,7 @@ describe('T-22 承認フロー — dry-run(FR-5-9)', () => {
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
   });
 
-  it('FR-5-9b: --dry-run は describe 直後に自身の変更セットを削除し、Phase A の保持経路を通らない', async () => {
+  it('FR-5-20c: plan は describe 直後に自身の変更セットを削除し、Phase A の保持経路を通らない', async () => {
     const config = configOf({
       'a.yaml': { stackName: 'A' },
       'b.yaml': { stackName: 'B' },

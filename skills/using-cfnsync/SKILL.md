@@ -49,10 +49,12 @@ cfnsync plan [common options]
 
 Create and describe change sets, print the diff, then delete those change sets without executing them. Review Add/Modify/Remove operations, replacements, and deletion previews. A diff produces exit code `2`.
 
+**`plan` is the only command that previews a diff.** `deploy --dry-run` was removed; use `plan` instead.
+
 ### `deploy`
 
 ```sh
-cfnsync deploy [common options] [--dry-run] [--auto-approve] [--allow-delete] \
+cfnsync deploy [common options] [--auto-approve] [--allow-delete] \
   [--on-failure <stop|continue>]
 ```
 
@@ -60,14 +62,13 @@ Detect changes and resolve dependency order, then run in two stages: a **plannin
 
 | Option | Meaning |
 |---|---|
-| `--dry-run` | Behave like `plan`: create and show change sets without executing them; never asks for approval |
 | `--auto-approve` (`-y`) | Skip the approval prompt and apply directly; **required whenever there is no TTY** |
 | `--allow-delete` | Permit deletion of removed stacks; without it, only report deletions |
 | `--on-failure <stop|continue>` | Stop after a failure or continue with independent stacks (default `stop`). **Applies to execution-stage failures only** — a planning-stage failure always aborts the whole run |
 
 The approval prompt (`Do you want to perform these actions? [y/N]`) and the approval summary go to stderr; only `y` / `yes` approves. A rejected run deletes every change set it created, reports the unexecuted stacks as `skipped`, adds `cancelled: true` to the deploy report on stdout, and exits `0`. No approval is requested when nothing is scheduled for execution.
 
-**Without a TTY, `deploy` requires `--auto-approve`**: otherwise it stops with a `CliUsageError` (exit `1`) at the CLI boundary, before constructing any AWS client. This also happens when there are no changes at all, because the TTY check precedes change detection. `deploy --dry-run` and `plan` are exempt.
+**Without a TTY, `deploy` requires `--auto-approve`**: otherwise it stops with a `CliUsageError` (exit `1`) at the CLI boundary, before constructing any AWS client. This also happens when there are no changes at all, because the TTY check precedes change detection. `plan` is exempt — use it when you only want to inspect the diff. `deploy --dry-run` no longer exists: it is rejected as an unknown option (`CliUsageError`, exit `1`).
 
 While approval is pending the state lock stays held, so other runs are blocked with the `s3` backend. The approved diff is **not** guaranteed to match the actual state at execution time — the defense is the re-check performed immediately before each execution, and nothing stronger is claimed. Properties referencing an Export that this same run creates are shown as `{{changeSet:KNOWN_AFTER_APPLY}}`, so their final value is not settled at approval time; do not resolve or guess those values.
 
@@ -109,7 +110,7 @@ Conditionally release a stale S3 state lock only when it is owned by the specifi
 |---|---|---|
 | `status` | Inspect local changes quickly | State read only |
 | `plan` | Preview exact CloudFormation changes | Creates and deletes temporary change sets |
-| `deploy` | Detect changes, resolve dependency order, create/diff every change set, then execute in dependency order after one approval | Yes. `--dry-run` limits it to creation and diff only |
+| `deploy` | Detect changes, resolve dependency order, create/diff every change set, then execute in dependency order after one approval | Yes. To preview only, use `plan` instead |
 | `graph` | Inspect deployment order | State read only |
 | `import` | Adopt existing stacks | Reads CloudFormation; writes local config/templates and configured state, and manages an S3 lock when applicable |
 | `force-unlock` | Recover from a stale S3 lock | Conditionally deletes the lock |
@@ -129,7 +130,7 @@ Conditionally release a stale S3 state lock only when it is owned by the specifi
 |---|---|
 | `0` | Success (including "no changes" = no diff) |
 | `1` | Error (config validation, fail-closed guard, AWS operation failure, etc.) |
-| `2` | Diff exists (`plan`, and `deploy --dry-run` only; no actual changes were made) |
+| `2` | Diff exists (`plan` only; no actual changes were made) |
 
 CI pipelines branch on these exit codes, so note that `plan` returning `2` is not an "error" — it is the normal case indicating that a diff exists.
 

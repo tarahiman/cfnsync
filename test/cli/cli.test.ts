@@ -305,7 +305,7 @@ describe('T-19 cli', () => {
   it.each([
     ['plan 差分あり', 2, true, 2],
     ['plan 差分なし', 0, false, 0],
-  ] as const)('FR-12-2: %s は exit %i', async (_label, usecaseCode, hasDiff, expected) => {
+  ] as const)('FR-12-2 / FR-5-20d: %s は exit %i', async (_label, usecaseCode, hasDiff, expected) => {
     const deps = dependencies({
       deploy: vi.fn(async () => ({ exitCode: usecaseCode, report, hasDiff })),
     });
@@ -434,18 +434,21 @@ describe('T-19 cli', () => {
     });
   });
 
-  it('FR-12-3b: 非 TTY でも deploy --dry-run と plan はエラーにならない', async () => {
-    for (const argv of [['deploy', '--dry-run'], ['plan']]) {
-      const deps = dependencies({
-        deploy: vi.fn(async () => ({
-          exitCode: 2 as const,
-          report,
-          hasDiff: true,
-        })),
-      });
-      expect(await runCli(argv, { deps, isTTY: false })).toBe(2);
-      expect(deps.deploy).toHaveBeenCalled();
-    }
+  it('FR-12-3b / FR-5-9a: 非 TTY でも plan はエラーにならない', async () => {
+    // 差分確認は plan だけが提供する(FR-5-20a)。deploy には非 TTY の例外経路がない。
+    const deps = dependencies({
+      deploy: vi.fn(async () => ({
+        exitCode: 2 as const,
+        report,
+        hasDiff: true,
+      })),
+    });
+    expect(await runCli(['plan'], { deps, isTTY: false })).toBe(2);
+    expect(deps.deploy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ dryRun: true }),
+      }),
+    );
   });
 
   it('FR-12-3c: 変更が 1 件もない非 TTY の deploy も --auto-approve なしでは CliUsageError で exit 1', async () => {
@@ -780,16 +783,57 @@ describe('T-19 cli', () => {
     expect(jsonDeps.deploy).not.toHaveBeenCalled();
   });
 
-  it('FR-5-2: deploy オプションを usecase に渡す', async () => {
+  it('FR-12-8d: deploy --dry-run は CliUsageError で exit 1', async () => {
+    // isTTY: true・--auto-approve 併記のいずれも与え、exit 1 の理由が FR-12-3b の
+    // 非 TTY ガードや承認不足へすり替わらないようにする。
+    const textDeps = dependencies();
+    const textOut = capture();
+    expect(
+      await runCli(['deploy', '--dry-run'], {
+        deps: textDeps,
+        io: textOut.io,
+        isTTY: true,
+      }),
+    ).toBe(1);
+    expect(textDeps.deploy).not.toHaveBeenCalled();
+    // 引数検証で止まるため設定読込にも到達しない。
+    expect(textDeps.loadConfig).not.toHaveBeenCalled();
+    expect(textOut.stdout()).toBe('');
+    expect(textOut.stderr()).toContain("unknown option '--dry-run'");
+
+    // FR-12-6a/b: JSON 選択時は共通エラー schema を stdout へちょうど 1 個。
+    const jsonDeps = dependencies();
+    const jsonOut = capture();
+    expect(
+      await runCli(['deploy', '--auto-approve', '--dry-run', '--output=json'], {
+        deps: jsonDeps,
+        io: jsonOut.io,
+        isTTY: true,
+      }),
+    ).toBe(1);
+    expect(JSON.parse(jsonOut.stdout())).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: {
+        type: 'CliUsageError',
+        message: expect.stringContaining('--dry-run'),
+      },
+    });
+    expect(jsonDeps.deploy).not.toHaveBeenCalled();
+  });
+
+  it('FR-5-2 / FR-5-20a: deploy オプションを usecase に渡す(dryRun は常に false)', async () => {
     const deps = dependencies();
-    await runCli(
-      ['deploy', '--dry-run', '--allow-delete', '--on-failure', 'continue'],
-      { deps },
-    );
+    // isTTY: true は FR-12-3b の非 TTY ガードを避けるためだけに与える。
+    await runCli(['deploy', '--allow-delete', '--on-failure', 'continue'], {
+      deps,
+      isTTY: true,
+      prompt: async () => true,
+    });
     expect(deps.deploy).toHaveBeenCalledWith(
       expect.objectContaining({
         options: {
-          dryRun: true,
+          dryRun: false,
           allowDelete: true,
           onFailure: 'continue',
           collectEvents: false,
@@ -1649,6 +1693,39 @@ describe('T-19 cli', () => {
     );
   });
 
+  it('FR-12-8d: どのサブコマンドの help にも --dry-run がない', async () => {
+    const observed: Record<string, unknown> = {};
+    for (const name of [
+      'status',
+      'plan',
+      'deploy',
+      'graph',
+      'import',
+      'force-unlock',
+    ]) {
+      const out = capture();
+      const exitCode = await runCli([name, '--help'], {
+        deps: dependencies(),
+        io: out.io,
+      });
+      const stdout = out.stdout();
+      observed[name] = {
+        exitCode,
+        // help 自体が出ていることを確かめ、空出力による偽陰性を防ぐ。
+        showsUsage: stdout.includes(`Usage: cfnsync ${name}`),
+        hasDryRun: stdout.includes('--dry-run'),
+      };
+    }
+
+    expect(observed).toEqual(
+      Object.fromEntries(
+        ['status', 'plan', 'deploy', 'graph', 'import', 'force-unlock'].map(
+          (name) => [name, { exitCode: 0, showsUsage: true, hasDryRun: false }],
+        ),
+      ),
+    );
+  });
+
   it('FR-12-4: -v と --version が package.json の version を表示して exit 0', async () => {
     const pkg = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
@@ -1753,7 +1830,7 @@ describe('T-19 cli', () => {
     );
   });
 
-  it('FR-5-4: plan(dry-run)でも進捗が標準エラーへ出力される', async () => {
+  it('FR-5-4: plan でも進捗が標準エラーへ出力される', async () => {
     const deps = dependencies({
       deploy: vi.fn(async (input) => {
         input.deps.onProgress?.({

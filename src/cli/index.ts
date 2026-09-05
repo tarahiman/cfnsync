@@ -174,6 +174,9 @@ export function createCliProgram(
       invoke(runtime, () => runStatus(runtime, commonOptions(command)))(),
     );
 
+  // FR-5-20a: 差分確認を提供する公開コマンドは plan だけ。deploy に同じ目的の
+  // オプション(--dry-run)は置かない(FR-12-8d)。dryRun は plan 経路を表す
+  // 内部フラグであり、利用者はどの引数からも true にできない(design §5.3.5)。
   program
     .command('plan')
     .description('Create change sets and show the diff')
@@ -191,7 +194,6 @@ export function createCliProgram(
   program
     .command('deploy')
     .description('Deploy changes')
-    .option('--dry-run', 'Only create change sets and show the diff')
     .option('--allow-delete', 'Allow deletion of stacks')
     .addOption(
       new Option('--on-failure <mode>', 'Behavior on failure')
@@ -203,7 +205,6 @@ export function createCliProgram(
     .action(
       (
         local: {
-          dryRun?: boolean;
           allowDelete?: boolean;
           onFailure: 'stop' | 'continue';
           autoApprove?: boolean;
@@ -214,12 +215,8 @@ export function createCliProgram(
         invoke(runtime, async () => {
           // FR-12-3b: 承認を求められない非 TTY で --auto-approve がない deploy は、
           // AWS・ステートバックエンドへ一切アクセスする前に CLI 境界で拒否する
-          // (fail-closed)。--dry-run は何も実行しないため対象外(FR-12-3c)。
-          if (
-            local.dryRun !== true &&
-            local.autoApprove !== true &&
-            !runtime.isTTY
-          ) {
+          // (fail-closed)。差分確認だけを行いたい場合は plan を使う(FR-5-20a)。
+          if (local.autoApprove !== true && !runtime.isTTY) {
             const message =
               'deploy は既定で差分を表示して承認を求めますが、この環境には TTY がありません。' +
               'CI など非対話環境では --auto-approve (-y) を指定してください';

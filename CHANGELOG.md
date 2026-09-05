@@ -33,7 +33,7 @@ cfnsync deploy --auto-approve
 
 - **変更後**: TTY のない環境（CI など）で `--auto-approve` なしに `deploy` を実行すると、`CliUsageError`（終了コード `1`）で停止します。拒否は CLI 境界で行われ、AWS クライアントの生成・ステートバックエンドへのアクセスを含む副作用は一切発生しません。`--output json` を選択している場合、stdout には `CliUsageError` の payload が出ます。
 - **変更が 1 件もない実行も同じくエラーになります。** TTY の判定を変更検知より前に行うためで、「差分がないから従来どおり終了コード `0` で通る」という前提は成り立ちません。
-- `deploy --dry-run` と `plan` は承認を求めないため対象外です。従来どおり非 TTY で動作します。
+- `plan` は承認を求めないため対象外です。従来どおり非 TTY で動作します。差分確認だけを行いたい場合は `plan` を使ってください（`deploy --dry-run` は破壊的変更 9 で廃止しました）。
 
 **移行**: CI のワークフローで `deploy` に `--auto-approve` を追加してください。**これを忘れるとデプロイジョブが失敗します。**
 
@@ -105,6 +105,30 @@ cfnsync plan --region us-east-1
 ```
 
 移行後は `cfnsync status` を実行し、`STACK KEY` 列のリージョンが意図どおりで、想定外の `added` / `deleted` が出ないことを確認してください。
+
+#### 9. `deploy --dry-run` の廃止（`plan` へ一本化）
+
+- **変更前**: `cfnsync deploy --dry-run` は Change Set の作成と差分表示までで停止し、`cfnsync plan` と同じ目的・同じ実行経路を公開オプションとして重複提供していました。
+- **変更後**: `deploy` から `--dry-run` を削除しました。`cfnsync deploy --dry-run` は未知のオプションとして `CliUsageError`（終了コード `1`）になります。`deploy --help` にも表示されません。**差分確認は `cfnsync plan` に一本化します。**
+- **根拠**: 承認を求めない点、差分ありの終了コードが `2` である点、共通オプションと `--no-color` が使える点はいずれも `plan` と同じでした。`--allow-delete` を併記しても dry-run 中は削除されず削除プレビューの意味は `plan` と変わらず、`--on-failure` は実行段階用で dry-run 固有の価値がありません。公開オプションが 2 通りあることで、ドキュメント・終了コードの説明・承認ガードの条件分岐が増え、利用者にも迷いを生じさせていました。
+
+**移行**: `deploy --dry-run` を `plan` に置き換えてください。**置き換えないと終了コード `1` で失敗します。**
+
+```sh
+# 変更前: 差分だけを確認する
+cfnsync deploy --dry-run
+# 変更後
+cfnsync plan
+
+# 変更前: 削除対象も含めて差分だけを確認する
+cfnsync deploy --dry-run --allow-delete
+# 変更後（--allow-delete は dry-run 中は無意味だったため不要。削除プレビューは plan にも出ます）
+cfnsync plan
+```
+
+- **受入基準の対応**: 旧 `FR-5-3`（`--dry-run` は差分表示までで停止）と旧 `FR-5-9b`（`--dry-run` は `plan` と同一の変更セットライフサイクル）を廃止し、`plan` を主語とする `FR-5-20a`〜`FR-5-20d` へ置き換えました。`deploy --dry-run` を未知オプションとする基準は `FR-12-8d` として新設しました。旧 ID は再利用しません。
+- **内部構造**: `plan` は引き続き `usecase/deploy` の同一実装を内部フラグ `DeployOptions.dryRun` で呼び出します。公開 CLI の廃止と内部構造の整理は別の判断であり、Phase A の安全不変条件（残存 Change Set の所有権判定、`REVIEW_IN_PROGRESS` 保護、fencing、CAS）を二重実装しないため今回は分離しません（`docs/spec/design.md` §5.3.5）。
+- **出力の変化**: 削除プレビューの警告文が `dry-run のため削除を実行しません` から `plan のため削除を実行しません` へ変わります（text 出力のみ。JSON の `warnings` にも同じ文字列が入ります）。非対話環境で承認手段がない場合のエラーメッセージも `--dry-run` ではなく `cfnsync plan` を案内します。
 
 ### 追加
 

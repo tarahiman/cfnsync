@@ -33,7 +33,7 @@ cfnsync deploy --auto-approve
 
 - **After**: running `deploy` without `--auto-approve` in an environment that has no TTY (CI in particular) stops with a `CliUsageError` (exit code `1`). The rejection happens at the CLI boundary, so there are no side effects at all — not even an AWS client is constructed, and the state backend is never touched. With `--output json`, stdout carries the `CliUsageError` payload.
 - **A run with no changes at all fails the same way.** The TTY check runs before change detection, so you cannot assume "there is no diff, therefore it still exits `0`".
-- `deploy --dry-run` and `plan` never ask for approval and are exempt; they keep working without a TTY.
+- `plan` never asks for approval and is exempt; it keeps working without a TTY. Use `plan` when you only want to inspect the diff (`deploy --dry-run` was removed — see breaking change 9).
 
 **Migration**: add `--auto-approve` to `deploy` in your CI workflow. **Forgetting this breaks the deploy job.**
 
@@ -105,6 +105,30 @@ cfnsync plan --region us-east-1
 ```
 
 After migrating, run `cfnsync status` and confirm that the region in the `STACK KEY` column is the one you intend and that no unexpected `added` / `deleted` entries appear.
+
+#### 9. `deploy --dry-run` removed (diff preview consolidated into `plan`)
+
+- **Before**: `cfnsync deploy --dry-run` stopped after creating change sets and printing the diff, duplicating the purpose and the execution path of `cfnsync plan` as a second public option.
+- **After**: `--dry-run` is gone from `deploy`. `cfnsync deploy --dry-run` is rejected as an unknown option with a `CliUsageError` (exit code `1`) and no longer appears in `deploy --help`. **Diff previews are consolidated into `cfnsync plan`.**
+- **Rationale**: it never asked for approval, exited `2` on a diff, and accepted the common options and `--no-color` — exactly like `plan`. Adding `--allow-delete` deleted nothing during a dry run, so the deletion preview meant the same thing as in `plan`, and `--on-failure` only applies to the execution stage. Two public paths for one purpose multiplied the branches in the docs, the exit-code explanation, and the approval guard, and left users unsure which to use.
+
+**Migration**: replace `deploy --dry-run` with `plan`. **Without this change the command fails with exit code `1`.**
+
+```sh
+# Before: inspect the diff only
+cfnsync deploy --dry-run
+# After
+cfnsync plan
+
+# Before: inspect the diff including deletions
+cfnsync deploy --dry-run --allow-delete
+# After (--allow-delete was a no-op during a dry run; plan shows deletion previews too)
+cfnsync plan
+```
+
+- **Acceptance criteria**: the former `FR-5-3` (`--dry-run` stops after the diff) and `FR-5-9b` (`--dry-run` follows the same change-set lifecycle as `plan`) are retired and replaced by `FR-5-20a`–`FR-5-20d`, which are written in terms of `plan`. `FR-12-8d` is new and requires `deploy --dry-run` to be an unknown option. Retired IDs are never reused.
+- **Internals**: `plan` still calls the same `usecase/deploy` implementation with the internal `DeployOptions.dryRun` flag. Removing the public option and reorganizing the internals are separate decisions; splitting them now would duplicate the Phase A safety invariants (leftover change-set ownership checks, `REVIEW_IN_PROGRESS` protection, fencing, CAS), so it is deliberately out of scope (see `docs/spec/design.md` §5.3.5).
+- **Output change**: the deletion-preview warning changes from `dry-run のため削除を実行しません` to `plan のため削除を実行しません` (text output; the same string also appears in the JSON `warnings`). The error message shown when no approval channel is available now points at `cfnsync plan` instead of `--dry-run`.
 
 ### Added
 
