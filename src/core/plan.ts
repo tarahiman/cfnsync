@@ -173,7 +173,7 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
     // orderRegions は byRegion のキーのみを返すため必ず存在する。
     if (buckets === undefined) {
       throw new InvariantError(
-        `内部エラー: リージョン ${region} のバケットが見つかりません`,
+        `Internal error: no bucket found for region ${region}`,
       );
     }
 

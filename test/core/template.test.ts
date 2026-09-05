@@ -325,7 +325,7 @@ Outputs:
     expect(result.warnings).toEqual(
       expect.arrayContaining([
         expect.stringMatching(
-          /\$\.Resources\.Missing\.Properties\.Value\.Fn::ImportValue.*値.*ありません/,
+          /\$\.Resources\.Missing\.Properties\.Value\.Fn::ImportValue.*neither an explicit value nor a Default/,
         ),
         expect.stringMatching(
           /\$\.Resources\.Required\.Properties\.Value\.Fn::ImportValue.*__REQUIRED__/,
@@ -334,10 +334,10 @@ Outputs:
           /\$\.Resources\.ResourceRef\.Properties\.Value\.Fn::ImportValue.*Parameters/,
         ),
         expect.stringMatching(
-          /\$\.Resources\.MappedSub\.Properties\.Value\.Fn::ImportValue.*変数マップ/,
+          /\$\.Resources\.MappedSub\.Properties\.Value\.Fn::ImportValue.*variable-map form/,
         ),
         expect.stringMatching(
-          /\$\.Resources\.Joined\.Properties\.Value\.Fn::ImportValue.*対応範囲外/,
+          /\$\.Resources\.Joined\.Properties\.Value\.Fn::ImportValue.*out of supported range/,
         ),
         expect.stringMatching(/Outputs\.Secret\.Export\.Name.*NoEcho/),
         expect.stringMatching(/Outputs\.Structured\.Export\.Name.*scalar/),

@@ -79,7 +79,7 @@ export function createCliErrorPayload(
       : String(error)
     : error instanceof CfnSyncError
       ? error.publicMessage
-      : '予期しないエラーが発生しました';
+      : 'An unexpected error occurred';
   const context =
     error instanceof CfnSyncError
       ? {

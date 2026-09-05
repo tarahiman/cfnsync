@@ -215,7 +215,7 @@ describe('delete / deploy integration — T-15', () => {
       expect.objectContaining({
         stackName: 'A',
         outcome: 'failed',
-        errorMessage: expect.stringContaining('削除保護'),
+        errorMessage: expect.stringContaining('termination protection'),
       }),
     );
   });
@@ -422,7 +422,7 @@ describe('delete / deploy integration — T-15', () => {
       expect.objectContaining({
         stackName: 'B',
         outcome: 'failed',
-        errorMessage: expect.stringMatching(/依存情報|手動/),
+        errorMessage: expect.stringMatching(/dependency information|manually/),
       }),
     );
     expect(result.report.result?.stacks).toContainEqual(

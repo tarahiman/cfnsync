@@ -54,13 +54,13 @@ function parseLockInfo(text: string, operation: string): LockInfo {
   try {
     json = JSON.parse(text);
   } catch (cause) {
-    throw new AwsError(`S3 ${operation} のロック JSON を解析できません`, {
+    throw new AwsError(`Cannot parse the lock JSON for S3 ${operation}`, {
       cause,
     });
   }
   const parsed = lockInfoSchema.safeParse(json);
   if (!parsed.success) {
-    throw new AwsError(`S3 ${operation} のロック JSON が不正です`, {
+    throw new AwsError(`The lock JSON for S3 ${operation} is invalid`, {
       cause: parsed.error,
     });
   }
@@ -88,7 +88,7 @@ function isNotFound(err: unknown): boolean {
 function requireEtag(etag: string | undefined, operation: string): string {
   if (etag === undefined || etag.length === 0) {
     throw new AwsError(
-      `S3 ${operation} レスポンスに ETag がありません。条件付き操作の安全性を確認できないため中断します(fail-closed)`,
+      `The S3 ${operation} response has no ETag. Aborting because the safety of the conditional operation cannot be confirmed (fail-closed)`,
     );
   }
   return etag;
@@ -148,7 +148,7 @@ export class S3StateBackend implements StateBackend {
     // FR-1-6(s3): 既存版は If-Match、初回(ETag なし)は If-None-Match: * で作成する。
     if (expected?.backend === 'local') {
       throw new StateConflictError(
-        'local backend の state version を S3 保存には使用できません',
+        'Cannot use a local backend state version for an S3 save',
       );
     }
     const condition = expected
@@ -169,7 +169,7 @@ export class S3StateBackend implements StateBackend {
     } catch (err) {
       if (isPreconditionFailed(err) || isConditionalConflict(err)) {
         throw new StateConflictError(
-          'ステートが読込時点から変更されています(S3 条件付き書き込みが競合しました)。上書きせず中断します',
+          'The state has changed since it was read (an S3 conditional write conflicted). Aborting without overwriting',
           { cause: err },
         );
       }
@@ -204,7 +204,7 @@ export class S3StateBackend implements StateBackend {
       // 既存ロックあり(条件不成立)→ 他の書き込みを一切行わず即エラー。
       if (isPreconditionFailed(err) || isConditionalConflict(err)) {
         throw new LockError(
-          'ステートロックを取得できませんでした(他の実行が保持しています)。実行を中断します',
+          'Could not acquire the state lock (another run holds it). Aborting',
           { cause: err },
         );
       }
@@ -248,7 +248,7 @@ export class S3StateBackend implements StateBackend {
       return {
         released: false,
         reason:
-          'ロック handle に ETag がないため条件付き解放を実行しません(fail-closed)',
+          'Not performing a conditional release because the lock handle has no ETag (fail-closed)',
       };
     }
     try {
@@ -264,12 +264,12 @@ export class S3StateBackend implements StateBackend {
       if (isPreconditionFailed(err)) {
         return {
           released: false,
-          reason: 'ロックの所有者が交代しているため解放しませんでした',
+          reason: 'Did not release because the lock owner has changed',
         };
       }
       if (isNotFound(err)) {
         // 冪等: 既に解放済み。エラーにしない。
-        return { released: false, reason: 'ロックは既に解放済みです' };
+        return { released: false, reason: 'The lock is already released' };
       }
       throw toAwsError('S3 DeleteObject(lock)', err);
     }
@@ -303,24 +303,24 @@ export class S3StateBackend implements StateBackend {
       );
     } catch (err) {
       if (isNotFound(err))
-        return { released: false, reason: 'ロックは存在しません' };
+        return { released: false, reason: 'The lock does not exist' };
       throw toAwsError('S3 GetObject(lock)', err);
     }
     const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined)
-      return { released: false, reason: 'ロックは存在しません' };
+      return { released: false, reason: 'The lock does not exist' };
 
     let parsed: LockInfo;
     try {
       parsed = parseLockInfo(text, 'GetObject(lock)');
     } catch {
-      return { released: false, reason: 'ロックの内容を解析できません' };
+      return { released: false, reason: 'Cannot parse the lock contents' };
     }
     if (parsed.runId !== runId) {
       return {
         released: false,
-        reason: `指定された実行 ID(${runId})は現在のロック(${parsed.runId ?? '不明'})と一致しません`,
+        reason: `The specified run ID (${runId}) does not match the current lock (${parsed.runId ?? '(unknown)'})`,
       };
     }
 
@@ -337,11 +337,12 @@ export class S3StateBackend implements StateBackend {
       if (isPreconditionFailed(err)) {
         return {
           released: false,
-          reason: '読み取り後にロックの所有者が交代したため解放しませんでした',
+          reason:
+            'Did not release because the lock owner changed after it was read',
         };
       }
       if (isNotFound(err)) {
-        return { released: false, reason: 'ロックは既に解放済みです' };
+        return { released: false, reason: 'The lock is already released' };
       }
       throw toAwsError('S3 DeleteObject(lock)', err);
     }

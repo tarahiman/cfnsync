@@ -214,7 +214,7 @@ describe('prepareStack — スタック状態ガード', () => {
     await expect(prepareStack(makeCtx(fake), STACK)).rejects.toBeInstanceOf(
       StackStateError,
     );
-    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toThrow(/削除/);
+    await expect(prepareStack(makeCtx(fake), STACK)).rejects.toThrow(/delete/);
     // 変更セット作成には進まない。
     expect(fake.callsOf('createChangeSet')).toHaveLength(0);
   });

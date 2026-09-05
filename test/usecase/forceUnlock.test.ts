@@ -111,8 +111,8 @@ describe('FR-1-10: ロック内容(実行 ID・開始時刻・実行者)と警�
     expect(result.message).toContain(LOCK.startedAt);
     expect(result.message).toContain(LOCK.owner);
     // 「保持していた実行が終了していることを確認した場合にのみ解除してよい」旨の警告(FR-1-10)。
-    expect(result.message).toContain('終了していること');
-    expect(result.message).toContain('確認');
+    expect(result.message).toContain('has finished');
+    expect(result.message).toContain('confirming');
   });
 
   it('FR-1-10: runId 不一致で解除しない場合も、ロック内容と警告が出力に含まれる', async () => {
@@ -123,6 +123,6 @@ describe('FR-1-10: ロック内容(実行 ID・開始時刻・実行者)と警�
     expect(result.message).toContain(LOCK.runId);
     expect(result.message).toContain(LOCK.startedAt);
     expect(result.message).toContain(LOCK.owner);
-    expect(result.message).toContain('確認');
+    expect(result.message).toContain('confirming');
   });
 });

@@ -369,7 +369,7 @@ export function buildStackDiff(input: {
     const line = resources[index];
     if (line.replacement) {
       warnings.push(
-        `${line.logicalResourceId} (${line.resourceType}) は置換されます`,
+        `${line.logicalResourceId} (${line.resourceType}) will be replaced`,
       );
     }
     for (const detail of change.details) {
@@ -380,9 +380,9 @@ export function buildStackDiff(input: {
         const property =
           detail.target?.name ??
           detail.target?.attribute ??
-          '(不明なプロパティ)';
+          '(unknown property)';
         warnings.push(
-          `${line.logicalResourceId} の ${property} は NoEcho パラメータ「${detail.causingEntity}」に由来する変更です(値は表示されません)`,
+          `${line.logicalResourceId}'s ${property} is a change originating from the NoEcho parameter "${detail.causingEntity}" (value not shown)`,
         );
       }
     }
@@ -455,7 +455,7 @@ function isResourcelessChange(diff: StackDiff): boolean {
 }
 
 const RESOURCELESS_CHANGE_NOTE =
-  '  (CloudFormation リソース差分 0 件 — Outputs 等の非リソース変更を含み得ます。実行対象です)';
+  '  (0 CloudFormation resource diffs -- may include non-resource changes such as Outputs. Included in execution)';
 
 /**
  * FR-5-7e: 削除プレビューの対象か。削除は変更セットを介さず `DeleteStack` を直接
@@ -478,7 +478,7 @@ function isDeletePreview(diff: StackDiff): boolean {
  * `StackDiff.warnings` が担う。
  */
 const DELETE_PREVIEW_NOTE =
-  '  (スタック全体が削除対象です — 削除は変更セットを介さないためリソース単位の差分はありません)';
+  '  (the entire stack is targeted for deletion -- deletion bypasses change sets, so there is no per-resource diff)';
 
 /** 1 スタック分のリソース差分行(renderText / renderApprovalSummary で共有する)。 */
 function resourceDiffLines(diff: StackDiff, color: boolean): string[] {
@@ -488,7 +488,7 @@ function resourceDiffLines(diff: StackDiff, color: boolean): string[] {
     // それぞれ区別できる文言を出す(FR-5-7b / FR-5-7e)。
     if (isResourcelessChange(diff)) lines.push(RESOURCELESS_CHANGE_NOTE);
     else if (isDeletePreview(diff)) lines.push(DELETE_PREVIEW_NOTE);
-    else lines.push('  (変更なし)');
+    else lines.push('  (no changes)');
   }
   for (const resource of diff.resources) {
     const flag = resource.replacement
@@ -540,7 +540,7 @@ function resourceDiffLines(diff: StackDiff, color: boolean): string[] {
     }
   }
   if (diff.warnings.length > 0) {
-    lines.push('  警告:');
+    lines.push('  Warnings:');
     for (const warning of diff.warnings) {
       lines.push(`    - ${colorize(warning, '33', color)}`);
     }
@@ -549,9 +549,9 @@ function resourceDiffLines(diff: StackDiff, color: boolean): string[] {
 }
 
 const RECONCILIATION_LABELS: Record<ReconciliationRecord['kind'], string> = {
-  'empty-change-set': '空変更セット(変更なし確認)',
-  'deleted-absent': '削除済みスタックの不在確認',
-  'create-recovery': 'CREATE 復旧',
+  'empty-change-set': 'Empty change set (no-change confirmation)',
+  'deleted-absent': 'Confirmed absence of deleted stack',
+  'create-recovery': 'CREATE recovery',
 };
 
 /**
@@ -567,7 +567,7 @@ export function renderText(
   const lines: string[] = [];
 
   // FR-7-8: 接続先を出力の先頭に含める。クレデンシャルは connection に存在しないため漏れない。
-  lines.push('== 接続先 ==');
+  lines.push('== Connection ==');
   lines.push(`account: ${report.connection.accountId}`);
   lines.push(`regions: ${report.connection.regions.join(', ')}`);
   lines.push('');
@@ -583,11 +583,11 @@ export function renderText(
 
   // FR-5-18b: 再同期が 1 件以上ある実行にだけ専用セクションを追加する。
   if (report.reconciliations && report.reconciliations.length > 0) {
-    lines.push('== 再同期(state) ==');
+    lines.push('== Reconciliation (state) ==');
     for (const record of report.reconciliations) {
       lines.push(
-        `  ${record.stackKey} (${record.region}): ${RECONCILIATION_LABELS[record.kind]} / state 更新: ${
-          record.stateUpdated ? 'あり' : 'なし'
+        `  ${record.stackKey} (${record.region}): ${RECONCILIATION_LABELS[record.kind]} / state updated: ${
+          record.stateUpdated ? 'yes' : 'no'
         }`,
       );
     }
@@ -595,7 +595,7 @@ export function renderText(
   }
 
   if (report.events && report.events.length > 0) {
-    lines.push('== イベント ==');
+    lines.push('== Events ==');
     for (const event of report.events) {
       const reason = event.resourceStatusReason
         ? ` (${event.resourceStatusReason})`
@@ -608,7 +608,7 @@ export function renderText(
   }
 
   if (report.result) {
-    lines.push('== 結果 ==');
+    lines.push('== Result ==');
     for (const stackResult of report.result.stacks) {
       const flag =
         stackResult.outcome === 'failed'
@@ -745,7 +745,7 @@ export function renderApprovalSummary(
   const color = options.color;
   const lines: string[] = [];
 
-  lines.push('== 実行内容の確認 ==');
+  lines.push('== Confirm what will run ==');
   // FR-5-6a: 解決済みの接続先(アカウント ID・許可済みリージョン)。
   lines.push(`account: ${request.connection.accountId}`);
   lines.push(`regions: ${request.connection.regions.join(', ')}`);
@@ -757,8 +757,8 @@ export function renderApprovalSummary(
     const deleteNote =
       diff.operation === 'delete'
         ? request.allowDelete
-          ? colorize(' — 削除します', '31', color)
-          : ' — 削除対象ですが --allow-delete 未指定のため削除しません(警告のみ)'
+          ? colorize(' -- will be deleted', '31', color)
+          : ' -- targeted for deletion, but not deleted because --allow-delete is not set (warning only)'
         : '';
     lines.push(
       `[${diff.operation}] ${diff.stackKey} (stack: ${diff.stackName})${deleteNote}`,
@@ -769,16 +769,16 @@ export function renderApprovalSummary(
 
   const { summary } = request;
   const deleteSuffix = request.allowDelete
-    ? '(--allow-delete 指定あり: 実際に削除します)'
-    : '(--allow-delete 未指定: 削除しません)';
+    ? '(--allow-delete set: will actually delete)'
+    : '(--allow-delete not set: will not delete)';
   lines.push(
-    `合計: create ${summary.create} / update ${summary.update} / delete ${summary.delete} ${deleteSuffix}`,
+    `Total: create ${summary.create} / update ${summary.update} / delete ${summary.delete} ${deleteSuffix}`,
   );
   if (summary.replacements > 0) {
     // FR-5-6d: 置換は要約でも警告として強調する。
     lines.push(
       colorize(
-        `警告: リソース置換(Replacement)が ${summary.replacements} 件あります`,
+        `Warning: ${summary.replacements} resource replacement(s)`,
         '1;31',
         color,
       ),
@@ -786,7 +786,7 @@ export function renderApprovalSummary(
   }
   if (summary.resourcelessChanges > 0) {
     lines.push(
-      `注記: CloudFormation リソース差分が 0 件の create / update が ${summary.resourcelessChanges} 件あります(Outputs 等の非リソース変更を含み得ます)`,
+      `Note: ${summary.resourcelessChanges} create/update target(s) have 0 CloudFormation resource diffs (may include non-resource changes such as Outputs)`,
     );
   }
 

@@ -711,7 +711,8 @@ Resources:
     expect(result.exitCode).toBe(1);
     expect(failed).toMatchObject({
       outcome: 'failed',
-      errorMessage: 'CloudFormation スタックの完了待機に失敗しました',
+      errorMessage:
+        'Failed while waiting for the CloudFormation stack to complete',
       rolledBack: false,
     });
     expect(failed?.errorMessage).not.toContain(internalMarker);
@@ -1550,7 +1551,7 @@ Outputs:
       (stack) => stack.stackKey === 'secret.yaml@ap-northeast-1',
     );
     expect(failure?.outcome).toBe('failed');
-    expect(failure?.errorMessage).toContain('入力同一性を証明できない');
+    expect(failure?.errorMessage).toContain('Cannot prove input equivalence');
     // FR-5-5b4: 案内は「import を実行せよ」では不十分で、import が NoEcho を
     // __REQUIRED__ へ書き換えることまで含めた手順でなければならない。
     expect(failure?.errorMessage).toContain('--reconcile local');
@@ -1717,7 +1718,7 @@ Outputs:
 
     const diff = result.report.diffs.find((entry) => entry.stackName === 'Old');
     expect(diff?.warnings).toContain(
-      '削除対象です。実削除には --allow-delete が必要です',
+      'Marked for deletion. --allow-delete is required to actually delete it',
     );
     expect(
       s.progress.filter(
@@ -1756,7 +1757,9 @@ Outputs:
       expect.objectContaining({
         stackKey: `old.yaml@${REGION}`,
         outcome: 'failed',
-        errorMessage: expect.stringMatching(/管理対象|リネーム|パス変更/),
+        errorMessage: expect.stringMatching(
+          /managed under a different|template path/,
+        ),
       }),
     );
   });

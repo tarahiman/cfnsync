@@ -85,7 +85,7 @@ function buildRegionGraph(
       const resolved = resolveDependsOnKey(raw, n.region);
       if (resolved === n.stackKey) {
         throw new ConfigError(
-          `明示依存 dependsOn '${raw}' は自分自身を参照できません`,
+          `Explicit dependsOn '${raw}' cannot reference itself`,
           {
             stackKey: n.stackKey,
             region: n.region,
@@ -94,7 +94,7 @@ function buildRegionGraph(
       }
       if (!nodeKeySet.has(resolved)) {
         throw new ConfigError(
-          `明示依存 dependsOn '${raw}' は同一リージョンの管理対象へ解決できません: ${resolved}`,
+          `Explicit dependsOn '${raw}' does not resolve to a managed target in the same region: ${resolved}`,
           { stackKey: n.stackKey, region: n.region },
         );
       }

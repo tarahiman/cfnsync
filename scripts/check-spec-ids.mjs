@@ -61,7 +61,7 @@ function compareCriterionIds(left, right) {
 }
 
 checkTopLevelSequence('FR', 13);
-checkTopLevelSequence('NFR', 6);
+checkTopLevelSequence('NFR', 7);
 checkContiguousSequence(
   'requirements sections',
   [...requirements.matchAll(/^## (\d+)\./gm)].map((match) => Number(match[1])),
@@ -154,6 +154,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Checked normative section numbering, FR-1..FR-13, NFR-1..NFR-6, and ${definitions.length} explicit acceptance IDs.`,
+    `Checked normative section numbering, FR-1..FR-13, NFR-1..NFR-7, and ${definitions.length} explicit acceptance IDs.`,
   );
 }

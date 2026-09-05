@@ -592,6 +592,8 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 
 ## 9. エラー処理と終了コード
 
+ツールが組み立てる人間可読なメッセージ(進捗・エラー・警告・承認プロンプト・ヘルプ・report のテキスト表現、および JSON の固定列挙値)はすべて英語の固定文言とし、マルチバイト文字を含めない(NFR-7)。利用者の設定・テンプレート・AWS 応答由来の値(スタック名、パス、`ResourceStatusReason` 等)をそのまま提示する箇所はこの制約の対象外であり、独自に翻訳・変換してはならない。本節以降の JSON 例の `message` はこの規定に従った実際の出力形態(英語)を示す。
+
 デプロイ失敗 result の `rolledBack` は §7 の構造化 status 観測結果だけを写す。`ExecuteChangeSet` 前の拒否を含む通常の `StackStateError` / guard / config / lock error は `false` とし、エラーメッセージに `ROLLBACK` が含まれるかどうかでは判定しない。failed outcome は `rolledBack: true|false` を明示し、成功・skipped・no-change では省略してよい。`waitForStack` の例外を構造化失敗へラップする場合も、公開本文には元の `CfnSyncError.publicMessage` だけを使い、元例外は内部 cause として保持する。分類不能な元例外の公開本文は固定の安全な文言とする。
 
 | 終了コード | 意味 |
@@ -609,7 +611,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
   "exitCode": 1,
   "error": {
     "type": "ConfigError",
-    "message": "人間向けの安全なメッセージ",
+    "message": "A safe, human-readable message",
     "stackKey": "app.yaml@ap-northeast-1",
     "region": "ap-northeast-1"
   }

@@ -172,15 +172,15 @@ export async function prepareStack(
 
   if (status === 'ROLLBACK_COMPLETE') {
     throw new StackStateError(
-      `スタック '${stackName}' は ${status} 状態のためデプロイできません(CREATE 失敗後の残骸です)。` +
-        `対処: 当該スタックを削除してから再実行してください`,
+      `Cannot deploy stack '${stackName}' because it is in ${status} state (a leftover after a failed CREATE). ` +
+        `Action: delete the stack, then re-run`,
       targetContext(ctx),
     );
   }
 
   if (status.endsWith('_IN_PROGRESS')) {
     throw new StackStateError(
-      `スタック '${stackName}' は ${status} 状態です。別の操作が進行中の可能性があるため、変更セットを作成せず中断します`,
+      `Stack '${stackName}' is in ${status} state. Another operation may be in progress, so aborting without creating a change set`,
       targetContext(ctx),
     );
   }
@@ -219,9 +219,9 @@ export async function reclaimStaleChangeSets(
   // 他主体が存在する場合は、自ステートの変更セットにも触れずに中断する(削除の前に判定する)。
   if (foreign.length > 0) {
     throw new StackStateError(
-      `スタック '${stackName}' に cfnsync(このステート)が所有しない未実行の変更セットが残存しています: ` +
-        `${foreign.join(', ')}。同一スタックが別のステート設定・他ツール・人手から操作されている可能性があります。` +
-        `手動で解決(当該変更セットの実行または削除)してから再実行してください`,
+      `Stack '${stackName}' has unexecuted change set(s) not owned by cfnsync (this state): ` +
+        `${foreign.join(', ')}. The same stack may be operated on by a different state configuration, another tool, or a human. ` +
+        `Resolve it manually (execute or delete the change set), then re-run`,
       targetContext(ctx),
     );
   }
@@ -313,7 +313,7 @@ export async function createManagedChangeSet(
   });
   if (!created.id) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の CreateChangeSet が変更セット ARN を返しませんでした。実行対象を固定できないため中断します`,
+      `CreateChangeSet for stack '${target.stackName}' did not return a change set ARN. Aborting because the execution target cannot be pinned`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -331,7 +331,7 @@ export async function createManagedChangeSet(
   );
   if (rawDetail.name !== name || rawDetail.id !== created.id) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の変更セット待機結果が作成対象と一致しません(name/ARN mismatch)。差し替えの可能性があるため中断します`,
+      `The change set wait result for stack '${target.stackName}' does not match the created target (name/ARN mismatch). Aborting because it may have been replaced`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -354,7 +354,7 @@ export async function createManagedChangeSet(
       return { ...ref, detail, noChanges: true };
     }
     throw new StackStateError(
-      `スタック '${target.stackName}' の変更セット作成に失敗しました: ${detail.statusReason ?? '(理由不明)'}`,
+      `Failed to create the change set for stack '${target.stackName}': ${detail.statusReason ?? '(reason unknown)'}`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -398,9 +398,9 @@ export async function executeWithReinspection(
 
   if (own.length !== 1 || others.length > 0 || summaries.length !== 1) {
     throw new StackStateError(
-      `実行直前の再検査で、自変更セット '${ownChangeSetName}' (${ownChangeSetId}) の名前と ARN を一意に確認できませんでした: ` +
-        `${summaries.map((summary) => `${summary.name} (${summary.id})`).join(', ') || '(対象なし)'}。` +
-        `ExecuteChangeSet は同一スタックの他の変更セットを暗黙削除するため、実行を中止します`,
+      `The re-inspection immediately before execution could not uniquely confirm the name and ARN of own change set '${ownChangeSetName}' (${ownChangeSetId}): ` +
+        `${summaries.map((summary) => `${summary.name} (${summary.id})`).join(', ') || '(none)'}. ` +
+        `Aborting execution because ExecuteChangeSet implicitly deletes other change sets on the same stack`,
       targetContext(ctx),
     );
   }

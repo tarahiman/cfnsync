@@ -22,7 +22,7 @@ export function normalizeTemplatePath(templatePath: string): string {
 export function assertSafeTemplatePath(templatePath: string): void {
   if (templatePath.startsWith(RESERVED_TEMPLATE_PATH_PREFIX)) {
     throw new ConfigError(
-      `テンプレートパスに予約プレフィックス '${RESERVED_TEMPLATE_PATH_PREFIX}' は使用できません: ${templatePath}`,
+      `Template paths cannot use the reserved prefix '${RESERVED_TEMPLATE_PATH_PREFIX}': ${templatePath}`,
       { stackKey: templatePath },
     );
   }
@@ -48,7 +48,7 @@ export function assertSafeTemplatePath(templatePath: string): void {
 
   if (unsafe) {
     throw new ConfigError(
-      `テンプレートパスは設定ディレクトリ配下の相対パスでなければなりません: ${templatePath}`,
+      `Template paths must be relative paths under the config directory: ${templatePath}`,
       { stackKey: templatePath },
     );
   }

@@ -41,8 +41,8 @@ export interface ForceUnlockResult {
  */
 function describeLock(lock: LockInfo): string {
   return [
-    `ロック内容: 実行ID=${lock.runId}, 開始時刻=${lock.startedAt}, 実行者=${lock.owner}`,
-    'このロックの手動解除は、保持していた実行(CI ジョブ・プロセス)が終了していることを利用者が確認した場合にのみ行ってください。実行中に解除すると、状態の不整合を招くおそれがあります。',
+    `Lock info: runId=${lock.runId}, startedAt=${lock.startedAt}, owner=${lock.owner}`,
+    'Only manually release this lock after confirming that the run holding it (CI job / process) has finished. Releasing it while still in use may cause inconsistent state.',
   ].join('\n');
 }
 
@@ -67,7 +67,7 @@ export async function forceUnlock(input: {
       exitCode: 0,
       released: false,
       lock: undefined,
-      message: '解除対象のロックは存在しません。',
+      message: 'There is no lock to release.',
     };
   }
 
@@ -80,7 +80,7 @@ export async function forceUnlock(input: {
       released: false,
       lock,
       message: [
-        `指定された実行 ID(${runId})は現在のロックの実行 ID(${lock.runId})と一致しないため、解除しません。`,
+        `Not releasing because the specified run ID (${runId}) does not match the current lock's run ID (${lock.runId}).`,
         lockDescription,
       ].join('\n'),
     };
@@ -95,7 +95,7 @@ export async function forceUnlock(input: {
       released: false,
       lock,
       message: [
-        `ロックを解除できませんでした${result.reason ? `(${result.reason})` : ''}。`,
+        `Could not release the lock${result.reason ? ` (${result.reason})` : ''}.`,
         lockDescription,
       ].join('\n'),
     };
@@ -105,6 +105,6 @@ export async function forceUnlock(input: {
     exitCode: 0,
     released: true,
     lock,
-    message: ['ロックを解除しました。', lockDescription].join('\n'),
+    message: ['Lock released.', lockDescription].join('\n'),
   };
 }

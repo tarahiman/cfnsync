@@ -143,7 +143,7 @@ export function parseState(
     parsedJson = JSON.parse(text);
   } catch (cause) {
     throw new StateCorruptionError(
-      'ステートの JSON 解析に失敗しました(不完全な JSON の可能性があります)',
+      'Failed to parse the state JSON (it may be incomplete)',
       {
         ...context,
         cause,
@@ -174,7 +174,7 @@ export function parseState(
 
   const v1Result = CfnSyncStateV1Schema.safeParse(parsedJson);
   if (!v1Result.success) {
-    throw new StateCorruptionError('ステートのスキーマが不正です', {
+    throw new StateCorruptionError('The state schema is invalid', {
       ...context,
       cause: v3Result.error,
     });
@@ -225,27 +225,27 @@ function assertStateConsistency(
       keyRegion = parseStackKey(key).region;
     } catch (cause) {
       throw new StateCorruptionError(
-        `ステートのスタックキー '${key}' が不正な形式です`,
+        `The state stack key '${key}' is malformed`,
         { ...context, cause },
       );
     }
     if (keyRegion !== entry.region) {
       throw new StateCorruptionError(
-        `ステートのスタックキー '${key}' のリージョンとエントリの region '${entry.region}' が一致しません`,
+        `The region of state stack key '${key}' does not match the entry's region '${entry.region}'`,
         { ...context, stackKey: key },
       );
     }
-    assertStackIdArn(state, entry, `スタックキー '${key}'`, key, context);
+    assertStackIdArn(state, entry, `stack key '${key}'`, key, context);
   }
 
   // FR-1-16: 削除待ちも同じ内部整合性検証を通す。キーは物理スタックの一意識別子
   // であり、ここが崩れると誤ったスタックへ DeleteStack を送りうる。
   for (const [id, pending] of Object.entries(state.pendingDeletions)) {
-    const label = `削除待ち '${id}'`;
+    const label = `pending deletion '${id}'`;
     const pendingKey = pendingDeletionStackKey(id);
     if (id !== pendingDeletionId(pending.region, pending.stackName)) {
       throw new StateCorruptionError(
-        `ステートの${label}のキーが stackName '${pending.stackName}' / region '${pending.region}' と一致しません`,
+        `The state's ${label} key does not match stackName '${pending.stackName}' / region '${pending.region}'`,
         { ...context, stackKey: pendingKey },
       );
     }
@@ -254,13 +254,13 @@ function assertStateConsistency(
       originRegion = parseStackKey(pending.originStackKey).region;
     } catch (cause) {
       throw new StateCorruptionError(
-        `ステートの${label}の originStackKey '${pending.originStackKey}' が不正な形式です`,
+        `The state's ${label} has a malformed originStackKey '${pending.originStackKey}'`,
         { ...context, cause, stackKey: pendingKey },
       );
     }
     if (originRegion !== pending.region) {
       throw new StateCorruptionError(
-        `ステートの${label}の originStackKey '${pending.originStackKey}' のリージョンが region '${pending.region}' と一致しません`,
+        `The state's ${label} originStackKey '${pending.originStackKey}' region does not match region '${pending.region}'`,
         { ...context, stackKey: pendingKey },
       );
     }
@@ -281,13 +281,13 @@ function assertStackIdArn(
   if (arn === null) return;
   if (arn[1] !== record.region) {
     throw new StateCorruptionError(
-      `ステートの${label} の stackId ARN のリージョン '${arn[1]}' がエントリの region と一致しません`,
+      `The state's ${label} stackId ARN region '${arn[1]}' does not match the entry's region`,
       { ...context, stackKey },
     );
   }
   if (state.accountId !== null && arn[2] !== state.accountId) {
     throw new StateCorruptionError(
-      `ステートの${label} の stackId ARN のアカウントがステートの accountId と一致しません`,
+      `The state's ${label} stackId ARN account does not match the state's accountId`,
       { ...context, stackKey },
     );
   }

@@ -218,8 +218,8 @@ export function createCliProgram(
           // (fail-closed)。差分確認だけを行いたい場合は plan を使う(FR-5-20a)。
           if (local.autoApprove !== true && !runtime.isTTY) {
             const message =
-              'deploy は既定で差分を表示して承認を求めますが、この環境には TTY がありません。' +
-              'CI など非対話環境では --auto-approve (-y) を指定してください';
+              'deploy shows the diff and asks for approval by default, but this environment has no TTY. ' +
+              'In non-interactive environments such as CI, specify --auto-approve (-y)';
             runtime.errorEmitted = true;
             if (runtime.jsonRequested) {
               runtime.io.stdout(

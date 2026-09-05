@@ -554,7 +554,7 @@ describe('T-18 recovery', () => {
       (stack) => stack.stackKey === 'stack.yaml@ap-northeast-1',
     );
     expect(failure?.outcome).toBe('failed');
-    expect(failure?.errorMessage).toContain('入力同一性を証明できない');
+    expect(failure?.errorMessage).toContain('Cannot prove input equivalence');
     expect(failure?.errorMessage).toContain('--reconcile local');
     // NFR-4: NoEcho の実値を診断へ漏らさない。
     expect(failure?.errorMessage).not.toContain('local-desired-secret');

@@ -59,7 +59,7 @@ export class DependencyCycleError extends CfnSyncError {
   readonly cycle: string[];
 
   constructor(cycle: string[], context: ErrorContext = {}) {
-    super(`依存関係に循環があります: ${cycle.join(' -> ')}`, context);
+    super(`Dependency cycle detected: ${cycle.join(' -> ')}`, context);
     this.cycle = cycle;
   }
 }

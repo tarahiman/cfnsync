@@ -26,7 +26,7 @@ export function toAwsError(
   context: Omit<ErrorContext, 'cause'> = {},
 ): AwsError {
   if (cause instanceof AwsError) return cause;
-  return new AwsError(`${operation} に失敗しました`, {
+  return new AwsError(`${operation} failed`, {
     ...context,
     cause,
   });

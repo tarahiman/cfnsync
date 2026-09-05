@@ -311,8 +311,8 @@ export async function deploy(input: {
       required,
       targets,
       new GuardError(
-        '承認手段が与えられていないため deploy を実行できません。' +
-          '非対話環境では --auto-approve を指定するか、cfnsync plan で差分確認だけを行ってください',
+        'Cannot run deploy because no approval mechanism is provided. ' +
+          'In a non-interactive environment, specify --auto-approve, or use cfnsync plan to only check the diff',
       ),
     );
   }
@@ -452,7 +452,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       entry.stackKey,
       entry.target.region,
       'no-change',
-      '変更なし(検知済み)',
+      'No changes (already detected)',
     );
   }
 
@@ -473,7 +473,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           operation.stackKey,
           operation.region,
           'skipped',
-          '計画段階の失敗により実行全体を中断しました',
+          'Aborted the entire run due to a planning-stage failure',
         );
         continue;
       }
@@ -520,7 +520,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         operation.stackKey,
         operation.region,
         'skipped',
-        '依存関係の失敗によりスキップしました',
+        'Skipped due to a dependency failure',
       );
       continue;
     }
@@ -560,7 +560,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         operation.stackKey,
         operation.region,
         'failed',
-        failure.errorMessage ?? '失敗しました',
+        failure.errorMessage ?? 'Failed',
       );
       phaseAFailed = true;
       break;
@@ -575,7 +575,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
       ctx,
       prepared,
       resultByOperation,
-      '計画段階の失敗により実行全体を中断しました',
+      'Aborted the entire run due to a planning-stage failure',
     );
     // FR-5-12c: 事前作成した自身の変更セットをすべて削除する。失敗した対象自身が
     // 作成済みの変更セット(待機・検証で失敗したもの)も createdChangeSets に載っている。
@@ -591,7 +591,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     if (approve === undefined) {
       // FR-5-13(多層防御): 入口検証を通過していれば到達しない。
       throw new GuardError(
-        '承認手段が与えられていないため実行できません。--auto-approve を指定してください',
+        'Cannot run because no approval mechanism is provided. Specify --auto-approve',
       );
     }
     let approved: boolean;
@@ -616,7 +616,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         outcome: 'failed',
         // 対象スタックを一意に決められないため、全対象の NoEcho 実効値をまとめて
         // マスクする。分類不能な例外は publicErrorMessage が固定文言へ置換する。
-        errorMessage: `承認処理に失敗しました: ${prepared.globalRedactor(
+        errorMessage: `Approval processing failed: ${prepared.globalRedactor(
           publicErrorMessage(error),
         )}`,
         rolledBack: false,
@@ -639,7 +639,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           action.operation.stackKey,
           action.operation.region,
           'skipped',
-          '承認処理に失敗したため実行しませんでした',
+          'Not executed because approval processing failed',
         );
       }
       return finalize(1, hasDiff);
@@ -657,7 +657,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
           action.operation.stackKey,
           action.operation.region,
           'skipped',
-          '承認が得られなかったため実行しませんでした',
+          'Not executed because approval was not granted',
         );
       }
       const cleanupFailed = await cleanupCreatedChangeSets(
@@ -702,7 +702,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         operation.stackKey,
         operation.region,
         'skipped',
-        '依存関係の失敗によりスキップしました',
+        'Skipped due to a dependency failure',
       );
       continue;
     }
@@ -739,7 +739,7 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
         operation.stackKey,
         operation.region,
         'failed',
-        failure.errorMessage ?? '失敗しました',
+        failure.errorMessage ?? 'Failed',
       );
 
       // fencing 喪失は「当該副作用以降を実行しない」ため onFailure に関係なく即中断。
@@ -759,8 +759,8 @@ async function runLocked(ctx: LockedRunContext): Promise<DeployResult> {
     prepared,
     resultByOperation,
     ownershipLost
-      ? 'ロックの所有権を失ったため以降の処理を中断しました'
-      : '依存関係の失敗によりスキップしました',
+      ? 'Aborted subsequent processing because lock ownership was lost'
+      : 'Skipped due to a dependency failure',
   );
 
   // design §5.3: 失敗・スキップで実行されなかった対象の変更セットも後始末する。
@@ -812,10 +812,10 @@ function findPhysicalStackConflicts(
         if (conflicting === undefined) continue;
         failures.set(
           operation.stackKey,
-          `スタック '${pending.entry.stackName}'(${operation.region})は削除待ちですが、` +
-            `設定の '${conflicting.stackKey}' が同一の物理スタックを作成/更新しようとしています。` +
-            `AWS への副作用を行わず中断します。先に cfnsync deploy --allow-delete で削除待ちを` +
-            `解消するか、別のスタック名へ変更してください`,
+          `Stack '${pending.entry.stackName}' (${operation.region}) is pending deletion, but ` +
+            `'${conflicting.stackKey}' in the configuration is trying to create/update the same physical stack. ` +
+            `Aborting without any AWS side effects. First resolve the pending deletion with ` +
+            `cfnsync deploy --allow-delete, or use a different stack name`,
         );
         continue;
       }
@@ -829,10 +829,10 @@ function findPhysicalStackConflicts(
         continue;
       failures.set(
         operation.stackKey,
-        `スタック '${stateEntry.stackName}'(${operation.region})は別のテンプレートパス ` +
-          `'${surviving.stackKey}' で現在も管理対象です。同一物理スタックを指す削除と作成/更新が` +
-          `同一実行に含まれるため、AWS への副作用を行わず中断します。` +
-          `テンプレートのパス変更(リネーム)は state 移行で扱ってください`,
+        `Stack '${stateEntry.stackName}' (${operation.region}) is still managed under a different ` +
+          `template path '${surviving.stackKey}'. This run includes both a delete and a create/update ` +
+          `targeting the same physical stack, so aborting without any AWS side effects. ` +
+          `Handle the template path change (rename) as a state migration`,
       );
       continue;
     }
@@ -843,9 +843,9 @@ function findPhysicalStackConflicts(
     const previous = mutationByPhysicalId.get(key);
     if (previous !== undefined) {
       const message =
-        `スタック '${target.stackName}'(${operation.region})を ` +
-        `'${previous.stackKey}' と '${operation.stackKey}' の 2 つが作成/更新しようとしています。` +
-        `同一物理スタックへの二重操作を避けるため、AWS への副作用を行わず中断します`;
+        `Stack '${target.stackName}' (${operation.region}) is targeted for create/update by both ` +
+        `'${previous.stackKey}' and '${operation.stackKey}'. ` +
+        `Aborting without any AWS side effects to avoid a duplicate operation on the same physical stack`;
       failures.set(previous.stackKey, message);
       failures.set(operation.stackKey, message);
       continue;
@@ -928,7 +928,7 @@ async function cleanupCreatedChangeSets(
       failures.push(
         `${changeSet.operation.stackKey}: ${redact(
           changeSet.operation.stackKey,
-          publicErrorMessage(error, '変更セットの削除に失敗しました'),
+          publicErrorMessage(error, 'Failed to delete the change set'),
         )}`,
       );
     }
@@ -941,8 +941,8 @@ async function cleanupCreatedChangeSets(
     stackName: '(cleanup)',
     outcome: 'failed',
     errorMessage:
-      `事前作成した変更セットの削除に失敗しました: ${failures.join(' / ')}。` +
-      `残存した変更セットは次回実行の残存回収で回収されます`,
+      `Failed to delete pre-created change sets: ${failures.join(' / ')}. ` +
+      `Remaining change sets will be reclaimed on the next run`,
     rolledBack: false,
   });
   return true;
@@ -973,7 +973,7 @@ function prepareExecutionPlan(ctx: LockedRunContext): PreparedPlan {
     const staticAnalysis = staticAnalyses.get(target.templatePath);
     if (staticAnalysis === undefined) {
       throw new InvariantError(
-        `テンプレートの静的解析結果がありません: ${target.templatePath}`,
+        `No static template analysis result for: ${target.templatePath}`,
         { stackKey: target.stackKey, region: target.region },
       );
     }
@@ -1108,14 +1108,14 @@ async function planCreateOrUpdate(
   const target = operation.entry.target;
   if (!target)
     throw new InvariantError(
-      `内部エラー: ${operation.stackKey} の target がありません`,
+      `Internal error: no target for ${operation.stackKey}`,
       { stackKey: operation.stackKey, region: operation.region },
     );
   const source = requiredTemplate(ctx.templates, target.templatePath);
   const analysis = prepared.analyses.get(operation.stackKey);
   if (!analysis)
     throw new InvariantError(
-      `内部エラー: ${operation.stackKey} のテンプレート解析結果がありません`,
+      `Internal error: no template analysis result for ${operation.stackKey}`,
       { stackKey: operation.stackKey, region: operation.region },
     );
   const redact = prepared.redactors.get(operation.stackKey) ?? identityRedactor;
@@ -1133,13 +1133,13 @@ async function planCreateOrUpdate(
     if (existing && existing.status !== 'REVIEW_IN_PROGRESS') {
       if (existing.status === 'ROLLBACK_COMPLETE') {
         throw new StackStateError(
-          `スタック '${target.stackName}' は ROLLBACK_COMPLETE 状態です。削除してから再実行してください`,
+          `Stack '${target.stackName}' is in ROLLBACK_COMPLETE state. Delete it and re-run`,
           { stackKey: target.stackKey, region: target.region },
         );
       }
       if (existing.status.endsWith('_IN_PROGRESS')) {
         throw new StackStateError(
-          `スタック '${target.stackName}' は ${existing.status} 状態です。進行中操作の完了後に再実行してください`,
+          `Stack '${target.stackName}' is in ${existing.status} state. Re-run after the in-progress operation completes`,
           { stackKey: target.stackKey, region: target.region },
         );
       }
@@ -1192,7 +1192,7 @@ async function planCreateOrUpdate(
     operation.stackKey,
     operation.region,
     'changeset-create-start',
-    '変更セットを作成しています',
+    'Creating change set',
   );
   // FR-5-12c: CreateChangeSet が ARN を返した直後に回収対象へ登録する。以降の待機例外・
   // name/ARN 不一致・非空 FAILED はいずれも「AWS 上に変更セットが実在する」状態で throw
@@ -1216,7 +1216,7 @@ async function planCreateOrUpdate(
   // 作成済みの変更セットは以後 createdChangeSet 経由でのみ追跡する(登録漏れを型で防ぐ)。
   if (createdChangeSet === undefined) {
     throw new InvariantError(
-      `内部エラー: ${operation.stackKey} の作成済み変更セットを追跡できていません`,
+      `Internal error: failed to track the created change set for ${operation.stackKey}`,
       { stackKey: operation.stackKey, region: operation.region },
     );
   }
@@ -1240,7 +1240,7 @@ async function planCreateOrUpdate(
       operation.stackKey,
       operation.region,
       'no-change',
-      '変更セットが空のため変更なしとして扱います',
+      'Treating as no changes because the change set is empty',
     );
     const stackId =
       stack.kind === 'update'
@@ -1286,7 +1286,7 @@ async function planCreateOrUpdate(
     operation.stackKey,
     operation.region,
     'diff-ready',
-    `差分を確定しました(リソース ${diff.resources.length} 件)`,
+    `Diff finalized (${diff.resources.length} resource(s))`,
   );
 
   if (ctx.options.dryRun) {
@@ -1309,8 +1309,8 @@ async function planCreateOrUpdate(
         (await cfn.describeStack(target.stackName))?.stackId);
   if (!expectedStackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の stackId(ARN) を確定できないため、` +
-        `承認後の実行直前再検査で対象スタックの同一性を照合できません。実行せず中断します`,
+      `Cannot determine the stackId (ARN) of stack '${target.stackName}', ` +
+        `so the target stack's identity cannot be re-verified immediately before execution after approval. Aborting without executing`,
       { stackKey: operation.stackKey, region: operation.region },
     );
   }
@@ -1351,16 +1351,16 @@ async function assertExecutableStackState(
     // FR-5-17b: 不変 ARN の再照合。expectedStackId 未確定のまま通過させない(fail-closed)。
     if (!summary || summary.stackId !== action.expectedStackId) {
       throw new StackStateError(
-        `スタック '${target.stackName}' の stackId(ARN) が承認前と一致しません。` +
-          `同名スタックが差し替えられた可能性があるため実行を中止します。cfnsync import を実行してください`,
+        `The stackId (ARN) of stack '${target.stackName}' no longer matches the value from before approval. ` +
+          `A stack with the same name may have been replaced, so aborting execution. Run cfnsync import`,
         context,
       );
     }
     // FR-5-17c1: 実行可能な終端状態の allowlist。
     if (!UPDATE_EXECUTABLE_STATUSES.has(summary.status)) {
       throw new StackStateError(
-        `スタック '${target.stackName}' は承認後に ${summary.status} へ遷移しました。` +
-          `実行可能な状態(${[...UPDATE_EXECUTABLE_STATUSES].join(' / ')})ではないため実行を中止します`,
+        `Stack '${target.stackName}' transitioned to ${summary.status} after approval. ` +
+          `Aborting execution because it is not in an executable state (${[...UPDATE_EXECUTABLE_STATUSES].join(' / ')})`,
         context,
       );
     }
@@ -1377,16 +1377,16 @@ async function assertExecutableStackState(
   }
   if (summary.status !== 'REVIEW_IN_PROGRESS') {
     throw new StackStateError(
-      `スタック '${target.stackName}' は承認後に ${summary.status} で実在しています。` +
-        `CREATE 対象として期待する状態(未作成または REVIEW_IN_PROGRESS)ではないため実行を中止します`,
+      `Stack '${target.stackName}' exists with status ${summary.status} after approval. ` +
+        `Aborting execution because it is not in the expected state for a CREATE target (not-yet-created or REVIEW_IN_PROGRESS)`,
       context,
     );
   }
   if (summary.stackId !== action.expectedStackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の REVIEW_IN_PROGRESS の殻が、承認前に自身の変更セットを` +
-        `作成した殻(stackId が一致しない)ではありません。同名スタックが差し替えられた可能性が` +
-        `あるため実行を中止します。cfnsync import を実行してください`,
+      `The REVIEW_IN_PROGRESS shell of stack '${target.stackName}' is not the shell on which its own ` +
+        `change set was created before approval (stackId mismatch). A stack with the same name may have ` +
+        `been replaced, so aborting execution. Run cfnsync import`,
       context,
     );
   }
@@ -1422,7 +1422,7 @@ async function executeApprovedChangeSet(
     operation.stackKey,
     operation.region,
     'execute-start',
-    '変更セットを実行しています',
+    'Executing change set',
   );
   // FR-5-17e 手順 2〜4: ListChangeSets 再検査 → fencing(fencedGateway の verifyLock)
   // → ExecuteChangeSet。この 3 つの間に AWS 呼び出しを挟んではならない。
@@ -1466,7 +1466,7 @@ async function executeApprovedChangeSet(
       redact(
         publicErrorMessage(
           cause,
-          'CloudFormation スタックの完了待機に失敗しました',
+          'Failed while waiting for the CloudFormation stack to complete',
         ),
       ),
       rollbackObserved,
@@ -1498,7 +1498,7 @@ async function executeApprovedChangeSet(
 
   if (!final.stackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の成功結果に stackId(ARN) がありません。state を更新せず import/移行を要求します`,
+      `The success result for stack '${target.stackName}' has no stackId (ARN). Not updating state; requesting import/migration`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -1507,7 +1507,7 @@ async function executeApprovedChangeSet(
     action.entry.stateEntry?.stackId !== final.stackId
   ) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の stackId(ARN) が UPDATE 中に変化しました。state を更新せず cfnsync import を案内します`,
+      `The stackId (ARN) of stack '${target.stackName}' changed during UPDATE. Not updating state; recommending cfnsync import`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -1526,7 +1526,7 @@ async function executeApprovedChangeSet(
     operation.stackKey,
     operation.region,
     'done',
-    'デプロイが完了しました',
+    'Deployment completed',
   );
   return { hasDiff: true };
 }
@@ -1547,7 +1547,7 @@ async function planDeletion(
   const record = deletableRecord(operation.entry);
   if (!record)
     throw new InvariantError(
-      `内部エラー: ${operation.stackKey} の削除対象の記録がありません`,
+      `Internal error: no deletion record for ${operation.stackKey}`,
       { stackKey: operation.stackKey, region: operation.region },
     );
 
@@ -1573,7 +1573,7 @@ async function planDeletion(
   if (detectedPending !== undefined) {
     // FR-6-11: 通常の削除対象と区別できるよう、由来を警告として明示する。
     diff.warnings.push(
-      `リネーム前の旧スタックが未削除のため削除待ちです(元のスタックキー: ${detectedPending.entry.originStackKey})`,
+      `The pre-rename old stack has not been deleted and is pending deletion (original stack key: ${detectedPending.entry.originStackKey})`,
     );
   }
   report.diffs.push(diff);
@@ -1606,7 +1606,7 @@ async function planDeletion(
       operation.stackKey,
       operation.region,
       'done',
-      'スタックは既に存在しないため削除済みとして同期しました',
+      'The stack no longer exists; synced as already deleted',
     );
     return { hasDiff: true };
   }
@@ -1618,7 +1618,8 @@ async function planDeletion(
     // ことの判別は FR-5-7e の表示が、削除待ちの由来は FR-6-11 の警告が担う。
     // 進捗も同様に出さない(plan が意図どおり実行しないことはスキップではない)。
     if (!ctx.options.dryRun) {
-      const message = '削除対象です。実削除には --allow-delete が必要です';
+      const message =
+        'Marked for deletion. --allow-delete is required to actually delete it';
       diff.warnings.push(message);
       emitProgress(
         ctx.deps,
@@ -1715,9 +1716,9 @@ async function deleteApprovedStack(
       currentEntryAtPairKey.stackId === record.stackId)
   ) {
     const message =
-      `スタック '${record.stackName}' はリネーム対の旧スタックですが、` +
-      `対となる新スタックの作成成功が state に記録されていません。` +
-      `旧スタックだけを削除しないため DeleteStack を拒否します`;
+      `Stack '${record.stackName}' is the old stack of a rename pair, but ` +
+      `the state has no record of the paired new stack's create succeeding. ` +
+      `Refusing DeleteStack to avoid deleting only the old stack`;
     diff.warnings.push(message);
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
@@ -1742,7 +1743,7 @@ async function deleteApprovedStack(
     operation.stackKey,
     operation.region,
     'delete-start',
-    'スタックを削除しています',
+    'Deleting stack',
   );
 
   const deleted = await deleteManagedStack({
@@ -1766,14 +1767,15 @@ async function deleteApprovedStack(
 
   if (deleted.outcome === 'refused') {
     diff.warnings.push(
-      deleted.errorMessage ?? '安全装置により削除を拒否しました',
+      deleted.errorMessage ?? 'Deletion refused by a safety guard',
     );
     resultByOperation.set(operation, {
       stackKey: operation.stackKey,
       region: operation.region,
       stackName: record.stackName,
       outcome: 'failed',
-      errorMessage: deleted.errorMessage ?? '安全装置により削除を拒否しました',
+      errorMessage:
+        deleted.errorMessage ?? 'Deletion refused by a safety guard',
       rolledBack: false,
     });
     emitProgress(
@@ -1781,7 +1783,7 @@ async function deleteApprovedStack(
       operation.stackKey,
       operation.region,
       'failed',
-      deleted.errorMessage ?? '安全装置により削除を拒否しました',
+      deleted.errorMessage ?? 'Deletion refused by a safety guard',
     );
     return { hasDiff: true, failed: true };
   }
@@ -1799,7 +1801,7 @@ async function deleteApprovedStack(
     operation.stackKey,
     operation.region,
     'done',
-    'スタックを削除しました',
+    'Stack deleted',
   );
   return { hasDiff: true };
 }
@@ -1832,21 +1834,21 @@ async function recoverExistingCreate(
   const unverifiable: string[] = [];
   if (analysis.noEchoParams.length > 0) {
     unverifiable.push(
-      `NoEcho パラメータ(${analysis.noEchoParams.join(', ')})の実値は AWS から取得できません`,
+      `The effective values of NoEcho parameters (${analysis.noEchoParams.join(', ')}) cannot be retrieved from AWS`,
     );
   }
   if (target.dependsOn.length > 0) {
     unverifiable.push(
-      `明示 dependsOn(${target.dependsOn.join(', ')})は実スタックと照合できません`,
+      `Explicit dependsOn (${target.dependsOn.join(', ')}) cannot be verified against the live stack`,
     );
   }
   if (unverifiable.length > 0) {
     throw new StackStateError(
-      `同名スタック '${target.stackName}' の入力同一性を証明できないため、再同期を拒否します(fail-closed)。` +
-        `${unverifiable.join(' / ')}。` +
-        `復旧手順: 設定ファイルを退避 → cfnsync import --reconcile local を実行 → ` +
-        `import が __REQUIRED__ へ書き換えた NoEcho パラメータを退避した希望値へ戻す → ` +
-        `cfnsync plan で差分を確認して deploy`,
+      `Cannot prove input equivalence for the same-named stack '${target.stackName}'; refusing to re-sync (fail-closed). ` +
+        `${unverifiable.join(' / ')}. ` +
+        `Recovery steps: back up the config file -> run cfnsync import --reconcile local -> ` +
+        `restore the NoEcho parameters that import rewrote to __REQUIRED__ back to their intended values -> ` +
+        `check the diff with cfnsync plan, then deploy`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -1866,8 +1868,8 @@ async function recoverExistingCreate(
     );
   } catch (cause) {
     throw new StackStateError(
-      `同名スタック '${target.stackName}' のテンプレート同値性または Parameter Default を検証できません(fail-closed)。` +
-        `cfnsync import を実行してください`,
+      `Cannot verify template equivalence or Parameter Default for the same-named stack '${target.stackName}' (fail-closed). ` +
+        `Run cfnsync import`,
       { stackKey: target.stackKey, region: target.region, cause },
     );
   }
@@ -1889,8 +1891,8 @@ async function recoverExistingCreate(
 
   if (!matches) {
     throw new StackStateError(
-      `同名スタック '${target.stackName}' はローカル希望値または管理タグと完全一致しません(fail-closed)。` +
-        `命名衝突の可能性があるため cfnsync import を実行してください`,
+      `The same-named stack '${target.stackName}' does not exactly match the local desired values or management tag (fail-closed). ` +
+        `This may be a naming collision; run cfnsync import`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -1908,10 +1910,10 @@ async function recoverExistingCreate(
   report.diffs.push(diff);
 
   if (!templateHash || !inputsHash) {
-    throw new InvariantError(
-      `内部エラー: ${target.stackKey} の hash がありません`,
-      { stackKey: target.stackKey, region: target.region },
-    );
+    throw new InvariantError(`Internal error: no hash for ${target.stackKey}`, {
+      stackKey: target.stackKey,
+      region: target.region,
+    });
   }
   const entry: DetectedEntry = {
     stackKey: target.stackKey,
@@ -1935,7 +1937,7 @@ async function recoverExistingCreate(
     target.stackKey,
     target.region,
     'no-change',
-    'CREATE 復旧により変更なしとして再同期しました',
+    'Re-synced as no changes via CREATE recovery',
   );
 }
 
@@ -1949,13 +1951,13 @@ async function saveSuccessfulEntry(
   const target = detected.target;
   if (!target || !detected.templateHash || !detected.inputsHash) {
     throw new InvariantError(
-      `内部エラー: ${detected.stackKey} の成功 state 入力が不足しています`,
+      `Internal error: missing success-state input for ${detected.stackKey}`,
       { stackKey: detected.stackKey },
     );
   }
   if (!stackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の stackId(ARN) を確認できないため成功 state を保存できません。cfnsync import を実行してください`,
+      `Cannot confirm the stackId (ARN) of stack '${target.stackName}', so the success state cannot be saved. Run cfnsync import`,
     );
   }
   const entry: StackEntry = {
@@ -2022,7 +2024,7 @@ async function saveState(
     version = await ctx.deps.backend.save(payload, ctx.state.version);
   } catch (cause) {
     throw new StatePersistenceError(
-      'ステートの CAS 保存に失敗したため、以降の処理を中断します',
+      'Aborting subsequent processing because the compare-and-swap state save failed',
       { cause },
     );
   }
@@ -2043,14 +2045,14 @@ async function requireManagedStackIdentity(
 > {
   if (!stateEntry?.stackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の state に stackId(ARN) が記録されていません。自動 UPDATE を拒否します。cfnsync import または state 移行を実行してください`,
+      `The state for stack '${target.stackName}' has no recorded stackId (ARN). Refusing automatic UPDATE. Run cfnsync import or a state migration`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
   const summary = await cfn.describeStack(target.stackName);
   if (!summary || summary.stackId !== stateEntry.stackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の stackId(ARN) が state と一致しません。同名スタックが差し替えられた可能性があるため自動 UPDATE を拒否します。cfnsync import を実行してください`,
+      `The stackId (ARN) of stack '${target.stackName}' does not match the state. A stack with the same name may have been replaced, so refusing automatic UPDATE. Run cfnsync import`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -2076,7 +2078,7 @@ async function requireExistingStackId(
   const summary = await cfn.describeStack(target.stackName);
   if (!summary?.stackId) {
     throw new StackStateError(
-      `スタック '${target.stackName}' の stackId(ARN) を確認できません。成功 state を保存せず cfnsync import を案内します`,
+      `Cannot confirm the stackId (ARN) of stack '${target.stackName}'. Not saving success state; recommending cfnsync import`,
       { stackKey: target.stackKey, region: target.region },
     );
   }
@@ -2106,7 +2108,7 @@ function requiredTemplate(
 ): string {
   const source = templates.get(path);
   if (source === undefined)
-    throw new ConfigError(`テンプレート内容が見つかりません: ${path}`, {
+    throw new ConfigError(`Template content not found: ${path}`, {
       stackKey: path,
     });
   return source;
@@ -2249,7 +2251,7 @@ function requiredResults(
       region: target?.region ?? parsed.region,
       stackName: target?.stackName ?? stackKey,
       outcome: 'failed',
-      errorMessage: `必須パラメータに __REQUIRED__ が残っています: ${names.join(', ')}`,
+      errorMessage: `Required parameters still contain __REQUIRED__: ${names.join(', ')}`,
       rolledBack: false,
     };
   });
@@ -2303,7 +2305,7 @@ function appendDeployFailure(
     region: result.report.connection.regions[0] ?? '(none)',
     stackName: '(deploy)',
     outcome: 'failed',
-    errorMessage: `ロック解放に失敗しました: ${publicErrorMessage(error)}`,
+    errorMessage: `Failed to release the lock: ${publicErrorMessage(error)}`,
     rolledBack: false,
   });
   result.report.result = { stacks };
@@ -2313,7 +2315,7 @@ function appendDeployFailure(
 
 function publicErrorMessage(
   error: unknown,
-  fallback = '予期しないエラーが発生しました',
+  fallback = 'An unexpected error occurred',
 ): string {
   return error instanceof CfnSyncError ? error.publicMessage : fallback;
 }

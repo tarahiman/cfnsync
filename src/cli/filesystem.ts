@@ -50,7 +50,7 @@ export function resolveTemplatePathWithinConfig(
         : resolve(ancestorReal, relative(ancestor, candidate));
     if (!isWithinDirectory(baseReal, resolvedTarget)) {
       throw new ConfigError(
-        `テンプレートパスが設定ディレクトリ外へ解決されます: ${templatePath}`,
+        `The template path resolves outside the config directory: ${templatePath}`,
         { stackKey: templatePath },
       );
     }
@@ -58,7 +58,7 @@ export function resolveTemplatePathWithinConfig(
   } catch (cause) {
     if (cause instanceof ConfigError) throw cause;
     throw new ConfigError(
-      `テンプレートパスの実パスを検証できません: ${templatePath}`,
+      `Cannot verify the real path of the template path: ${templatePath}`,
       { stackKey: templatePath, cause },
     );
   }
@@ -80,7 +80,7 @@ export function loadConfigFile(
   try {
     content = nodeFileSystem.readFile(absolute);
   } catch (cause) {
-    throw new ConfigError(`設定ファイルを読み込めません: ${configPath}`, {
+    throw new ConfigError(`Cannot read the config file: ${configPath}`, {
       cause,
     });
   }
@@ -97,13 +97,13 @@ export function loadConfigFile(
       if (!nodeFileSystem.exists(path)) {
         if (options.allowMissingTemplates) continue;
         throw new ConfigError(
-          `参照先のテンプレートファイルが存在しません: ${templatePath}`,
+          `The referenced template file does not exist: ${templatePath}`,
           { stackKey: templatePath },
         );
       }
       if (!nodeFileSystem.isFile(path)) {
         throw new ConfigError(
-          `参照先のテンプレートパスは通常ファイルではありません: ${templatePath}`,
+          `The referenced template path is not a regular file: ${templatePath}`,
           { stackKey: templatePath },
         );
       }

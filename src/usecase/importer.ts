@@ -239,12 +239,12 @@ export async function runImport(input: {
           ...result.report,
           warnings: [
             ...result.report.warnings,
-            `ロック解放に失敗しました: ${publicWarningMessage(error)}`,
+            `Failed to release the lock: ${publicWarningMessage(error)}`,
           ],
         },
         textDiagnostics: [
           ...(result.textDiagnostics ?? result.report.warnings),
-          `ロック解放に失敗しました: ${textDiagnosticMessage(error)}`,
+          `Failed to release the lock: ${textDiagnosticMessage(error)}`,
         ],
       }),
     });
@@ -255,11 +255,9 @@ export async function runImport(input: {
         report: emptyReport(
           header,
           'lock-unavailable',
-          `ステートロックを取得できませんでした: ${err.publicMessage}`,
+          `Could not acquire the state lock: ${err.publicMessage}`,
         ),
-        textDiagnostics: [
-          `ステートロックを取得できませんでした: ${err.message}`,
-        ],
+        textDiagnostics: [`Could not acquire the state lock: ${err.message}`],
       };
     }
     throw err;
@@ -349,7 +347,7 @@ async function runImportLocked(input: {
       const safePath = templatePaths.get(write.templatePath);
       if (safePath === undefined) {
         throw new InvariantError(
-          `テンプレートの検証済み実パスがありません: ${write.templatePath}`,
+          `No verified real path for template: ${write.templatePath}`,
           { stackKey: write.templatePath },
         );
       }
@@ -371,7 +369,7 @@ async function runImportLocked(input: {
         await deps.backend.save(prepareSave(nextState), stateCtx.version);
       } catch (cause) {
         throw new StatePersistenceError(
-          'import 結果のステート保存に失敗しました',
+          'Failed to save the state from the import result',
           { cause },
         );
       }
@@ -489,7 +487,7 @@ async function buildImportPlan(args: {
     }
     if (!summary.stackId) {
       throw new StackStateError(
-        `スタック '${target.stackName}' の stackId(ARN) を確認できないため import を拒否します`,
+        `Cannot confirm the stackId (ARN) of stack '${target.stackName}', so refusing the import`,
         { stackKey: target.stackKey, region: target.region },
       );
     }
@@ -525,10 +523,10 @@ async function buildImportPlan(args: {
         blocked = true;
         const regions = representation.regions.join(', ');
         const differences = [
-          !sameTemplate ? 'テンプレート' : undefined,
+          !sameTemplate ? 'template' : undefined,
           !sameCapabilities ? 'Capabilities' : undefined,
         ].filter((value): value is string => value !== undefined);
-        const message = `同一 templatePath '${target.templatePath}' の ${differences.join(' / ')} がリージョン間で一致せず、設定では表現できません: ${regions}`;
+        const message = `The ${differences.join(' / ')} for the same templatePath '${target.templatePath}' do not match across regions and cannot be represented in the configuration: ${regions}`;
         warnings.push(message);
         stacks.push({
           stackKey: target.stackKey,
@@ -561,7 +559,7 @@ async function buildImportPlan(args: {
     const templateAbsPath = templatePaths.get(target.templatePath);
     if (templateAbsPath === undefined) {
       throw new InvariantError(
-        `内部エラー: ${target.templatePath} の安全な実パスがありません`,
+        `Internal error: no safe real path for ${target.templatePath}`,
         { stackKey: target.stackKey, region: target.region },
       );
     }
@@ -591,7 +589,7 @@ async function buildImportPlan(args: {
           recorded: false,
           noEchoPlaceholders,
           message:
-            'ローカルにテンプレートファイルが存在しません。--write-template を指定して書き出してください',
+            'The local template file does not exist. Specify --write-template to write it out',
         });
         continue;
       }
@@ -639,7 +637,7 @@ async function buildImportPlan(args: {
           recorded: false,
           noEchoPlaceholders,
           message:
-            'デプロイ済みテンプレートとローカルに差分があります。--reconcile remote|local を指定してください',
+            'The deployed template differs from the local one. Specify --reconcile remote|local',
         });
         continue;
       }
@@ -842,11 +840,11 @@ function emptyReport(
 function publicWarningMessage(error: unknown): string {
   return error instanceof CfnSyncError
     ? error.publicMessage
-    : '予期しないエラーが発生しました';
+    : 'An unexpected error occurred';
 }
 
 function textDiagnosticMessage(error: unknown): string {
   return error instanceof CfnSyncError
     ? error.message
-    : '予期しないエラーが発生しました';
+    : 'An unexpected error occurred';
 }
