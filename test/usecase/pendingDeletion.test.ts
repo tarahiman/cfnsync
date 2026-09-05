@@ -864,4 +864,44 @@ describe('usecase/deploy — FR-6-9: 新スタックが作成されていなけ�
         .stackName,
     ).toBe('Old');
   });
+
+  it('FR-6-9a(P2・敵対的レビュー3回目): 同一物理スタックへの重複した削除待ちが先に収束していれば、対の削除は失敗ではなく成功として扱う', async () => {
+    // FR-6-9a の再指摘テストと同一の状況(stacks['a.yaml@REGION'] = Old, かつ同じ
+    // originStackKey / stackId の pendingDeletions['Old@REGION'] が存在)だが、今回は
+    // New の CREATE が成功する。計画には同一物理 Old への delete が 2 件入る:
+    // (1) 予約キー側の削除待ちアクション(requiresPairedCreate: false)、
+    // (2) リネーム対側アクション(requiresPairedCreate: true)。
+    // (1) が先に Old を削除して pendingDeletions からも除去すると、(2) が実行される
+    // 時点では pairedPendingDeletion が既に存在しない。しかし state.stacks の当該キーは
+    // 既に New(異なる stackId)へ置き換わっており、対の create は現に成功している。
+    // 物理的にはもう存在しない Old への重複した削除の後始末であり、失敗として
+    // 報告してはならない(収束済みの正常終了)。
+    const templates = new Map([['a.yaml', TEMPLATE]]);
+    const config = configOf({ 'a.yaml': { stackName: 'Old' } });
+    const newConfig = configOf({ 'a.yaml': { stackName: 'New' } });
+    const staleState = upsertPendingDeletion(
+      recordedState(config, templates),
+      PENDING_OLD,
+      makePending({ originStackKey: `a.yaml@${REGION}` }),
+    );
+    const s = setup(newConfig, templates, staleState);
+    existingStack(s.cfn, 'Old');
+    // New の CREATE は成功する(waitResults を上書きしない = 既定で成功)。
+
+    // フェイクの deleteStack は実 AWS と異なり stacks マップを自動更新しないため、
+    // 1 回目の削除完了(waitForStack)を境に物理的な消滅を模す。これにより 2 件目の
+    // 重複した削除アクションの DescribeStacks が正しく「不在」を観測できる。
+    s.cfn.onWaitForStack = (name) => {
+      if (name === 'Old') s.cfn.stacks.delete('Old');
+    };
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(0);
+    // 同一物理スタックへの DeleteStack は 1 回だけ(重複実行しない)。
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(1);
+    const stored = s.backend.stored?.state as CfnSyncState;
+    expect(stored.stacks[`a.yaml@${REGION}`].stackName).toBe('New');
+    expect(stored.pendingDeletions).toEqual({});
+  });
 });

@@ -1686,34 +1686,32 @@ async function deleteApprovedStack(
   const { operation, record, diff, cfn } = action;
 
   // FR-6-9: リネーム対の旧スタックは、対となる新スタックの作成成功が state へ
-  // 記録済み(= 削除待ちが存在する)場合にだけ削除する。create が失敗・中断した実行で
-  // 旧スタックだけを削除しないための fail-closed ガードである。
+  // 反映済みの場合にだけ削除する。create が失敗・中断した実行で旧スタックだけを
+  // 削除しないための fail-closed ガードである。
   //
-  // 敵対的レビュー指摘(1回目): 削除待ちの ID は (region, stackName) だけで決まるため、
-  // 無関係な過去のリネームが同じスタック名で残した削除待ちと衝突しうる。
-  // 「ID が存在する」だけでは「今回の対の create が成功した」ことの証明にならない。
-  // originStackKey が今回の対(operation.stackKey)と一致して初めて、自分自身の
-  // 対が記録した削除待ちだと判定できる(FR-6-9a)。
+  // 敵対的レビュー指摘(1・2回目、FR-6-9a): 削除待ちの ID は (region, stackName) だけで
+  // 決まり、originStackKey もテンプレートキーが同一である限り過去の実行と偶然一致
+  // しうるため、「削除待ちレコードが存在し origin が一致する」だけでは「今回(または
+  // 過去)の対の create が成功した」ことの証明にならない。証明となるのは
+  // state.stacks[operation.stackKey] が実際に「削除しようとしている旧スタックとは
+  // 異なる stackId」を保持していることだけである — リネーム対の added 側は常に
+  // 旧名側と同一のスタックキーを持つ(FR-1-14)ため、このキーの stackId が変わり
+  // うるのはこの対自身の create が成功した場合に限られる。
   //
-  // 敵対的レビュー指摘(2回目): 同じテンプレートキーが過去に同じ物理スタック名で
-  // リネームされ、その削除待ちが残ったまま config が旧名へ戻され import された場合、
-  // originStackKey は今回のリネームの対と偶然同じキーになる(テンプレートキー自体は
-  // 変わっていないため)。この場合は originStackKey の一致だけでは不十分であり、
-  // state.stacks[operation.stackKey] が実際に「別の(新しい)物理スタック」へ
-  // 置き換わっている(= 削除しようとしている旧スタックの stackId と異なる)ことまで
-  // 確認しなければならない。create が失敗・未実行なら当該キーは旧スタックの stackId の
-  // ままであり、この確認で fail-closed に拒否できる。
-  const pairedPendingDeletion =
-    action.pendingDeletionId === undefined
-      ? undefined
-      : ctx.state.state.pendingDeletions[action.pendingDeletionId];
+  // 敵対的レビュー指摘(3回目、P2): 同一物理スタックへの削除は、削除待ち自身の
+  // 削除アクション(requiresPairedCreate: false)とリネーム対側のアクションの
+  // 2 件が計画に入りうる(いずれも同じ物理スタックを指す)。前者が先に成功すると
+  // pendingDeletions からその記録が消えるため、削除待ちレコードの存在を必須条件に
+  // すると、後者は「記録がない」という理由だけで誤って失敗扱いになる — 実際には
+  // 対の create は成功しており、物理的な削除も既に完了した収束済みの状態である。
+  // そのため削除待ちレコードの存在・origin を条件にせず、上記の stackId 不一致
+  // だけを唯一の判定にする。この場合、後続の DeleteStack は対象が既に存在しない
+  // ため通常の「不在からの再同期」(FR-5-5b2)として成功扱いで収束する。
   const currentEntryAtPairKey =
     ctx.state.state.stacks[action.operation.stackKey];
   if (
     action.requiresPairedCreate &&
-    (pairedPendingDeletion === undefined ||
-      pairedPendingDeletion.originStackKey !== action.operation.stackKey ||
-      currentEntryAtPairKey === undefined ||
+    (currentEntryAtPairKey === undefined ||
       currentEntryAtPairKey.stackId === record.stackId)
   ) {
     const message =
