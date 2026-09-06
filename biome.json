@@ -33,13 +33,30 @@
     "rules": {
       "recommended": true,
       "complexity": {
-        "useLiteralKeys": "off"
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": {
+            "maxAllowedComplexity": 64
+          }
+        },
+        "noExcessiveLinesPerFunction": {
+          "level": "error",
+          "options": {
+            "maxLines": 365
+          }
+        }
       },
       "correctness": {
         "noPrivateImports": "error",
         "noUndeclaredDependencies": "error"
       },
       "nursery": {
+        "noExcessiveLinesPerFile": {
+          "level": "error",
+          "options": {
+            "maxLines": 2233
+          }
+        },
         "noFloatingPromises": "error",
         "noImportCycles": "error",
         "noMultiAssign": "error",
@@ -52,22 +69,56 @@
         "noReExportAll": "error"
       },
       "style": {
-        "noNonNullAssertion": "off",
         "noParameterAssign": "error",
         "useDefaultSwitchClause": "error",
         "useExplicitLengthCheck": "error",
         "useFilenamingConvention": "error",
-        "useTemplate": "off",
         "useThrowOnlyError": "error"
       },
       "suspicious": {
         "noConsole": "error",
-        "noEvolvingTypes": "error",
-        "noTemplateCurlyInString": "off"
+        "noEvolvingTypes": "error"
       }
     }
   },
   "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": {
+                "maxAllowedComplexity": 15
+              }
+            },
+            "noExcessiveLinesPerFunction": {
+              "level": "error",
+              "options": {
+                "maxLines": 1575
+              }
+            },
+            "useLiteralKeys": "off"
+          },
+          "nursery": {
+            "noExcessiveLinesPerFile": {
+              "level": "error",
+              "options": {
+                "maxLines": 2863
+              }
+            }
+          },
+          "style": {
+            "noNonNullAssertion": "off",
+            "useTemplate": "off"
+          },
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    },
     {
       "includes": ["scripts/**"],
       "linter": {
