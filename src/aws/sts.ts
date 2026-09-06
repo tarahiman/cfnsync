@@ -6,18 +6,16 @@
  * 解決失敗(認証エラー等)はそのまま呼び出し元に伝播させる(§7 の記述どおり、
  * fail-closed 判定は usecase/guard(T-12)側の責務)。
  *
- * プロファイル・リージョンの扱いは `src/aws/cloudformation.ts` の流儀に合わせる:
- * `profile` 指定時のみ `@aws-sdk/credential-provider-node` の `defaultProvider`
- * を既定クレデンシャルチェーンに適用し、未指定時は SDK 標準チェーン(環境変数 →
- * プロファイル → IAM ロール)に委ねる(FR-7-1, FR-7-2)。`region` は CLI 境界が
+ * 共通の `awsClientConfig` が profile・リージョン・SDK retry を設定する。
+ * `region` は CLI 境界が
  * `--region` または設定の `defaultRegion` から解決した値を常に明示的に渡す
  * (FR-7-9a/FR-7-9b/FR-7-9d)。型としては任意で、未指定のまま生成した場合だけ SDK の
  * 標準解決に委ねる。
  */
 
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import type { StsGateway } from '../ports/index.js';
+import { awsClientConfig } from './clientConfig.js';
 import { toAwsError } from './errors.js';
 
 /** `StsGatewayImpl` のコンストラクタオプション。 */
@@ -32,14 +30,7 @@ export class StsGatewayImpl implements StsGateway {
   readonly client: STSClient;
 
   constructor(options: StsGatewayOptions = {}) {
-    this.client = new STSClient({
-      region: options.region,
-      // FR-7-1: profile 指定時のみ、既定クレデンシャルチェーンに profile を適用する。
-      // 未指定時は SDK 標準チェーン(環境変数 → プロファイル → IAM ロール)に委ねる(FR-7-2)。
-      ...(options.profile !== undefined
-        ? { credentials: defaultProvider({ profile: options.profile }) }
-        : {}),
-    });
+    this.client = new STSClient(awsClientConfig(options));
   }
 
   /** FR-7-6: 接続先アカウントを解決し、SDK 例外は AwsError へ分類する。 */

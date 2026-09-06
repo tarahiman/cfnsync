@@ -122,10 +122,6 @@ function notExistError(stackName: string): Error {
   });
 }
 
-function throttlingError(name: string): Error {
-  return Object.assign(new Error(name), { name });
-}
-
 // ---------------------------------------------------------------------------
 // NFR-2: ports の 3 インターフェースに実装が適合する(型テスト + 実装テスト)
 // ---------------------------------------------------------------------------
@@ -138,7 +134,6 @@ describe('NFR-2: ports インターフェース適合', () => {
       'describeStack',
       'listChangeSets',
       'createChangeSet',
-      'describeChangeSet',
       'waitForChangeSet',
       'deleteChangeSet',
       'executeChangeSet',
@@ -274,59 +269,6 @@ describe('FR-2(基盤): 変更セット SDK 呼び出しのパラメータマッ
     // 空パラメータ・空タグは空配列で渡る(あるいは省略)。実値マッピングのみ検証。
     expect(input.Parameters ?? []).toEqual([]);
     expect(input.Tags ?? []).toEqual([]);
-  });
-
-  it('FR-2: describeChangeSet は StackName/ChangeSetName を渡し、Changes を正規化しつつ全ページ結合する', async () => {
-    cfnMock
-      .on(DescribeChangeSetCommand)
-      .resolvesOnce({
-        ChangeSetName: 'cs',
-        ChangeSetId: 'arn:cs/1',
-        Status: 'CREATE_COMPLETE',
-        ExecutionStatus: 'AVAILABLE',
-        Changes: [makeChange('A')],
-        Parameters: [{ ParameterKey: 'K', ParameterValue: 'V' }],
-        Tags: [{ Key: 'T', Value: 'v' }],
-        Capabilities: ['CAPABILITY_IAM'],
-        NextToken: 'page2',
-      })
-      .resolvesOnce({ Status: 'CREATE_COMPLETE', Changes: [makeChange('B')] });
-
-    const gateway = makeGateway();
-    const detail = await gateway.describeChangeSet('stk', 'cs');
-
-    expect(detail.status).toBe('CREATE_COMPLETE');
-    expect(detail.executionStatus).toBe('AVAILABLE');
-    expect(detail.changes.map((c) => c.logicalResourceId)).toEqual(['A', 'B']);
-    expect(detail.changes[0]).toMatchObject({
-      action: 'Modify',
-      logicalResourceId: 'A',
-      resourceType: 'AWS::EC2::VPC',
-      replacement: 'True',
-      scope: ['Properties'],
-    });
-    expect(detail.changes[0].details[0].target?.name).toBe('CidrBlock');
-    expect(detail.changes[0].details[0].target).toMatchObject({
-      path: '/Properties/CidrBlock',
-      beforeValue: '10.0.0.0/16',
-      afterValue: '10.1.0.0/16',
-      beforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
-      afterValueFrom: 'TEMPLATE',
-      attributeChangeType: 'Modify',
-    });
-    expect(detail.parameters).toEqual({ K: 'V' });
-    expect(detail.tags).toEqual({ T: 'v' });
-    expect(detail.capabilities).toEqual(['CAPABILITY_IAM']);
-
-    const calls = cfnMock.commandCalls(DescribeChangeSetCommand);
-    expect(calls).toHaveLength(2);
-    expect(calls[0].args[0].input).toMatchObject({
-      StackName: 'stk',
-      ChangeSetName: 'cs',
-      IncludePropertyValues: true,
-    });
-    expect(calls[1].args[0].input.IncludePropertyValues).toBe(true);
-    expect(calls[1].args[0].input.NextToken).toBe('page2');
   });
 
   it('FR-2: deleteChangeSet / executeChangeSet が StackName/ChangeSetName を渡す', async () => {
@@ -629,8 +571,14 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
         NextToken: 'pending-page-2',
       })
       .resolvesOnce({
+        ChangeSetName: 'cs',
+        ChangeSetId: 'arn:cs/1',
         Status: 'CREATE_COMPLETE',
+        ExecutionStatus: 'AVAILABLE',
         Changes: [makeChange('A')],
+        Parameters: [{ ParameterKey: 'K', ParameterValue: 'V' }],
+        Tags: [{ Key: 'T', Value: 'v' }],
+        Capabilities: ['CAPABILITY_IAM'],
         NextToken: 'terminal-page-2',
       })
       .resolvesOnce({ Changes: [makeChange('B')] });
@@ -640,12 +588,35 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
       'A',
       'B',
     ]);
+    expect(detail.executionStatus).toBe('AVAILABLE');
+    expect(detail.changes[0]).toMatchObject({
+      action: 'Modify',
+      logicalResourceId: 'A',
+      resourceType: 'AWS::EC2::VPC',
+      replacement: 'True',
+      scope: ['Properties'],
+    });
+    expect(detail.changes[0].details[0].target).toMatchObject({
+      name: 'CidrBlock',
+      path: '/Properties/CidrBlock',
+      beforeValue: '10.0.0.0/16',
+      afterValue: '10.1.0.0/16',
+      beforeValueFrom: 'PREVIOUS_DEPLOYMENT_STATE',
+      afterValueFrom: 'TEMPLATE',
+      attributeChangeType: 'Modify',
+    });
+    expect(detail.parameters).toEqual({ K: 'V' });
+    expect(detail.tags).toEqual({ T: 'v' });
+    expect(detail.capabilities).toEqual(['CAPABILITY_IAM']);
     const calls = cfnMock.commandCalls(DescribeChangeSetCommand);
     expect(calls.map((call) => call.args[0].input.NextToken)).toEqual([
       undefined,
       undefined,
       'terminal-page-2',
     ]);
+    expect(
+      calls.every((call) => call.args[0].input.IncludePropertyValues),
+    ).toBe(true);
   });
 
   it('NFR-5: waitForStack はイベントを5秒ごと、スタック状態を5→10→15秒の上限付きバックオフで確認する', async () => {
@@ -737,7 +708,7 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// NFR-3(リトライ): クライアント adaptive 構成 + Throttling 再試行
+// NFR-3(リトライ): クライアント adaptive 構成 + ゲートウェイのエラー分類
 // ---------------------------------------------------------------------------
 
 describe('NFR-3(リトライ): スロットリング対応', () => {
@@ -750,70 +721,6 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
     const ma = gateway.client.config.maxAttempts;
     const resolvedMa = typeof ma === 'function' ? await ma() : ma;
     expect(resolvedMa).toBe(10);
-  });
-
-  it.each([
-    'ThrottlingException',
-    'Throttling',
-    'TooManyRequestsException',
-  ])('NFR-3: %s 応答後にリトライして成功する', async (name) => {
-    const sleep = vi.fn(async () => {});
-    cfnMock
-      .on(GetTemplateCommand)
-      .rejectsOnce(throttlingError(name))
-      .resolves({ TemplateBody: 'ok' });
-
-    const gateway = makeGateway({ sleep, maxRetries: 1 });
-    expect(await gateway.getTemplate('stk', 'Original')).toBe('ok');
-    // 初回 + リトライ = 2 回 send。
-    expect(cfnMock.commandCalls(GetTemplateCommand)).toHaveLength(2);
-    expect(sleep).toHaveBeenCalledTimes(1);
-  });
-
-  it('NFR-3: テスト用外側 retry は明示指定時だけ full jitter を使う', async () => {
-    const sleep = vi.fn(async () => {});
-    cfnMock
-      .on(ExecuteChangeSetCommand)
-      .rejects(throttlingError('ThrottlingException'));
-
-    const gateway = makeGateway({
-      sleep,
-      random: () => 0.5,
-      maxRetries: 2,
-    });
-    await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
-      /ThrottlingException/,
-    );
-    // 初回 + 2 リトライ = 3 回 send、sleep は 2 回。
-    expect(cfnMock.commandCalls(ExecuteChangeSetCommand)).toHaveLength(3);
-    expect(sleep).toHaveBeenCalledTimes(2);
-    expect(sleep.mock.calls).toEqual([[50], [100]]);
-  });
-
-  it('NFR-3: 総経過時間上限に達した後は sleep も次の attempt も行わない', async () => {
-    let elapsed = 0;
-    const sleep = vi.fn(async (ms: number) => {
-      elapsed += ms;
-    });
-    const retryNow = vi.fn(() => elapsed);
-    cfnMock
-      .on(ExecuteChangeSetCommand)
-      .rejects(throttlingError('ThrottlingException'));
-
-    const gateway = makeGateway({
-      sleep,
-      retryNow,
-      baseDelayMs: 100_000,
-      random: () => 1,
-      maxRetryElapsedMs: 60_000,
-      maxRetries: 2,
-    });
-    await expect(gateway.executeChangeSet('stk', 'cs')).rejects.toThrow(
-      /ThrottlingException/,
-    );
-    expect(cfnMock.commandCalls(ExecuteChangeSetCommand)).toHaveLength(1);
-    expect(sleep).toHaveBeenCalledOnce();
-    expect(sleep).toHaveBeenCalledWith(60_000);
   });
 
   it('NFR-3: スロットリング以外のエラーはリトライせず即伝播する', async () => {
