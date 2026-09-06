@@ -973,7 +973,7 @@ describe('T-19 cli', () => {
     expect(plain).toContain('Warning: 1 resource replacement(s)');
   });
 
-  it('FR-3-7b: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない', async () => {
+  it('FR-3-7b / FR-5-6f: 承認要約は --output json でも stderr へ出し stdout の単一 JSON を汚さない', async () => {
     const runDeploy = async (argv: string[]) => {
       const deps = dependencies({
         deploy: vi.fn(

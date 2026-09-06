@@ -92,12 +92,46 @@ export function extractExemptIds(tasksText) {
 }
 
 /**
- * `ids` not found as a substring anywhere in `testCorpus` (the concatenated
- * text of every `test/**\/*.ts` file) and not present in `exemptIds`.
+ * Strips full-line `//` and `/*` comments from source text so that an ID
+ * mentioned only in a comment (documentation of intent, not proof of
+ * coverage) does not count as a test occurrence. Only whole comment lines
+ * are removed (not trailing inline comments after code) to avoid mangling
+ * string literals that happen to contain `//` (e.g. a URL fixture).
+ */
+function stripFullLineComments(text) {
+  return text
+    .split('\n')
+    .map((line) => (/^\s*(?:\/\/|\/\*)/.test(line) ? '' : line))
+    .join('\n');
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Whether `id` occurs in `corpus` as its own token, not merely as a
+ * substring of a longer sibling ID (`FR-5-1` inside `FR-5-10a`) or of a
+ * same-numbered `NFR-*` counterpart (`FR-7-1` inside `NFR-7-1`).
+ */
+function containsIdToken(corpus, id) {
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9])${escapeRegExp(id)}(?![A-Za-z0-9])`,
+  );
+  return pattern.test(corpus);
+}
+
+/**
+ * `ids` not found as their own token in `testCorpus` (the concatenated,
+ * comment-stripped text of every `test/**\/*.ts` file) and not present in
+ * `exemptIds`. Comments are excluded so that an ID merely annotated in a
+ * `// FR-x-y: ...` note — without actually appearing in a test/assertion —
+ * is not mistaken for real coverage.
  */
 export function findIdsMissingTestCoverage(ids, testCorpus, exemptIds) {
   const exempt = new Set(exemptIds);
-  return ids.filter((id) => !exempt.has(id) && !testCorpus.includes(id));
+  const corpus = stripFullLineComments(testCorpus);
+  return ids.filter((id) => !exempt.has(id) && !containsIdToken(corpus, id));
 }
 
 function collectFiles(dir, isMatch) {

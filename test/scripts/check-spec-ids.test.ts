@@ -80,29 +80,82 @@ Prose mentioning FR-1-1 outside of the table must be ignored.
   });
 });
 
+// These fixtures deliberately use IDs shaped like `FR-99-*`/`NFR-99` that do
+// not exist in requirements.md (FR only goes up to FR-13, NFR to NFR-7).
+// This file is itself under test/**/*.ts, so a fixture using a *real* ID
+// would leak into check-spec-ids.mjs's own production corpus scan and could
+// silently satisfy that real ID's coverage requirement -- exactly the kind
+// of vacuous-check risk this script exists to catch. Real IDs are used only
+// in the dedicated NFR-7-1/2/3 describe block below, where that is the
+// intended, load-bearing behavior.
 describe('findIdsMissingTestCoverage', () => {
   it('reports an ID that is neither in the test corpus nor exempted', () => {
     const missing = findIdsMissingTestCoverage(
-      ['FR-1-1', 'FR-1-2'],
-      "it('FR-1-1: covered by a test name', () => {})",
+      ['FR-99-1', 'FR-99-2'],
+      "it('FR-99-1: covered by a test name', () => {})",
       [],
     );
-    expect(missing).toEqual(['FR-1-2']);
+    expect(missing).toEqual(['FR-99-2']);
   });
 
   it('does not report an ID that is exempted even with zero test occurrences', () => {
     const missing = findIdsMissingTestCoverage(
-      ['FR-7-4'],
+      ['FR-99-4'],
       'no relevant substring here',
-      ['FR-7-4'],
+      ['FR-99-4'],
     );
     expect(missing).toEqual([]);
   });
 
-  it('does not report an ID found as a plain substring anywhere in the corpus', () => {
+  it('reports an ID whose only occurrence is inside a full-line comment (annotation, not coverage)', () => {
     const missing = findIdsMissingTestCoverage(
-      ['NFR-4'],
-      '// referenced only in a comment: NFR-4 masking',
+      ['NFR-99'],
+      '  // referenced only in a comment: NFR-99 masking\n  expect(true).toBe(true);',
+      [],
+    );
+    expect(missing).toEqual(['NFR-99']);
+  });
+
+  it('does not report an ID found as a substring of non-comment code (e.g. a test name)', () => {
+    const missing = findIdsMissingTestCoverage(
+      ['NFR-99'],
+      "it('NFR-99: masks NoEcho values', () => {})",
+      [],
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('does not report an ID whose only in-code occurrence is a `/* ... */`-commented block', () => {
+    const missing = findIdsMissingTestCoverage(
+      ['NFR-99'],
+      '/* NFR-99 covered elsewhere, not here */\nexpect(true).toBe(true);',
+      [],
+    );
+    expect(missing).toEqual(['NFR-99']);
+  });
+
+  it('does not report a short ID that is only a prefix of a longer sibling ID (e.g. FR-99-1 inside FR-99-10a)', () => {
+    const missing = findIdsMissingTestCoverage(
+      ['FR-99-1'],
+      "it('FR-99-10a: an unrelated criterion', () => {})",
+      [],
+    );
+    expect(missing).toEqual(['FR-99-1']);
+  });
+
+  it('does not mistake an NFR ID for containing its FR counterpart (NFR-99-1 vs FR-99-1)', () => {
+    const missing = findIdsMissingTestCoverage(
+      ['FR-99-1'],
+      "it('NFR-99-1: an unrelated criterion', () => {})",
+      [],
+    );
+    expect(missing).toEqual(['FR-99-1']);
+  });
+
+  it('still reports coverage when the ID is immediately followed by non-alphanumeric text (e.g. a colon or Japanese text)', () => {
+    const missing = findIdsMissingTestCoverage(
+      ['FR-99-6f', 'NFR-99'],
+      "it('FR-99-6fの回帰: 標準出力を汚さない', () => { /* NFR-99: masking */ expect(actualBehavior()).toBe(true); })",
       [],
     );
     expect(missing).toEqual([]);
