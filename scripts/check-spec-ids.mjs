@@ -1,7 +1,18 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// @ts-check
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+import { runAsScript } from './lib/cli.mjs';
+import { filesUnder } from './lib/fs.mjs';
+import { extractMarkdownHeadings } from './lib/markdown.mjs';
+import { reportFailures } from './lib/report.mjs';
+
+/**
+ * @typedef {{ kind: string, requirement: number, criterion: number, suffix: string }} CriterionId
+ */
+
+/** @param {string[]} failures @param {string} label @param {number[]} values */
 function checkContiguousSequence(failures, label, values) {
   if (values.length === 0) {
     failures.push(`${label} are missing`);
@@ -18,10 +29,18 @@ function checkContiguousSequence(failures, label, values) {
   }
 }
 
+/**
+ * @param {string[]} failures
+ * @param {string} requirements
+ * @param {string} kind
+ * @param {number} expectedLast
+ */
 function checkTopLevelSequence(failures, requirements, kind, expectedLast) {
-  const ids = [
-    ...requirements.matchAll(new RegExp(`^### ${kind}-(\\d+):`, 'gm')),
-  ].map((match) => Number(match[1]));
+  const ids = extractMarkdownHeadings(requirements)
+    .filter((heading) => heading.level === 3)
+    .map((heading) => new RegExp(`^${kind}-(\\d+):`).exec(heading.text))
+    .filter((match) => match !== null)
+    .map((match) => Number(match[1]));
   const expected = Array.from(
     { length: expectedLast },
     (_, index) => index + 1,
@@ -33,6 +52,7 @@ function checkTopLevelSequence(failures, requirements, kind, expectedLast) {
   }
 }
 
+/** @param {string} id @returns {CriterionId | undefined} */
 export function parseCriterionId(id) {
   const match = /^(FR|NFR)-(\d+)-(\d+)([a-z]\d*)?$/.exec(id);
   if (match === null) return undefined;
@@ -45,6 +65,7 @@ export function parseCriterionId(id) {
 }
 
 const collator = new Intl.Collator('en', { numeric: true });
+/** @param {CriterionId} left @param {CriterionId} right */
 function compareCriterionIds(left, right) {
   const kind = left.kind.localeCompare(right.kind);
   if (kind !== 0) return kind;
@@ -69,6 +90,8 @@ const ID_TOKEN_PATTERN = /(?:FR|NFR)-\d+(?:-\d+[a-z]?\d*)?/g;
  * `test/**\/*.ts` occurrence of their ID (structural requirements, guaranteed
  * by code review, or by a separate structural check script). This reads that
  * table dynamically so the exception list is never hardcoded in this script.
+ * @param {string} tasksText
+ * @returns {string[]}
  */
 export function extractExemptIds(tasksText) {
   const headingMatch = /^## \d+\.\s.*テスト対象外.*$/m.exec(tasksText);
@@ -97,6 +120,7 @@ export function extractExemptIds(tasksText) {
  * coverage) does not count as a test occurrence. Only whole comment lines
  * are removed (not trailing inline comments after code) to avoid mangling
  * string literals that happen to contain `//` (e.g. a URL fixture).
+ * @param {string} text
  */
 function stripFullLineComments(text) {
   return text
@@ -105,6 +129,7 @@ function stripFullLineComments(text) {
     .join('\n');
 }
 
+/** @param {string} text */
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -113,6 +138,8 @@ function escapeRegExp(text) {
  * Whether `id` occurs in `corpus` as its own token, not merely as a
  * substring of a longer sibling ID (`FR-5-1` inside `FR-5-10a`) or of a
  * same-numbered `NFR-*` counterpart (`FR-7-1` inside `NFR-7-1`).
+ * @param {string} corpus
+ * @param {string} id
  */
 function containsIdToken(corpus, id) {
   const pattern = new RegExp(
@@ -127,19 +154,15 @@ function containsIdToken(corpus, id) {
  * `exemptIds`. Comments are excluded so that an ID merely annotated in a
  * `// FR-x-y: ...` note — without actually appearing in a test/assertion —
  * is not mistaken for real coverage.
+ * @param {string[]} ids
+ * @param {string} testCorpus
+ * @param {string[]} exemptIds
+ * @returns {string[]}
  */
 export function findIdsMissingTestCoverage(ids, testCorpus, exemptIds) {
   const exempt = new Set(exemptIds);
   const corpus = stripFullLineComments(testCorpus);
   return ids.filter((id) => !exempt.has(id) && !containsIdToken(corpus, id));
-}
-
-function collectFiles(dir, isMatch) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return collectFiles(path, isMatch);
-    return isMatch(entry.name) ? [path] : [];
-  });
 }
 
 export function main() {
@@ -155,6 +178,7 @@ export function main() {
     resolve(process.cwd(), 'docs/spec/tasks.md'),
     'utf8',
   );
+  /** @type {string[]} */
   const failures = [];
 
   checkTopLevelSequence(failures, requirements, 'FR', 13);
@@ -162,24 +186,31 @@ export function main() {
   checkContiguousSequence(
     failures,
     'requirements sections',
-    [...requirements.matchAll(/^## (\d+)\./gm)].map((match) =>
-      Number(match[1]),
-    ),
+    extractMarkdownHeadings(requirements)
+      .filter((heading) => heading.level === 2)
+      .map((heading) => /^(\d+)\./.exec(heading.text))
+      .filter((match) => match !== null)
+      .map((match) => Number(match[1])),
   );
   checkContiguousSequence(
     failures,
     'design sections',
-    [...design.matchAll(/^## (\d+)\./gm)].map((match) => Number(match[1])),
+    extractMarkdownHeadings(design)
+      .filter((heading) => heading.level === 2)
+      .map((heading) => /^(\d+)\./.exec(heading.text))
+      .filter((match) => match !== null)
+      .map((match) => Number(match[1])),
   );
 
+  const designHeadings = extractMarkdownHeadings(design);
   for (const level of [3, 4]) {
+    /** @type {Map<string, number[]>} */
     const groups = new Map();
-    const hashes = '#'.repeat(level);
-    const pattern =
-      level === 3
-        ? new RegExp(`^${hashes} (\\d+)\\.(\\d+) `, 'gm')
-        : new RegExp(`^${hashes} (\\d+\\.\\d+)\\.(\\d+) `, 'gm');
-    for (const match of design.matchAll(pattern)) {
+    const pattern = level === 3 ? /^(\d+)\.(\d+) / : /^(\d+\.\d+)\.(\d+) /;
+    for (const heading of designHeadings) {
+      if (heading.level !== level) continue;
+      const match = pattern.exec(heading.text);
+      if (match === null) continue;
       const values = groups.get(match[1]) ?? [];
       values.push(Number(match[2]));
       groups.set(match[1], values);
@@ -193,14 +224,23 @@ export function main() {
     }
   }
 
+  /** @type {{ id: string, line: number, parsed: CriterionId }[]} */
   const definitions = [];
-  const requirementHeadings = [
-    ...requirements.matchAll(/^### (FR|NFR)-(\d+):/gm),
-  ].map((match) => ({
-    index: match.index,
-    kind: match[1],
-    requirement: Number(match[2]),
-  }));
+  const requirementHeadings = extractMarkdownHeadings(requirements).flatMap(
+    (heading) => {
+      if (heading.level !== 3) return [];
+      const match = /^(FR|NFR)-(\d+):/.exec(heading.text);
+      return match === null
+        ? []
+        : [
+            {
+              index: heading.index,
+              kind: match[1],
+              requirement: Number(match[2]),
+            },
+          ];
+    },
+  );
   for (const match of requirements.matchAll(/^- \*\*([^:*]+):\*\*/gm)) {
     const label = match[1].trim();
     if (!label.startsWith('FR-') && !label.startsWith('NFR-')) continue;
@@ -231,6 +271,7 @@ export function main() {
     definitions.push({ id: label, line, parsed });
   }
 
+  /** @type {Map<string, number>} */
   const seen = new Map();
   for (const definition of definitions) {
     const previous = seen.get(definition.id);
@@ -253,8 +294,8 @@ export function main() {
     }
   }
 
-  const testFiles = collectFiles(resolve(process.cwd(), 'test'), (name) =>
-    name.endsWith('.ts'),
+  const testFiles = filesUnder(resolve(process.cwd(), 'test'), (path) =>
+    path.endsWith('.ts'),
   );
   const testCorpus = testFiles
     .map((path) => readFileSync(path, 'utf8'))
@@ -271,20 +312,14 @@ export function main() {
     );
   }
 
-  if (failures.length > 0) {
-    console.error('Invalid normative document structure:');
-    for (const failure of failures) console.error(`- ${failure}`);
-    process.exitCode = 1;
-  } else {
-    const exemptedCount = definitions.filter((definition) =>
-      exemptIds.includes(definition.id),
-    ).length;
-    console.log(
-      `Checked normative section numbering, FR-1..FR-13, NFR-1..NFR-7, and ${definitions.length} explicit acceptance IDs: each is referenced in test/**/*.ts or listed in tasks.md's "テスト対象外" table (${exemptedCount} exempted).`,
-    );
-  }
+  const exemptedCount = definitions.filter((definition) =>
+    exemptIds.includes(definition.id),
+  ).length;
+  reportFailures(
+    'Invalid normative document structure:',
+    failures,
+    `Checked normative section numbering, FR-1..FR-13, NFR-1..NFR-7, and ${definitions.length} explicit acceptance IDs: each is referenced in test/**/*.ts or listed in tasks.md's "テスト対象外" table (${exemptedCount} exempted).`,
+  );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
-}
+runAsScript(import.meta.url, main);

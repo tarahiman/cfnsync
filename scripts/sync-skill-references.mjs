@@ -1,6 +1,9 @@
+// @ts-check
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+
+import { runAsScript, VerificationError } from './lib/cli.mjs';
 
 const projectRoot = resolve(import.meta.dirname, '..');
 // The canonical config reference ends with links that only exist in this
@@ -20,6 +23,10 @@ export const SKILL_REFERENCE_FILES = [
   },
 ];
 
+/**
+ * @param {string} root
+ * @param {{ source: string, target: string, transform?: string }} reference
+ */
 export function renderSkillReference(root, reference) {
   const source = readFileSync(join(root, reference.source));
   if (reference.transform === undefined) {
@@ -48,6 +55,7 @@ export function renderSkillReference(root, reference) {
   throw new Error(`Unknown skill reference transform: ${reference.transform}`);
 }
 
+/** @param {string} [root] */
 export function findOutOfSyncSkillReferences(root = projectRoot) {
   return SKILL_REFERENCE_FILES.filter((reference) => {
     const targetPath = join(root, reference.target);
@@ -59,6 +67,7 @@ export function findOutOfSyncSkillReferences(root = projectRoot) {
   });
 }
 
+/** @param {string} [root] */
 export function syncSkillReferences(root = projectRoot) {
   for (const reference of SKILL_REFERENCE_FILES) {
     const targetPath = join(root, reference.target);
@@ -67,6 +76,7 @@ export function syncSkillReferences(root = projectRoot) {
   }
 }
 
+/** @param {string} [root] */
 export function checkSkillReferences(root = projectRoot) {
   const outOfSync = findOutOfSyncSkillReferences(root);
   if (outOfSync.length === 0) {
@@ -76,12 +86,13 @@ export function checkSkillReferences(root = projectRoot) {
   const targets = outOfSync
     .map(({ target }) => relative(root, join(root, target)))
     .join('\n');
-  throw new Error(
+  throw new VerificationError(
     `Skill references are out of sync:\n${targets}\nRun "pnpm run sync:skill-references" and commit the result.`,
   );
 }
 
-function main(args = process.argv.slice(2)) {
+/** @param {string[]} [args] */
+export function main(args = process.argv.slice(2)) {
   if (args.length === 0) {
     syncSkillReferences();
     process.stdout.write('Skill references synchronized.\n');
@@ -96,11 +107,4 @@ function main(args = process.argv.slice(2)) {
   throw new Error('usage: node scripts/sync-skill-references.mjs [--check]');
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  try {
-    main();
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
+runAsScript(import.meta.url, main);

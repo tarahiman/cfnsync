@@ -1,17 +1,14 @@
+// @ts-check
+
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 
-const root = process.cwd();
-function collectMarkdownFiles(directory) {
-  const files = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...collectMarkdownFiles(path));
-    else if (entry.isFile() && entry.name.endsWith('.md')) files.push(path);
-  }
-  return files;
-}
+import { runAsScript } from './lib/cli.mjs';
+import { filesUnder } from './lib/fs.mjs';
+import { extractMarkdownHeadings } from './lib/markdown.mjs';
+import { reportFailures } from './lib/report.mjs';
 
+/** @param {string} value */
 function githubSlug(value) {
   return value
     .replace(/<[^>]*>/g, '')
@@ -24,12 +21,13 @@ function githubSlug(value) {
     .replace(/\s+/g, '-');
 }
 
+/** @param {string} path */
 function anchorsFor(path) {
   const anchors = new Set();
   const counts = new Map();
   const markdown = readFileSync(path, 'utf8');
-  for (const match of markdown.matchAll(/^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm)) {
-    const base = githubSlug(match[1]);
+  for (const heading of extractMarkdownHeadings(markdown)) {
+    const base = githubSlug(heading.text);
     const count = counts.get(base) ?? 0;
     counts.set(base, count + 1);
     anchors.add(count === 0 ? base : `${base}-${count}`);
@@ -37,54 +35,57 @@ function anchorsFor(path) {
   return anchors;
 }
 
-const failures = [];
-const markdownFiles = [
-  ...readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-    .map((entry) => resolve(root, entry.name)),
-  ...collectMarkdownFiles(resolve(root, 'docs')),
-  ...collectMarkdownFiles(resolve(root, 'skills')),
-];
-const anchorsByPath = new Map();
-const linkPattern = /!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+['"][^)]*['"])?\)/g;
+export function main() {
+  const root = process.cwd();
+  const failures = [];
+  const markdownFiles = [
+    ...readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+      .map((entry) => resolve(root, entry.name)),
+    ...filesUnder(resolve(root, 'docs'), (path) => path.endsWith('.md')),
+    ...filesUnder(resolve(root, 'skills'), (path) => path.endsWith('.md')),
+  ];
+  /** @type {Map<string, Set<string>>} */
+  const anchorsByPath = new Map();
+  const linkPattern = /!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+['"][^)]*['"])?\)/g;
 
-for (const source of markdownFiles) {
-  const markdown = readFileSync(source, 'utf8');
-  for (const match of markdown.matchAll(linkPattern)) {
-    const rawTarget = match[1].replace(/^<|>$/g, '');
-    if (/^(?:[a-z][a-z+.-]*:|\/\/)/i.test(rawTarget)) continue;
+  for (const source of markdownFiles) {
+    const markdown = readFileSync(source, 'utf8');
+    for (const match of markdown.matchAll(linkPattern)) {
+      const rawTarget = match[1].replace(/^<|>$/g, '');
+      if (/^(?:[a-z][a-z+.-]*:|\/\/)/i.test(rawTarget)) continue;
 
-    const [rawPath, rawFragment] = rawTarget.split('#', 2);
-    const target =
-      rawPath === ''
-        ? source
-        : resolve(dirname(source), decodeURIComponent(rawPath));
-    const display = `${relative(root, source)} -> ${rawTarget}`;
+      const [rawPath, rawFragment] = rawTarget.split('#', 2);
+      const target =
+        rawPath === ''
+          ? source
+          : resolve(dirname(source), decodeURIComponent(rawPath));
+      const display = `${relative(root, source)} -> ${rawTarget}`;
 
-    if (!existsSync(target)) {
-      failures.push(`${display}: target does not exist`);
-      continue;
+      if (!existsSync(target)) {
+        failures.push(`${display}: target does not exist`);
+        continue;
+      }
+      if (statSync(target).isDirectory()) continue;
+      if (rawFragment === undefined || rawFragment === '') continue;
+
+      let anchors = anchorsByPath.get(target);
+      if (anchors === undefined) {
+        anchors = anchorsFor(target);
+        anchorsByPath.set(target, anchors);
+      }
+      const fragment = decodeURIComponent(rawFragment).toLowerCase();
+      if (!anchors.has(fragment)) {
+        failures.push(`${display}: heading anchor not found`);
+      }
     }
-    if (statSync(target).isDirectory()) continue;
-    if (rawFragment === undefined || rawFragment === '') continue;
-
-    let anchors = anchorsByPath.get(target);
-    if (anchors === undefined) {
-      anchors = anchorsFor(target);
-      anchorsByPath.set(target, anchors);
-    }
-    const fragment = decodeURIComponent(rawFragment).toLowerCase();
-    if (!anchors.has(fragment))
-      failures.push(`${display}: heading anchor not found`);
   }
-}
 
-if (failures.length > 0) {
-  console.error('Broken local Markdown links:');
-  for (const failure of failures) console.error(`- ${failure}`);
-  process.exitCode = 1;
-} else {
-  console.log(
+  reportFailures(
+    'Broken local Markdown links:',
+    failures,
     `Checked ${markdownFiles.length} Markdown files: local links are valid.`,
   );
 }
+
+runAsScript(import.meta.url, main);

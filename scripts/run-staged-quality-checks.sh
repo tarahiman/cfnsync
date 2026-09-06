@@ -2,16 +2,22 @@
 
 set -eu
 
-repository_root=$(git rev-parse --show-toplevel)
+if ! repository_root=$(git rev-parse --show-toplevel); then
+  echo 'Unable to locate the repository root.' >&2
+  exit 2
+fi
 dependencies_path="${repository_root}/node_modules"
 
 if [ ! -d "$dependencies_path" ]; then
   echo 'node_modules is required to check the staged snapshot.' >&2
   echo 'Run "pnpm install --frozen-lockfile" and retry the commit.' >&2
-  exit 1
+  exit 2
 fi
 
-snapshot_directory=$(mktemp -d "${TMPDIR:-/tmp}/cfnsync-staged.XXXXXX")
+if ! snapshot_directory=$(mktemp -d "${TMPDIR:-/tmp}/cfnsync-staged.XXXXXX"); then
+  echo 'Unable to create the staged snapshot directory.' >&2
+  exit 2
+fi
 
 cleanup() {
   rm -rf "$snapshot_directory"
@@ -20,8 +26,14 @@ trap cleanup EXIT HUP INT TERM
 
 # checkout-index materializes exactly what Git would commit. In particular, it
 # neither reads nor modifies unstaged files in the contributor's working tree.
-git checkout-index --all --prefix="${snapshot_directory}/"
-ln -s "$dependencies_path" "${snapshot_directory}/node_modules"
+if ! git checkout-index --all --prefix="${snapshot_directory}/"; then
+  echo 'Unable to materialize the staged snapshot.' >&2
+  exit 2
+fi
+if ! ln -s "$dependencies_path" "${snapshot_directory}/node_modules"; then
+  echo 'Unable to attach dependencies to the staged snapshot.' >&2
+  exit 2
+fi
 
 (
   cd "$snapshot_directory"
@@ -35,4 +47,4 @@ ln -s "$dependencies_path" "${snapshot_directory}/node_modules"
   # Single gate definition: the hook runs exactly what CI runs, so any step
   # added to "quality:check" is picked up here without touching this script.
   npm run quality:check
-)
+) || exit 1

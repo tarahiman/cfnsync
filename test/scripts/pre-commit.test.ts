@@ -33,12 +33,14 @@ function createHookRepository() {
   const scriptsDirectory = join(repository, 'scripts');
   const hooksDirectory = join(repository, '.githooks');
   const fakeBinDirectory = join(repository, 'fake-bin');
+  const scriptsLibDirectory = join(scriptsDirectory, 'lib');
   const localToolsDirectory = join(repository, '.tools', 'bin');
   const hookLog = join(repository, 'hook.log');
 
   mkdirSync(join(repository, 'src'), { recursive: true });
   mkdirSync(join(repository, 'node_modules'));
   mkdirSync(scriptsDirectory);
+  mkdirSync(scriptsLibDirectory);
   mkdirSync(hooksDirectory);
   mkdirSync(fakeBinDirectory);
   mkdirSync(localToolsDirectory, { recursive: true });
@@ -50,6 +52,10 @@ function createHookRepository() {
   cpSync(
     join(projectRoot, 'scripts', 'has-code-changes.mjs'),
     join(scriptsDirectory, 'has-code-changes.mjs'),
+  );
+  cpSync(
+    join(projectRoot, 'scripts', 'lib', 'cli.mjs'),
+    join(scriptsLibDirectory, 'cli.mjs'),
   );
   cpSync(
     join(projectRoot, 'scripts', 'run-staged-quality-checks.sh'),
