@@ -10,8 +10,8 @@
 |---|---|---|---|
 | FR-1 変更検知・ステート | §4.3〜§4.5, §7 | `core/detect`, `core/state`, `backend/local`, `aws/s3state`, `usecase/deploy` | `test/core/detect.test.ts`, `test/core/state.test.ts`, `test/backend/local.test.ts`, `test/aws/s3state.test.ts`, `test/usecase/recovery.test.ts`, `test/usecase/concurrency.test.ts` |
 | FR-1-16〜FR-1-23 削除待ち(pending deletion) | §4.3, §4.4, §5.3, §7, §8.3 | `core/state`(`pendingDeletions`), `core/detect`, `usecase/deploy`, `usecase/delete`, `usecase/status` | `test/core/state.test.ts` (`FR-1-16`, `FR-1-17`), `test/core/detect.test.ts` (`FR-1-21`, `FR-1-22`), `test/usecase/pendingDeletion.test.ts` (`FR-1-18`〜`FR-1-20`), `test/usecase/status-graph.test.ts` (`FR-1-23`) |
-| FR-2 変更セット作成 | §7, §8.4 | `usecase/executor`, `aws/cloudformation` | `test/usecase/executor.test.ts`, `test/aws/cloudformation.test.ts`, `test/usecase/concurrency.test.ts` |
-| FR-3 差分表示 | §5.2, §9 | `report`, `usecase/deploy` | `test/report/report.test.ts`, `test/usecase/approval.test.ts`, `test/cli/cli.test.ts` |
+| FR-2 変更セット作成 | §7, §8.4 | `usecase/executor`, `aws/cloudformation`(`waitForChangeSet`) | `test/usecase/executor.test.ts`, `test/aws/cloudformation.test.ts`(終端待機・全ページ結合), `test/usecase/concurrency.test.ts` |
+| FR-3 差分表示 | §5.2, §7, §9 | `report`, `usecase/deploy`, `aws/cloudformation`(`waitForChangeSet`) | `test/aws/cloudformation.test.ts`(`IncludePropertyValues=true`・全ページ結合), `test/report/report.test.ts`, `test/usecase/approval.test.ts`, `test/cli/cli.test.ts` |
 | FR-4 デプロイ実行 | §5.3, §7, §9 | `usecase/deploy`, `usecase/executor`, `report` | `test/usecase/deploy.test.ts`, `test/usecase/executor.test.ts`, `test/report/report.test.ts` |
 | FR-5 一括実行・承認 | §5.3〜§5.3.4 | `usecase/deploy`, `ports`, `report`, `cli` | `test/usecase/approval.test.ts`, `test/usecase/deploy.test.ts`, `test/cli/cli.test.ts` |
 | FR-5-19 承認処理失敗 | §5.3, §5.3.3 | `usecase/deploy` | `test/usecase/approval.test.ts` (`FR-5-19a`〜`FR-5-19i`) |
@@ -30,7 +30,7 @@
 | FR-13 マルチリージョン | §4.1, §4.2, §5, §6 | `core/config`, `core/detect`, `core/graph`, `core/plan`, `usecase/deploy` | `test/core/config.test.ts`, `test/core/detect.test.ts`, `test/core/graph.test.ts`, `test/core/plan.test.ts`, `test/usecase/deploy.test.ts` |
 | NFR-1 CI/CD | §3, §9, §11 | `cli`, `report` | `test/cli/cli.test.ts`, `test/report/report.test.ts`, README / GitHub Actions 例 |
 | NFR-2 テスト容易性 | §3, §10 | `core`, `ports`, adapters | AWS 非接続の全 Vitest suite、ports の型境界(`pnpm run typecheck:test` が `test/` も型検査する) |
-| NFR-3 信頼性・冪等性 | §4.3〜§4.5, §7, §9 | state backends, `usecase/deploy`, `usecase/executor` | `test/usecase/recovery.test.ts`, `test/usecase/concurrency.test.ts`, backend / AWS adapter tests |
+| NFR-3 信頼性・冪等性 | §4.3〜§4.5, §7, §9 | state backends, `usecase/deploy`, `usecase/executor`, `aws/clientConfig` | `test/usecase/recovery.test.ts`, `test/usecase/concurrency.test.ts`, backend tests, `test/aws/cloudformation.test.ts` / `test/aws/s3state.test.ts` / `test/aws/sts.test.ts`(共通 SDK adaptive retry 構成) |
 | NFR-4 セキュリティ | §8.1, §8.2, §9 | `usecase/redactor`, `report`, `usecase/guard` | `test/usecase/redactor.test.ts`, `test/report/report.test.ts`, `test/usecase/guard.test.ts`, `test/cli/cli.test.ts` |
 | NFR-5 パフォーマンス | §7, §9, §10 | `aws/cloudformation`, local-only status / graph path | `test/aws/cloudformation.test.ts`, `test/usecase/status-graph.test.ts`, CI での suite 実行時間観測 |
 | NFR-6 保守性 | §3, §10 | ports & adapters の依存境界 | ディレクトリ構造・依存レビュー、`pnpm run build`、`pnpm run lint`(`biome.json` の `overrides` が `noRestrictedImports` で層ごとの禁止 import を機械検査する) |

@@ -8,7 +8,7 @@ import type {
   StateBackend,
 } from '../ports/index.js';
 
-export interface FencedLockScope {
+interface FencedLockScope {
   lock: LockHandle;
   /** save の直前に所有権を検証する decorator 済み backend。 */
   backend: StateBackend;
@@ -29,10 +29,7 @@ export async function assertFenced(
  * `save` の直前にロック所有権を再検証する StateBackend decorator。
  * 読み取り・ロック管理操作は元 backend へそのまま委譲する。
  */
-export function fencedBackend(
-  backend: StateBackend,
-  lock: LockHandle,
-): StateBackend {
+function fencedBackend(backend: StateBackend, lock: LockHandle): StateBackend {
   return {
     load: () => backend.load(),
     acquireLock: (info) => backend.acquireLock(info),
@@ -57,8 +54,6 @@ export function fencedGateway(
   return {
     describeStack: (stackName) => gateway.describeStack(stackName),
     listChangeSets: (stackName) => gateway.listChangeSets(stackName),
-    describeChangeSet: (stackName, changeSetName) =>
-      gateway.describeChangeSet(stackName, changeSetName),
     waitForChangeSet: (stackName, changeSetName) =>
       gateway.waitForChangeSet(stackName, changeSetName),
     describeStackEvents: (stackName, seen, after) =>

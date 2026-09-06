@@ -109,7 +109,7 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
   /** stackName → listChangeSets が返す未実行変更セット。テストが直接構成する。 */
   readonly changeSets = new Map<string, ChangeSetSummary[]>();
 
-  /** 変更セット名 → waitForChangeSet / describeChangeSet が返す詳細(未登録は default)。 */
+  /** 変更セット名 → waitForChangeSet が返す詳細(未登録は default)。 */
   readonly changeSetDetails = new Map<string, ChangeSetDetail>();
 
   /** 個別登録のない変更セットに対する既定の詳細。 */
@@ -232,14 +232,6 @@ export class FakeCloudFormationGateway implements CloudFormationGateway {
       this.stacks.set(input.stackName, shell);
     }
     return { id, stackId: shell.stackId };
-  }
-
-  async describeChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<ChangeSetDetail> {
-    this.record('describeChangeSet', stackName, changeSetName);
-    return this.detailFor(changeSetName);
   }
 
   async waitForChangeSet(

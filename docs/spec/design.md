@@ -62,7 +62,7 @@ graph TD
 | `usecase/executor` | 変更セットのライフサイクル管理・イベントストリーム・待機 | FR-2, FR-4, FR-6 |
 | `usecase/importer` | 既存スタックのインポート | FR-10 |
 | `ports` | `CloudFormationGateway` / `StsGateway` / `StateBackend` インターフェース定義 | NFR-2, FR-1 |
-| `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド | NFR-3, FR-1 |
+| `aws` | SDK v3 によるゲートウェイ実装(リトライ・スロットリング対応)と `s3` ステートバックエンド。`aws/` の SDK クライアントは `awsClientConfig` 経由で生成する | NFR-3, FR-1 |
 | `backend` | `StateBackend` の `local` 実装(原子的ファイル置換・`.bak` 保持) | FR-1 |
 | `report` | 人間可読テキスト / コマンド固有 JSON 出力、NoEcho マスク、進捗通知契約(ProgressEvent。FR-5-4)、承認要求・要約の型と整形(ApprovalRequest / `renderApprovalSummary`。FR-5-6a〜g)。成功時および usecase が result を生成した失敗時の既存 JSON schema を維持する | FR-3, FR-5, NFR-4 |
 | `cli` | Commander 定義、終了コード、stdout/stderr 境界、TTY プロンプトの `approve` 実装の注入。result 生成前の例外を §9 の共通エラー JSON へ変換し、有効な `--output json` では単一 JSON document を stdout へ出す | FR-12, NFR-1 |
@@ -524,7 +524,7 @@ import result を生成できた場合は exit 0 / 1 とも既存 report JSON �
 - **作成 ARN の固定と実行直前の再検査**: `CreateChangeSet` が返した ARN を保持し、待機・`DescribeChangeSet`・削除・実行を ARN で行う。`ExecuteChangeSet` の直前に対象スタックの未実行変更セット一覧を再取得し、自変更セットの名前と ARN がともに作成時の値へ完全一致すること、および他の変更セットが存在しないことを検証する。欠落・差し替え・他主体の存在はいずれも実行せず fail-closed に停止する(FR-2)。ARN 記録のない自形式残骸は、自 stateId が一致する場合に限り削除回収してよいが、実行対象にはしない。再検査から実行までの競合窓は原理的に排除できない(CloudFormation に条件付き実行が存在しない)ため、§4.5 の多層防御と同様に残余リスクとして仕様に明記し、cfnsync 管理対象スタックに手動・他ツールの変更セットを作成しない運用規約を README に記載する(§11)。
 - **空変更セット**: `DescribeChangeSet` の Status が `FAILED`、StatusReason を trim した値が AWS の既知の定型文(`The submitted information didn't contain changes. Submit different information to create a change set.` / `No updates are to be performed.`)のいずれかに完全一致、かつ全ページ結合済み `changes.length === 0` のすべてを満たす場合だけ、エラーではなく変更なしとして扱い、変更セットを削除する(FR-2)。既知文面への suffix、Macro / Transform 等の別理由、changes 非空のケースは必ず失敗とする。
 - **プロパティ値差分**: `DescribeChangeSet` の全ページで `IncludePropertyValues=true` を指定し、CloudFormation が返す `ResourceChange.Details[].Target` の `Path` / `BeforeValue` / `AfterValue` / 値の由来 / `AttributeChangeType` と、リソースの `BeforeContext` / `AfterContext` を正規化して report へ渡す。cfnsync 自身は前後値を再計算・補完しない(FR-3)。
-- **待機ポーリング**: 変更セット作成中は `DescribeChangeSet` の先頭ページだけで Status を確認し、終端到達時にのみ NextToken を辿って Changes を全ページ結合する。スタック実行中はイベントを 5 秒間隔で取得し、`DescribeStacks` は 5→10→15 秒(上限)でバックオフする(NFR-5)。
+- **待機ポーリング**: `CloudFormationGateway` は変更セットの取得を `waitForChangeSet` に一本化する。変更セット作成中は `DescribeChangeSet` の先頭ページだけで Status を確認し、終端到達時にのみ NextToken を辿って Changes を全ページ結合する。スタック実行中はイベントを 5 秒間隔で取得し、`DescribeStacks` は 5→10→15 秒(上限)でバックオフする(NFR-5)。
 - **ロールバック報告**: `rolledBack` は当該 `ExecuteChangeSet` より後、操作開始前 cursor を境界として `onEvent` から観測した構造化 `resourceStatus`、または `waitForStack` の最終 `StackSummary.status` だけから判定する。明示 allowlist は `ROLLBACK_COMPLETE` / `ROLLBACK_FAILED` / `UPDATE_ROLLBACK_COMPLETE` / `UPDATE_ROLLBACK_FAILED` / `IMPORT_ROLLBACK_COMPLETE` / `IMPORT_ROLLBACK_FAILED` と、対応する `*_ROLLBACK_IN_PROGRESS` event である。実行前の guard・CREATE 復旧・設定・fencing 拒否、および rollback status を観測しない失敗は `false` とし、`ResourceStatusReason` / `StatusReason` / 例外メッセージ等の文字列や未知 status の部分一致は判定入力にしない。待機中に例外が発生しても、それ以前に rollback event を観測済みなら構造化された失敗情報にその事実を保持する(FR-4)。
 - **スタック状態ガード**(作成前に `DescribeStacks` で確認):
   - `*_IN_PROGRESS` → 並行操作ありとしてエラー(FR-2)
@@ -663,7 +663,7 @@ export interface DeployReport {
 - `deploy` の承認要約(FR-5-6a〜e)とプロンプトは常に stderr へ出す(FR-5-6f)。有効な JSON 選択の有無で要約の出力先を変えず、stdout の単一 JSON document 契約(FR-12-6a / FR-12-6b)を維持する。
 - 非 TTY かつ `--auto-approve` なしの `deploy` は、CLI 境界で `CliUsageError` として §9 の共通エラー schema を stdout(JSON 選択時)へ 1 個出力し exit 1 とする(FR-12-3b)。usecase へ到達しないため deploy report は生成されない。
 
-- AWS API のスロットリングは SDK v3 の adaptive retry mode + 指数バックオフで吸収(NFR-3)。
+- AWS API のスロットリングは、全 SDK クライアントで共通の `awsClientConfig` が設定する SDK v3 の adaptive retry mode + 指数バックオフ(既定 `maxAttempts: 10`)だけで吸収する。ゲートウェイ層に外側の再試行ループは持たない(NFR-3)。
 - デプロイ失敗時は失敗リソースの `ResourceStatusReason` をスタックイベントから抽出して表示し、ロールバックの発生と結果を報告する(FR-4)。
 
 ## 10. テスト戦略(TDD)
@@ -676,6 +676,7 @@ export interface DeployReport {
   - `state`: 「保存ペイロード生成で世代がインクリメントされる」「読込時世代からの変更を StateConflictError と判定する」「破損ステートの読込 → fail-closed 判定」(ロック・原子的置換・ETag などバックエンド固有の経路は `aws/`・`backend/` で、fencing 中断シナリオは `usecase/` でテストする)
 - **障害注入シナリオ**: AWS 操作成功直後・ステート保存前の中断を CREATE / UPDATE / DELETE それぞれで注入し、再実行が自動収束すること(FR-1、§7 の復旧分岐)を検証する。CREATE 復旧では「タグのみ異なる同名管理外スタック」「Capabilities のみ異なる同名管理外スタック」「NoEcho 実値のみ異なる(=管理タグを持たない)同名管理外スタック」を含め、一致条件を満たさないスタックが再同期されずインポート案内付きで停止することも検証する。また `REVIEW_IN_PROGRESS` スタックに対して `DeleteStack` が一切呼ばれないこと(自変更セットの個別削除のみが行われること)、他主体の変更セットが存在する場合・所有権確認直後に並行追加された場合のいずれも、実行直前の再検査(§7)により `ExecuteChangeSet` が呼ばれず他主体の変更セットが暗黙削除されないことも検証する。
 - **ports 実装(aws/・backend/)**: `aws-sdk-client-mock` で SDK レスポンスをスタブし、変更セットの状態遷移(空変更セット判定・所有権判定つき残存回収・IN_PROGRESS ガード)を検証する。S3 バックエンドの条件付き書き込み・ロック競合(`PreconditionFailed`)・`If-Match` 条件付きロック解除(所有者交代時は削除しない)も同様に検証する。`backend/` の local バックエンドは、原子的置換(保存途中の中断で元ファイルが無傷・`.bak` 保持)と保存直前の世代比較 CAS をテンポラリディレクトリで検証する。
+- 本番の composition root から到達不能な注入オプションを新設しない。障害注入が必要な場合は port の fake を用いる。
 - **usecase/**: ゲートウェイをインメモリのフェイクに差し替えたシナリオテスト(「plan → deploy → 再実行で変更なし」の冪等性、途中失敗 → 再実行の継続性、完了待機中に force-unlock された場合のステート保存直前 fencing 中断、fencing 検証と副作用の間で所有権交代が起きた競合窓シナリオでも CAS 失敗と `*_IN_PROGRESS` ガードにより正本が分岐しないこと)。
 - **承認フロー(§5.3)**: `approve` に fake を注入し、呼び出し順序の記録によって次を検証する — 承認が実行全体で高々 1 回であること、`approve` 呼び出し時点で全対象の `CreateChangeSet` が完了し `ExecuteChangeSet` / `DeleteStack` が 1 度も呼ばれていないこと、拒否時および reject / throw 時に事前作成した変更セットが**すべて** ARN 指定で `DeleteChangeSet` されること、reject / throw 時は全未実行対象を `skipped`、承認処理を `failed` として exit 1 になること、承認失敗およびクリーンアップ失敗の診断から NoEcho 実効値と内部 cause が除去されること、分類不能な承認例外の生メッセージが固定文言へ置換されること、`approve` 呼び出し中もロックが保持されていること、Phase A 失敗時に `--on-failure continue` でも `approve` が呼ばれず変更セットが後始末されること、リソース差分 0 件で成功した変更セットが実行対象に含まれること(§5.3.1)、`REVIEW_IN_PROGRESS` の殻へ `DeleteStack` が呼ばれないこと。
   **`StateBackend.save` の呼び出し回数は「0 回」で固定しない** — FR-5-5b1〜b3 の再同期と初回 `accountId` binding は Phase A でも許容されるためである。検証するのは「**実行成功記録の save が 0 回**であること」と、発生した save について**種別・順序・fencing 検証の先行・CAS の使用**が正しいことである。fencing 喪失時・CAS 競合時に保存されないことも別に検証する。
