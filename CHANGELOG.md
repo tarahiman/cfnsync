@@ -183,6 +183,7 @@ cfnsync が組み立てる進捗・エラー・警告・承認プロンプト・
 - 承認を拒否した場合、または計画段階で失敗した場合は、作成済みの Change Set をすべて削除します。ただし新規スタックに対する CREATE 型 Change Set の作成で生じた `REVIEW_IN_PROGRESS` のスタックの殻は AWS 上に残ります（安全不変条件により殻へ `DeleteStack` は呼びません）。殻は次回実行時に回収され、その上に CREATE 型 Change Set を再作成して収束します。既定が承認フローになったことで、この殻の発生頻度は上がります。
 
 - 開発者向けの品質ゲートを強化しました（**利用者に見える振る舞いの変更はありません**）。`pnpm run lint` は Biome の警告でも失敗し、`biome.json` の `overrides` が層ごとの禁止 import（`src/core/` の AWS SDK 依存など）を機械検査します。新設の `pnpm run typecheck:test`（`tsconfig.test.json`）が `test/` も型検査し、`pnpm run quality:check` に組み込まれました。pre-commit フックは個別のステップを列挙せず `quality:check` を呼ぶため、CI と同じ内容を実行します。
+- `scripts/check-spec-ids.mjs`（`pnpm run check:docs` の一部）が、`requirements.md` の明示 ID(現在 135 件)がそれぞれ `test/**/*.ts` のどこかに出現するか、`docs/spec/tasks.md` の「テスト対象外」表で除外されているかを機械検査するようになりました（**利用者に見える振る舞いの変更はありません**）。除外リストはスクリプトへハードコードせず `tasks.md` から動的に読み込むため、新しい ID を要件へ追加してテストを書き忘れると `check:docs` が落ちます。
 
 ### 修正
 

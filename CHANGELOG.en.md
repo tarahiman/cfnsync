@@ -183,6 +183,7 @@ All human-readable text cfnsync assembles (progress, errors, warnings, the appro
 - When approval is rejected, or the planning stage fails, every change set created so far is deleted. The `REVIEW_IN_PROGRESS` stack shell produced by creating a CREATE-type change set for a new stack does remain in AWS (the safety invariants forbid calling `DeleteStack` on a shell). The shell is reclaimed on the next run, which recreates a CREATE-type change set on top of it and converges. Now that the approval flow is the default, these shells occur more often.
 
 - The developer-facing quality gate is stricter (**no user-visible behavior changes**). `pnpm run lint` now fails on Biome warnings, and the `overrides` in `biome.json` mechanically enforce the per-layer import restrictions (for example, an AWS SDK import inside `src/core/`). A new `pnpm run typecheck:test` (`tsconfig.test.json`) type-checks `test/` as well and is part of `pnpm run quality:check`. The pre-commit hook now invokes `quality:check` instead of enumerating individual steps, so it runs exactly what CI runs.
+- `scripts/check-spec-ids.mjs` (part of `pnpm run check:docs`) now mechanically checks that every explicit ID in `requirements.md` (currently 135) either appears somewhere in `test/**/*.ts` or is listed in `docs/spec/tasks.md`'s "testing-exempt" table (**no user-visible behavior changes**). The exemption list is read dynamically from `tasks.md` rather than hardcoded in the script, so adding a new requirement ID without a matching test now fails `check:docs`.
 
 ### Fixed
 
