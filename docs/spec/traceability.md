@@ -9,7 +9,7 @@
 | 要件 | 主な設計箇所 | 主な実装 | 主な受入テスト・証跡 |
 |---|---|---|---|
 | FR-1 変更検知・ステート | §4.3〜§4.5, §7 | `core/detect`, `core/state`, `backend/local`, `aws/s3state`, `usecase/deploy` | `test/core/detect.test.ts`, `test/core/state.test.ts`, `test/backend/local.test.ts`, `test/aws/s3state.test.ts`, `test/usecase/recovery.test.ts`, `test/usecase/concurrency.test.ts` |
-| FR-1-16〜FR-1-23 削除待ち(pending deletion) | §4.3, §4.4, §5.3, §7, §8.3 | `core/state`(`pendingDeletions`), `core/detect`, `usecase/deploy`, `usecase/delete`, `usecase/status` | `test/core/state.test.ts` (`FR-1-16`, `FR-1-17`), `test/core/detect.test.ts` (`FR-1-21`, `FR-1-22`), `test/usecase/pendingDeletion.test.ts` (`FR-1-18`〜`FR-1-20`), `test/usecase/status-graph.test.ts` (`FR-1-23`) |
+| FR-1-16〜FR-1-23 削除待ち(pending deletion) | §4.3, §4.4, §5.3, §7, §8.3 | `core/state`(`pendingDeletions`), `core/detect`, `usecase/deploy`, `usecase/delete`, `usecase/status` | `test/core/state.test.ts` (`FR-1-16`, `FR-1-17`), `test/core/detect.test.ts` (`FR-1-21`, `FR-1-22`), `test/usecase/pendingDeletion.test.ts` (`FR-1-18`〜`FR-1-20`, `FR-5-16`: 削除待ちがスキップされた場合の `result.stacks[].stackName` が予約キーへフォールバックしないことの回帰、Issue #29), `test/usecase/status-graph.test.ts` (`FR-1-23`) |
 | FR-2 変更セット作成 | §7, §8.4 | `usecase/executor`, `aws/cloudformation` | `test/usecase/executor.test.ts`, `test/aws/cloudformation.test.ts`, `test/usecase/concurrency.test.ts` |
 | FR-3 差分表示 | §5.2, §9 | `report`, `usecase/deploy` | `test/report/report.test.ts`, `test/usecase/approval.test.ts`, `test/cli/cli.test.ts` |
 | FR-4 デプロイ実行 | §5.3, §7, §9 | `usecase/deploy`, `usecase/executor`, `report` | `test/usecase/deploy.test.ts`, `test/usecase/executor.test.ts`, `test/report/report.test.ts` |

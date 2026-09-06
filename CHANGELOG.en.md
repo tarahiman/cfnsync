@@ -184,6 +184,10 @@ All human-readable text cfnsync assembles (progress, errors, warnings, the appro
 
 - The developer-facing quality gate is stricter (**no user-visible behavior changes**). `pnpm run lint` now fails on Biome warnings, and the `overrides` in `biome.json` mechanically enforce the per-layer import restrictions (for example, an AWS SDK import inside `src/core/`). A new `pnpm run typecheck:test` (`tsconfig.test.json`) type-checks `test/` as well and is part of `pnpm run quality:check`. The pre-commit hook now invokes `quality:check` instead of enumerating individual steps, so it runs exactly what CI runs.
 
+### Fixed
+
+- Fixed a bug where, on a skip path for a pending-deletion stack (skip due to a dependency failure, a planning-stage failure, a skip after approval processing failed, etc.), `deploy` reported the internal reserved key (`cfnsync:pending/<stack name>@<region>`) in `result.stacks[].stackName` instead of the real stack name. The `status` command already resolved this correctly with a 3-level fallback (`target` → `stateEntry` → `pendingDeletion`); `deploy`'s `resultForOperation` now uses the same fallback (Issue #29). The JSON output's field set and ordering are unchanged — only the value of an existing field is corrected.
+
 ### Known properties
 
 - **Properties that reference an Export created by this very run do not have a final value at approval time.** `Fn::ImportValue` is not resolved when the change set is created; it is held as `{{changeSet:KNOWN_AFTER_APPLY}}` (references to an Export that already exists do resolve to the real value at creation time). cfnsync presents that pending marker as-is and never resolves or fills it in itself. This is the same property as terraform's "known after apply".

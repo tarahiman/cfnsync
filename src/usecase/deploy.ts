@@ -1595,12 +1595,10 @@ async function planDeletion(
       kind: 'deleted-absent',
       stateUpdated,
     });
-    resultByOperation.set(operation, {
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: record.stackName,
-      outcome: 'succeeded',
-    });
+    resultByOperation.set(
+      operation,
+      resultForOperation(operation, 'succeeded'),
+    );
     emitProgress(
       ctx.deps,
       operation.stackKey,
@@ -1629,12 +1627,7 @@ async function planDeletion(
         message,
       );
     }
-    resultByOperation.set(operation, {
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: record.stackName,
-      outcome: 'skipped',
-    });
+    resultByOperation.set(operation, resultForOperation(operation, 'skipped'));
     return { hasDiff: true };
   }
 
@@ -1720,14 +1713,10 @@ async function deleteApprovedStack(
       `the state has no record of the paired new stack's create succeeding. ` +
       `Refusing DeleteStack to avoid deleting only the old stack`;
     diff.warnings.push(message);
-    resultByOperation.set(operation, {
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: record.stackName,
-      outcome: 'failed',
-      errorMessage: message,
-      rolledBack: false,
-    });
+    const failure = resultForOperation(operation, 'failed');
+    failure.errorMessage = message;
+    failure.rolledBack = false;
+    resultByOperation.set(operation, failure);
     emitProgress(
       ctx.deps,
       operation.stackKey,
@@ -1769,15 +1758,11 @@ async function deleteApprovedStack(
     diff.warnings.push(
       deleted.errorMessage ?? 'Deletion refused by a safety guard',
     );
-    resultByOperation.set(operation, {
-      stackKey: operation.stackKey,
-      region: operation.region,
-      stackName: record.stackName,
-      outcome: 'failed',
-      errorMessage:
-        deleted.errorMessage ?? 'Deletion refused by a safety guard',
-      rolledBack: false,
-    });
+    const failure = resultForOperation(operation, 'failed');
+    failure.errorMessage =
+      deleted.errorMessage ?? 'Deletion refused by a safety guard';
+    failure.rolledBack = false;
+    resultByOperation.set(operation, failure);
     emitProgress(
       ctx.deps,
       operation.stackKey,
@@ -1790,12 +1775,7 @@ async function deleteApprovedStack(
 
   ctx.state.state = deleted.state;
   ctx.state.version = deleted.version;
-  resultByOperation.set(operation, {
-    stackKey: operation.stackKey,
-    region: operation.region,
-    stackName: record.stackName,
-    outcome: 'succeeded',
-  });
+  resultByOperation.set(operation, resultForOperation(operation, 'succeeded'));
   emitProgress(
     ctx.deps,
     operation.stackKey,
@@ -2221,7 +2201,11 @@ function resultForOperation(
   return {
     stackKey: operation.stackKey,
     region: operation.region,
-    stackName: target?.stackName ?? stateEntry?.stackName ?? operation.stackKey,
+    stackName:
+      target?.stackName ??
+      stateEntry?.stackName ??
+      operation.entry.pendingDeletion?.entry.stackName ??
+      operation.stackKey,
     outcome,
   };
 }
