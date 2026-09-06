@@ -314,7 +314,8 @@ describe('FR-10-1: DescribeStacks の結果を cfnsync.yaml へ書き戻す(コ�
   });
 
   it('FR-10-1: AWS 側で削除済みの parameters・tags・capabilities は設定から除去する', async () => {
-    const s = setup(`version: 1
+    const s = setup({
+      configText: `version: 1
 defaultRegion: ap-northeast-1
 stacks:
   network.yaml:
@@ -329,7 +330,8 @@ stacks:
       ap-northeast-1:
         parameters:
           RemovedOverride: stale
-`);
+`,
+    });
     deployNetwork(s, NETWORK_TEMPLATE, {
       parameters: { VpcCidr: '10.0.0.0/16' },
       tags: { [MANAGEMENT_TAG_KEY]: 'aabbccddeeff' },

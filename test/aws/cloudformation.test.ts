@@ -6,6 +6,8 @@
  */
 
 import {
+  type Change,
+  type ChangeSetSummary,
   CloudFormationClient,
   CreateChangeSetCommand,
   DeleteChangeSetCommand,
@@ -16,6 +18,8 @@ import {
   ExecuteChangeSetCommand,
   GetTemplateCommand,
   ListChangeSetsCommand,
+  type Stack,
+  type StackEvent,
 } from '@aws-sdk/client-cloudformation';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +53,15 @@ function makeGateway(
   });
 }
 
-function makeChange(logicalId: string) {
+/**
+ * AWS SDK のレスポンス型は本テストが使わない必須プロパティ(StackId 等)を持つ。
+ * ここでは実装が参照するフィールドだけを与える部分モックであることを明示する。
+ */
+function partial<T>(value: Partial<T>): T {
+  return value as T;
+}
+
+function makeChange(logicalId: string): Change {
   return {
     Type: 'Resource',
     ResourceChange: {
@@ -80,7 +92,7 @@ function makeChange(logicalId: string) {
   };
 }
 
-function makeSummary(name: string) {
+function makeSummary(name: string): ChangeSetSummary {
   return {
     ChangeSetId: `arn:aws:cloudformation:changeSet/${name}`,
     ChangeSetName: name,
@@ -91,14 +103,17 @@ function makeSummary(name: string) {
   };
 }
 
-function makeEvent(eventId: string, timestamp = '2026-07-19T00:00:00Z') {
-  return {
+function makeEvent(
+  eventId: string,
+  timestamp = '2026-07-19T00:00:00Z',
+): StackEvent {
+  return partial<StackEvent>({
     EventId: eventId,
     Timestamp: new Date(timestamp),
     LogicalResourceId: 'Vpc',
     ResourceType: 'AWS::EC2::VPC',
     ResourceStatus: 'CREATE_COMPLETE',
-  };
+  });
 }
 
 function notExistError(stackName: string): Error {
@@ -441,7 +456,11 @@ describe('§7: スタック状態取得', () => {
   it('§7: describeStack は削除保護未指定を false に正規化する', async () => {
     cfnMock.on(DescribeStacksCommand).resolves({
       Stacks: [
-        { StackName: 'stk', StackId: 'id', StackStatus: 'CREATE_COMPLETE' },
+        partial<Stack>({
+          StackName: 'stk',
+          StackId: 'id',
+          StackStatus: 'CREATE_COMPLETE',
+        }),
       ],
     });
     const gateway = makeGateway();
@@ -633,16 +652,33 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     cfnMock
       .on(DescribeStacksCommand)
       .resolvesOnce({
-        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+        Stacks: [
+          partial<Stack>({
+            StackName: 'stk',
+            StackStatus: 'UPDATE_IN_PROGRESS',
+          }),
+        ],
       })
       .resolvesOnce({
-        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+        Stacks: [
+          partial<Stack>({
+            StackName: 'stk',
+            StackStatus: 'UPDATE_IN_PROGRESS',
+          }),
+        ],
       })
       .resolvesOnce({
-        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_IN_PROGRESS' }],
+        Stacks: [
+          partial<Stack>({
+            StackName: 'stk',
+            StackStatus: 'UPDATE_IN_PROGRESS',
+          }),
+        ],
       })
       .resolvesOnce({
-        Stacks: [{ StackName: 'stk', StackStatus: 'UPDATE_COMPLETE' }],
+        Stacks: [
+          partial<Stack>({ StackName: 'stk', StackStatus: 'UPDATE_COMPLETE' }),
+        ],
       });
     cfnMock.on(DescribeStackEventsCommand).resolves({ StackEvents: [] });
     const sleep = vi.fn(async () => {});
@@ -661,16 +697,20 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
       .on(DescribeStacksCommand)
       .resolvesOnce({
         Stacks: [
-          {
+          partial<Stack>({
             StackName: 'stk',
             StackId: 'id',
             StackStatus: 'UPDATE_IN_PROGRESS',
-          },
+          }),
         ],
       })
       .resolvesOnce({
         Stacks: [
-          { StackName: 'stk', StackId: 'id', StackStatus: 'UPDATE_COMPLETE' },
+          partial<Stack>({
+            StackName: 'stk',
+            StackId: 'id',
+            StackStatus: 'UPDATE_COMPLETE',
+          }),
         ],
       });
     cfnMock

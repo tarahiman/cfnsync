@@ -19,6 +19,7 @@ describe('code-related path detection', () => {
     'package.json',
     'pnpm-lock.yaml',
     './tsconfig.json',
+    'tsconfig.test.json',
   ])('treats %s as code-related', (filePath) => {
     expect(isCodeRelatedPath(filePath)).toBe(true);
   });

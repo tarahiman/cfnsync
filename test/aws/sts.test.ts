@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // FR-7-1 / FR-7-2 / FR-7-9d(オプション伝播): profile 指定時に `defaultProvider` が呼ばれることを
 // 検証するためのモック。`src/aws/cloudformation.ts` と同じ流儀(profile 指定時のみ
 // 既定クレデンシャルチェーンに profile を適用)を `sts.ts` が踏襲しているかを確認する。
-const defaultProviderMock = vi.fn(() => async () => ({
+const defaultProviderMock = vi.fn((..._args: unknown[]) => async () => ({
   accessKeyId: 'AKIAEXAMPLE',
   secretAccessKey: 'secret',
 }));

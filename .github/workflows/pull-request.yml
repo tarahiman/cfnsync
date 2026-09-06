@@ -73,6 +73,6 @@ jobs:
       - name: Install dependencies
         if: steps.changes.outputs.code == 'true'
         run: pnpm install --frozen-lockfile
-      - name: Check formatting, lint, test, and build
+      - name: Run the quality gate (format, lint, type-check, test, build)
         if: steps.changes.outputs.code == 'true'
         run: pnpm run quality:check

@@ -218,7 +218,6 @@ function setup(
   ) =>
     deploy({
       config,
-      configDir: '/repo',
       templates,
       deps: {
         cfnFactory,

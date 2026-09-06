@@ -51,6 +51,8 @@ function makeStateEntry(overrides: Partial<StackEntry> = {}): StackEntry {
     exports: [],
     imports: [],
     dependsOn: [],
+    dependencyAnalysisIncomplete: false,
+    stackId: null,
     lastAction: 'UPDATE',
     lastSuccessAt: '2026-07-19T00:00:00Z',
     ...overrides,

@@ -146,11 +146,7 @@ describe('pre-commit staged snapshot isolation', () => {
     expect(readFileSync(sourcePath, 'utf8')).toBe('WORKTREE_INVALID\n');
     expect(readFileSync(hookLog, 'utf8').trim().split('\n')).toEqual([
       'gitleaks:local:git --pre-commit --staged --redact --no-banner',
-      'npm:run check:docs',
-      'npm:run format:check',
-      'npm:run lint',
-      'npm:test',
-      'npm:run build',
+      'npm:run quality:check',
     ]);
   });
 
@@ -169,5 +165,33 @@ describe('pre-commit staged snapshot isolation', () => {
       'STAGED_INVALID\n',
     );
     expect(readFileSync(sourcePath, 'utf8')).toBe('STAGED_VALID\n');
+  });
+});
+
+describe('staged quality gate invocability', () => {
+  // The two tests above replace npm with a stub, so they only prove that the
+  // hook asks for "npm run quality:check" — not that the script it names can
+  // actually run there. The hook runs it inside a snapshot whose node_modules
+  // is a symlink to the contributor's real one, and pnpm refuses to run in
+  // that layout: it aborts with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY,
+  // and on a terminal it follows the symlink and reinstalls the real
+  // node_modules from scratch. So "quality:check" must not re-enter pnpm.
+  it('defines quality:check without re-entering pnpm', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(projectRoot, 'package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+
+    expect(manifest.scripts['quality:check']).not.toMatch(/\bpnpm\b/);
+  });
+
+  it('runs every quality:check step through a runner that leaves node_modules alone', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(projectRoot, 'package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    const gate = manifest.scripts['quality:check'] ?? '';
+    const steps = gate.split('&&').map((step) => step.trim());
+
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) expect(step).toMatch(/^npm (run |test\b)/);
   });
 });

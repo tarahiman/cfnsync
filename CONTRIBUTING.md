@@ -11,14 +11,27 @@ pnpm install          # install dependencies
 pnpm run build        # type-check and build to dist/
 pnpm test             # run the full Vitest suite (no real AWS access needed)
 pnpm vitest run <file># run a single test file
-pnpm run lint         # Biome + control-char check
+pnpm run lint         # Biome (warnings fail) + control-char and message-language checks
+pnpm run typecheck:test # type-check src/ and test/ together (tsconfig.test.json)
 pnpm run format       # Biome format
 pnpm run format:check # verify formatting without modifying files
 pnpm run check:docs   # verify Markdown links, heading anchors, and requirements IDs
-pnpm run quality:check# skill/docs checks, format, lint, tests, and build
+pnpm run quality:check# skill/docs checks, format, lint, test type-check, tests, and build
 ```
 
 Run the test suite before and after any change — it must stay green.
+
+`pnpm run build` type-checks only `src/` because it emits `dist/`. `test/` is far
+larger than `src/`, so `typecheck:test` type-checks both together with
+`tsconfig.test.json` (`noEmit`), which is what stops a test from silently
+asserting against a shape the implementation never had.
+
+Lint failures include warnings: `biome check` runs with `--error-on-warnings`, so
+unused variables, unused imports and the `noUseless*` family fail the gate
+instead of scrolling past. The `overrides` in `biome.json` also enforce the layer
+boundaries (`cli → usecase → core / ports / report`, with `aws` and `backend`
+implementing `ports`) through `noRestrictedImports`: for example, an
+`@aws-sdk/*` import inside `src/core/` fails lint.
 
 ## Pre-commit checks
 
@@ -38,12 +51,26 @@ The setup script and hook support macOS, Linux, and Windows through WSL.
 Native Windows shells are not currently supported.
 
 Before every commit, the hook scans the staged patch with Gitleaks. If a staged
-path can affect the application, tests, build, or CI, it also runs repository
-documentation-link validation, the format check, lint, full unit test suite,
-and build against an isolated copy of the Git index. Unstaged files are neither
-checked nor modified. Documentation-only changes skip the staged quality gate
-(CI still validates documentation links and normative numbering/IDs), but never
-skip Gitleaks.
+path can affect the application, tests, build, or CI, it also runs
+`quality:check` against an isolated copy of the Git index. Unstaged files are
+neither checked nor modified. Documentation-only changes skip the staged quality
+gate (CI still validates documentation links and normative numbering/IDs), but
+never skip Gitleaks.
+
+`quality:check` is the single definition of the quality gate: the hook and the
+pull-request workflow both invoke that one script, so a step added to it applies
+to both without editing `scripts/run-staged-quality-checks.sh` or the workflow.
+
+The hook is **opt-in**: `hooks:setup` sets `core.hooksPath` in this clone's local
+Git config, and nothing installs it automatically (no `postinstall` hook — that
+would add unreviewed code execution to `pnpm install`, which conflicts with
+pinning and checksum-verifying Gitleaks). Skipping the hook is safe: CI runs the
+same gate on every pull request. The hook only lets you find failures sooner.
+
+`main` is protected by a repository ruleset that forbids direct pushes and
+requires a pull request, so every change reaches `main` through the pull-request
+workflow (Gitleaks plus `quality:check`). The workflow therefore triggers on
+`pull_request` only; do not rely on pushing to `main` to run the checks.
 
 If Gitleaks is already managed by your system, you may enable only the hook with
 `pnpm run hooks:install`; the hook prefers `GITLEAKS_BIN`, then the pinned
@@ -89,7 +116,7 @@ or when that version is already on the registry (`scripts/verify-release-tag.mjs
 checks run locally:
 
 ```sh
-pnpm run quality:check                              # gate: skill/docs refs, format, lint, tests, build
+pnpm run quality:check                              # gate: skill/docs refs, format, lint, type-check, tests, build
 GITHUB_REF_NAME=v0.2.0 node scripts/verify-release-tag.mjs
 pnpm pack --pack-destination /tmp                   # optional: inspect the tarball
 ```

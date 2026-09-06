@@ -8,6 +8,7 @@
       ".mcp.json",
       "package.json",
       "tsconfig.json",
+      "tsconfig.test.json",
       "vitest.config.ts",
       "biome.json",
       "!docs",
@@ -34,13 +35,292 @@
       "complexity": {
         "useLiteralKeys": "off"
       },
+      "correctness": {
+        "noPrivateImports": "error",
+        "noUndeclaredDependencies": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noImportCycles": "error",
+        "noMultiAssign": "error",
+        "noReturnAssign": "error",
+        "useExhaustiveSwitchCases": "error"
+      },
+      "performance": {
+        "noBarrelFile": "error",
+        "noNamespaceImport": "error",
+        "noReExportAll": "error"
+      },
       "style": {
         "noNonNullAssertion": "off",
-        "useTemplate": "off"
+        "noParameterAssign": "error",
+        "useDefaultSwitchClause": "error",
+        "useExplicitLengthCheck": "error",
+        "useFilenamingConvention": "error",
+        "useTemplate": "off",
+        "useThrowOnlyError": "error"
       },
       "suspicious": {
+        "noConsole": "error",
+        "noEvolvingTypes": "error",
         "noTemplateCurlyInString": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/core/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/core must stay free of the AWS SDK. Express the need as a port in src/ports and implement it in src/aws."
+                  },
+                  {
+                    "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../ports/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../ports/**",
+                      "../../report/**",
+                      "../../usecase/**",
+                      "../aws/**",
+                      "../backend/**",
+                      "../cli/**",
+                      "../ports/**",
+                      "../report/**",
+                      "../usecase/**"
+                    ],
+                    "message": "src/core is the innermost layer (cli -> usecase -> core / ports / report). It must not import an outer layer."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/ports/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/ports declares interfaces only. Keep the AWS SDK inside src/aws, which implements these ports."
+                  },
+                  {
+                    "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
+                      "../aws/**",
+                      "../backend/**",
+                      "../cli/**",
+                      "../report/**",
+                      "../usecase/**"
+                    ],
+                    "message": "src/ports may only read src/core types; adapters and use cases depend on it, never the other way round."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/report/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/report renders the output contract from port types; it must not depend on the AWS SDK."
+                  },
+                  {
+                    "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../usecase/**",
+                      "../aws/**",
+                      "../backend/**",
+                      "../cli/**",
+                      "../usecase/**"
+                    ],
+                    "message": "src/report may read src/core and src/ports types only; nothing outside those layers may be imported here."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/usecase/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/usecase orchestrates through src/ports. Concrete AWS SDK calls belong to src/aws."
+                  },
+                  {
+                    "group": [
+                      "../../../aws/**",
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../aws/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../aws/**",
+                      "../backend/**",
+                      "../cli/**"
+                    ],
+                    "message": "src/usecase may depend on src/core, src/ports and src/report only. Adapters are injected by src/cli."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/aws/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "../../../backend/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../backend/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
+                      "../backend/**",
+                      "../cli/**",
+                      "../report/**",
+                      "../usecase/**"
+                    ],
+                    "message": "src/aws implements src/ports on top of src/core types; it must not reach into use cases, rendering, the CLI, or the local backend."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/backend/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/backend holds the local state backend; the S3 backend lives in src/aws."
+                  },
+                  {
+                    "group": [
+                      "../../../aws/**",
+                      "../../../cli/**",
+                      "../../../report/**",
+                      "../../../usecase/**",
+                      "../../aws/**",
+                      "../../cli/**",
+                      "../../report/**",
+                      "../../usecase/**",
+                      "../aws/**",
+                      "../cli/**",
+                      "../report/**",
+                      "../usecase/**"
+                    ],
+                    "message": "src/backend implements src/ports on top of src/core types; it must not reach into use cases, rendering, the CLI, or the AWS adapters."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/cli/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@aws-sdk/**"],
+                    "message": "src/cli is the composition root: wire the adapters from src/aws instead of calling the AWS SDK directly."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

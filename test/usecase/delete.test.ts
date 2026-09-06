@@ -104,7 +104,6 @@ function setup(initial: CfnSyncState, config = emptyConfig()) {
   ) =>
     deploy({
       config,
-      configDir: '/repo',
       templates: new Map(),
       deps: { cfnFactory, sts, backend, now: FIXED_NOW, runId: () => 'run15' },
       options: { autoApprove: true, ...options },
@@ -401,7 +400,7 @@ describe('delete / deploy integration — T-15', () => {
   });
 
   it('FR-6-5: exports/imports 欠落時は provider 不明のため他の自動削除も事前停止する', async () => {
-    const malformed = entry('B') as StackEntry & {
+    const malformed = entry('B') as Omit<StackEntry, 'exports' | 'imports'> & {
       exports?: string[];
       imports?: string[];
     };
