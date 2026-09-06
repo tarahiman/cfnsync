@@ -9,13 +9,16 @@
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { REQUIRED_PLACEHOLDER } from './constants.js';
-import { resolveDependsOnKey } from './dependency.js';
 import { ConfigError } from './errors.js';
 import {
   assertSafeTemplatePath,
   normalizeTemplatePath,
 } from './templatePath.js';
-import { makeStackKey, type StackKey } from './types.js';
+import {
+  makeStackKey,
+  resolveManagedDependsOn,
+  type StackKey,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // zod スキーマ(design.md §4.2)
@@ -194,19 +197,12 @@ export function validateEffectiveConfig(config: CfnSyncConfig): void {
   const managed = new Set(targets.map((target) => target.stackKey));
   for (const target of targets) {
     for (const rawDependency of target.dependsOn) {
-      const dependency = resolveDependsOnKey(rawDependency, target.region);
-      if (dependency === target.stackKey) {
-        throw new ConfigError(
-          `Explicit dependsOn '${rawDependency}' cannot reference itself`,
-          { stackKey: target.stackKey, region: target.region },
-        );
-      }
-      if (!managed.has(dependency)) {
-        throw new ConfigError(
-          `Explicit dependsOn '${rawDependency}' does not resolve to a managed target in the same region: ${dependency}`,
-          { stackKey: target.stackKey, region: target.region },
-        );
-      }
+      resolveManagedDependsOn(
+        rawDependency,
+        target.stackKey,
+        target.region,
+        managed,
+      );
     }
   }
 }
@@ -281,7 +277,6 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
   return targets;
 }
 
-/** dependsOn のテンプレートパスを同一リージョンのスタックキーへ解決する。 */
 /** design.md §8.2: 値が __REQUIRED__ のままのパラメータ名を列挙する。 */
 export function findRequiredPlaceholders(
   target: ResolvedStackTarget,

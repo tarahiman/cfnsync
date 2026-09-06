@@ -7,15 +7,27 @@ import { ConfigError } from './errors.js';
  */
 export const RESERVED_TEMPLATE_PATH_PREFIX = 'cfnsync:';
 
-/** OS に依存しない字句正規化。実パス検証は filesystem adapter が担う。 */
-export function normalizeTemplatePath(templatePath: string): string {
+function normalizeTemplatePathInternal(templatePath: string): {
+  normalized: string;
+  escapesParent: boolean;
+} {
   const segments: string[] = [];
+  let escapesParent = false;
   for (const segment of templatePath.replaceAll('\\', '/').split('/')) {
     if (segment === '' || segment === '.') continue;
-    if (segment === '..') segments.pop();
-    else segments.push(segment);
+    if (segment === '..') {
+      if (segments.length === 0) escapesParent = true;
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
   }
-  return segments.join('/');
+  return { normalized: segments.join('/'), escapesParent };
+}
+
+/** OS に依存しない字句正規化。実パス検証は filesystem adapter が担う。 */
+export function normalizeTemplatePath(templatePath: string): string {
+  return normalizeTemplatePathInternal(templatePath).normalized;
 }
 
 /** OS に依存せず絶対パス・親ディレクトリ参照・予約プレフィックスを fail-closed に拒否する。 */
@@ -27,18 +39,8 @@ export function assertSafeTemplatePath(templatePath: string): void {
     );
   }
   const portable = templatePath.replaceAll('\\', '/');
-  const normalized = normalizeTemplatePath(templatePath);
-  let depth = 0;
-  let escapesParent = false;
-  for (const segment of portable.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      depth -= 1;
-      if (depth < 0) escapesParent = true;
-    } else {
-      depth += 1;
-    }
-  }
+  const { normalized, escapesParent } =
+    normalizeTemplatePathInternal(templatePath);
   const unsafe =
     templatePath.includes('\0') ||
     portable.startsWith('/') ||
