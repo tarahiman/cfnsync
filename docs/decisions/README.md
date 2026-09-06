@@ -11,6 +11,7 @@ ADR だけでこれらを変更しない。
 | [ADR-0001](./0001-deploy-approval-flow.md) | Accepted | `deploy` を全差分確定後の一括承認フローとし、計画失敗を fail-closed にする |
 | [ADR-0002](./0002-create-recovery-fail-closed.md) | Accepted | 検証不能入力がある CREATE 復旧を自動再同期しない |
 | [ADR-0003](./0003-pending-stack-deletions.md) | Accepted | リネームで残った旧スタックをステートの削除待ち(`pendingDeletions`)として追跡する |
+| [ADR-0004](./0004-index-signature-access-notation.md) | Accepted | 既知の索引シグネチャキーにドット記法を採用し、相互排他の TypeScript オプションを採用しない |
 
 ## 運用
 
