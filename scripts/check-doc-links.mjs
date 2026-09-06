@@ -1,6 +1,12 @@
 // @ts-check
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 
 import { runAsScript } from './lib/cli.mjs';
@@ -35,16 +41,30 @@ function anchorsFor(path) {
   return anchors;
 }
 
-export function main() {
-  const root = process.cwd();
-  const failures = [];
-  const markdownFiles = [
+// Symlinks are excluded to match the pre-consolidation `collectMarkdownFiles`,
+// which relied on `entry.isFile()` (false for symlinks, following symlinks
+// here would let docs/skills content be pulled in twice under different
+// paths).
+/** @param {string} path */
+function isMarkdownFile(path) {
+  return path.endsWith('.md') && lstatSync(path).isFile();
+}
+
+/** @param {string} root */
+export function collectMarkdownFiles(root) {
+  return [
     ...readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
       .map((entry) => resolve(root, entry.name)),
-    ...filesUnder(resolve(root, 'docs'), (path) => path.endsWith('.md')),
-    ...filesUnder(resolve(root, 'skills'), (path) => path.endsWith('.md')),
+    ...filesUnder(resolve(root, 'docs'), isMarkdownFile),
+    ...filesUnder(resolve(root, 'skills'), isMarkdownFile),
   ];
+}
+
+export function main() {
+  const root = process.cwd();
+  const failures = [];
+  const markdownFiles = collectMarkdownFiles(root);
   /** @type {Map<string, Set<string>>} */
   const anchorsByPath = new Map();
   const linkPattern = /!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+['"][^)]*['"])?\)/g;

@@ -36,7 +36,7 @@ export function renderSkillReference(root, reference) {
     const content = source.toString('utf8');
     const sectionStart = content.indexOf(REPOSITORY_ONLY_SECTION);
     if (sectionStart === -1) {
-      throw new Error(
+      throw new VerificationError(
         `${reference.source} does not contain the expected repository-only related documents section`,
       );
     }
@@ -45,7 +45,7 @@ export function renderSkillReference(root, reference) {
       sectionStart + REPOSITORY_ONLY_SECTION.length,
     );
     if (nextSection !== -1) {
-      throw new Error(
+      throw new VerificationError(
         `${reference.source} must keep the repository-only related documents section as its final H2 section`,
       );
     }
