@@ -213,6 +213,7 @@ stacks:
 - **スタック名の変更**(設定から導出したスタック名とステートの記録が不一致)は「旧スタック名のスタックの削除 + 新スタック名での新規作成」として計画する(FR-1)。削除側は FR-6 の安全装置(`--allow-delete` 等)に従うため、既定では警告となり旧スタックは残る。**旧スタックが残る場合でも追跡を失わないため、新スタック名の作成成功をステートへ記録する保存操作は、同じ compare-and-swap のペイロードに旧スタック名の削除待ち(§4.3 `pendingDeletions`)を含める**(FR-1-18)。2 回の保存へ分けると、その間の中断で旧スタック名がステートから脱落する(Issue #16)。
 - **削除待ちの検知**: `detectChanges` は `pendingDeletions` 1 件につき `deleted` 分類の対象を 1 件生成する(FR-1-21)。スタックキーは予約プレフィックスを用いた `cfnsync:pending/<スタック名>@<リージョン>` とし、`<スタック名>` に `@` を含められない CloudFormation の命名規則と、`cfnsync:` で始まるテンプレートパスの拒否(§4.2)により、設定由来のスタックキーと衝突しない。生成順は純粋な `deleted` の後、キーの文字列昇順で決定的とする。削除待ちは `stacks` のエントリを持たないため、`DetectedEntry` では `stateEntry` ではなく `pendingDeletion`(記録本体と ID)を保持する。
 - 削除待ちは、対応する物理スタックの不在または削除完了を確認するまでステートに残る(FR-1-19)。`--allow-delete` 未指定・削除保護・依存情報の欠落・削除失敗・承認拒否のいずれでも消えない。連続したリネーム(Old → New → Newer)では物理スタックごとに 1 件ずつ積み上がる(FR-1-22)。
+- **削除待ちの結果報告**: 削除待ちの `DetectedEntry` は `stacks` のエントリを持たず(§4.4)、`stateEntry` を欠く。`status`(`usecase/status`)と `deploy`(`usecase/deploy` の `resultForOperation`)はいずれも、報告する `stackName` を `target` → `stateEntry` → `pendingDeletion.entry.stackName` の順で解決しなければならず、最終的に内部予約キー(`cfnsync:pending/<スタック名>@<リージョン>`)へフォールバックしてはならない(FR-6-14)。この解決順序は `status`(FR-1-23)と `deploy` の間で同一でなければならない。
 - `dependsOn` 等の依存情報のみの変更で CloudFormation 上の差分が生じない場合でも、ステートの依存辺(`exports` / `imports`)と `inputsHash` は最新化して保存する(削除順序の決定に使う旧グラフを陳腐化させないため)。
 
 ### 4.5 ステートバックエンドと排他制御

@@ -184,6 +184,10 @@ cfnsync が組み立てる進捗・エラー・警告・承認プロンプト・
 
 - 開発者向けの品質ゲートを強化しました（**利用者に見える振る舞いの変更はありません**）。`pnpm run lint` は Biome の警告でも失敗し、`biome.json` の `overrides` が層ごとの禁止 import（`src/core/` の AWS SDK 依存など）を機械検査します。新設の `pnpm run typecheck:test`（`tsconfig.test.json`）が `test/` も型検査し、`pnpm run quality:check` に組み込まれました。pre-commit フックは個別のステップを列挙せず `quality:check` を呼ぶため、CI と同じ内容を実行します。
 
+### 修正
+
+- `deploy` が削除待ち(pending deletion)スタックをスキップ経路(依存失敗によるスキップ、計画段階の失敗、承認処理失敗時のスキップ等)で報告する際、`result.stacks[].stackName` に実スタック名ではなく内部予約キー(`cfnsync:pending/<スタック名>@<リージョン>`)が出力される不具合を修正しました。`status` コマンドは以前から正しい 3 段フォールバック(`target` → `stateEntry` → `pendingDeletion`)で実スタック名を解決しており、`deploy` 側の `resultForOperation` に同じフォールバックを揃えました(Issue #29)。JSON 出力のフィールド構成・順序に変更はありません(既存の値が正しい値へ修正されるだけです)。
+
 ### 既知の性質
 
 - **この実行で新規作成される Export を参照するプロパティは、承認時点で最終値が確定しません。** `Fn::ImportValue` は Change Set の作成時に解決されず、`{{changeSet:KNOWN_AFTER_APPLY}}` として保留されます（既に存在する Export を参照する場合は作成時に実値へ解決されます）。cfnsync はこの保留値をそのまま提示し、独自に解決・補完しません。terraform の "known after apply" と同じ性質です。

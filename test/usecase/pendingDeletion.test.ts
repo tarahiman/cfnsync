@@ -906,3 +906,52 @@ describe('usecase/deploy — FR-6-9: 新スタックが作成されていなけ�
     expect(stored.pendingDeletions).toEqual({});
   });
 });
+
+// ===========================================================================
+// 異常系 8: Issue #29 回帰 — スキップされた削除待ちの stackName が予約キーへ
+// フォールバックしないこと(FR-6-14)
+// ===========================================================================
+
+describe('usecase/deploy — Issue #29 回帰: 削除待ちのスキップ経路での stackName', () => {
+  it('FR-6-14(Issue #29): 依存起因でスキップされた削除待ちスタックは、result.stacks[].stackName に予約キーではなく実スタック名を報告する', async () => {
+    const config = configOf({});
+    const templates = new Map<string, string>();
+    const PENDING_SAFE = `Safe@${REGION}`;
+    const PENDING_SAFE_KEY = `cfnsync:pending/Safe@${REGION}`;
+    let state = withAccountId(createInitialState(), ACCOUNT);
+    // 依存解析を統合グラフへ解決できない削除待ち(§8.3 / FR-6-5)。これが
+    // 1 件でも存在すると、同じ削除バッチの他対象は副作用前にスキップされる。
+    state = upsertPendingDeletion(
+      state,
+      PENDING_OLD,
+      makePending({ dependsOn: [`gone.yaml@${REGION}`] }),
+    );
+    // それ自体は安全な、別の削除待ち。stateEntry も target も持たず、
+    // pendingDeletion だけを持つ DetectedEntry になる — resultForOperation の
+    // フォールバックが stateEntry?.stackName までしかなかった旧実装では、
+    // このスタックが skipped になった際に stackName が予約キー
+    // (`cfnsync:pending/Safe@...`)へ落ちていた(Issue #29)。
+    state = upsertPendingDeletion(
+      state,
+      PENDING_SAFE,
+      makePending({ stackName: 'Safe', originStackKey: `b.yaml@${REGION}` }),
+    );
+    const s = setup(config, templates, state);
+    existingStack(s.cfn, 'Old');
+    existingStack(s.cfn, 'Safe');
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+    // AWS への副作用前に止まるため、安全な側は DeleteStack されない。
+    expect(s.cfn.callsOf('deleteStack')).toHaveLength(0);
+    const safeResult = result.report.result?.stacks.find(
+      (r) => r.stackKey === PENDING_SAFE_KEY,
+    );
+    expect(safeResult?.outcome).toBe('skipped');
+    // 回帰の核心: 予約キーではなく実スタック名(FR-1-23 の status と同じ
+    // 3 段フォールバックで解決される値)が報告されなければならない。
+    expect(safeResult?.stackName).toBe('Safe');
+    expect(safeResult?.stackName).not.toBe(PENDING_SAFE_KEY);
+  });
+});
