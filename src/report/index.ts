@@ -14,8 +14,84 @@
  * フィールドとして紛れ込ませても出力には現れない、多層防御)。
  */
 
-import { computeLevels, type RegionGraph } from '../core/graph.js';
-import type { ChangeSetDetail, ResourceChange } from '../ports/index.js';
+import { MASK } from '../core/constants.js';
+import type { RegionGraph } from '../core/graph.js';
+import type {
+  ChangeSetDetail,
+  ResourceChange,
+  ResourceChangeDetail,
+} from '../ports/index.js';
+
+const CONNECTION_FIELDS = ['accountId', 'regions'] as const;
+const DIFF_FIELDS = ['stackKey', 'region', 'stackName', 'operation'] as const;
+const RESOURCE_FIELDS = [
+  'action',
+  'logicalResourceId',
+  'resourceType',
+  'replacement',
+  'replacementType',
+  'physicalResourceId',
+  'scope',
+  'changedProperties',
+  'details',
+  'beforeContext',
+  'afterContext',
+  'containsNoEchoChange',
+] as const;
+const DETAIL_FIELDS = ['evaluation', 'changeSource', 'causingEntity'] as const;
+const TARGET_FIELDS = [
+  'attribute',
+  'name',
+  'requiresRecreation',
+  'path',
+  'beforeValue',
+  'afterValue',
+  'beforeValueFrom',
+  'afterValueFrom',
+  'attributeChangeType',
+] as const;
+const EVENT_FIELDS = [
+  'stackKey',
+  'region',
+  'timestamp',
+  'logicalResourceId',
+  'resourceType',
+  'resourceStatus',
+  'resourceStatusReason',
+] as const;
+const RESULT_FIELDS = [
+  'stackKey',
+  'region',
+  'stackName',
+  'outcome',
+  'errorMessage',
+  'rolledBack',
+] as const;
+const RECONCILIATION_FIELDS = [
+  'stackKey',
+  'region',
+  'kind',
+  'stateUpdated',
+] as const;
+
+function pick<T, K extends keyof T>(value: T, keys: readonly K[]): Pick<T, K> {
+  return Object.fromEntries(keys.map((key) => [key, value[key]])) as Pick<T, K>;
+}
+
+function mapDefined<T>(
+  value: T | undefined,
+  map: (defined: T) => T,
+): T | undefined {
+  return value === undefined ? undefined : map(value);
+}
+
+function maskOrRedact(
+  value: string | undefined,
+  forceMask: boolean,
+  redact: (text: string) => string,
+): string | undefined {
+  return mapDefined(value, (text) => (forceMask ? MASK : redact(text)));
+}
 
 // ===========================================================================
 // 型(usecase が依存する出力契約)
@@ -49,22 +125,7 @@ export interface ResourceDiffLine {
 }
 
 /** CloudFormation `ResourceChange.Details[]` の表示用コピー(FR-3-1)。 */
-export interface ResourceDiffDetail {
-  target?: {
-    attribute?: string;
-    name?: string;
-    requiresRecreation?: string;
-    path?: string;
-    beforeValue?: string;
-    afterValue?: string;
-    beforeValueFrom?: string;
-    afterValueFrom?: string;
-    attributeChangeType?: string;
-  };
-  evaluation?: string;
-  changeSource?: string;
-  causingEntity?: string;
-}
+export type ResourceDiffDetail = ResourceChangeDetail;
 
 /** スタック単位の差分(FR-13-7: リージョン込みのスタックキーを常に含む)。 */
 export interface StackDiff {
@@ -173,6 +234,88 @@ export interface ApprovalRequest {
 /** usecase が対象スタックごとに構成した NoEcho redactor の report 側契約。 */
 export type ReportTextRedactor = (stackKey: string, text: string) => string;
 
+type ReportMessageMapper = (
+  stackKey: string,
+  text: string,
+  forceMask: boolean,
+) => string;
+
+/** DeployReport の公開契約フィールドだけを再構築し、自由記述文字列を変換する。 */
+function projectReport(
+  report: DeployReport,
+  mapMessage: ReportMessageMapper,
+): DeployReport {
+  return {
+    connection: {
+      ...pick(report.connection, CONNECTION_FIELDS),
+      regions: [...report.connection.regions],
+    },
+    ...(report.cancelled === true ? { cancelled: true as const } : {}),
+    diffs: report.diffs.map((diff) => ({
+      ...pick(diff, DIFF_FIELDS),
+      resources: diff.resources.map((resource) => ({
+        ...pick(resource, RESOURCE_FIELDS),
+        scope: [...resource.scope],
+        changedProperties: [...resource.changedProperties],
+        details: resource.details.map((detail) => ({
+          target:
+            detail.target === undefined
+              ? undefined
+              : {
+                  ...pick(detail.target, TARGET_FIELDS),
+                  beforeValue: mapDefined(detail.target.beforeValue, (text) =>
+                    mapMessage(diff.stackKey, text, false),
+                  ),
+                  afterValue: mapDefined(detail.target.afterValue, (text) =>
+                    mapMessage(diff.stackKey, text, false),
+                  ),
+                },
+          ...pick(detail, DETAIL_FIELDS),
+        })),
+        beforeContext: mapDefined(resource.beforeContext, (text) =>
+          mapMessage(diff.stackKey, text, resource.containsNoEchoChange),
+        ),
+        afterContext: mapDefined(resource.afterContext, (text) =>
+          mapMessage(diff.stackKey, text, resource.containsNoEchoChange),
+        ),
+      })),
+      warnings: diff.warnings.map((warning) =>
+        mapMessage(diff.stackKey, warning, false),
+      ),
+    })),
+    ...(report.events
+      ? {
+          events: report.events.map((event) => ({
+            ...pick(event, EVENT_FIELDS),
+            resourceStatusReason: mapDefined(
+              event.resourceStatusReason,
+              (text) => mapMessage(event.stackKey, text, false),
+            ),
+          })),
+        }
+      : {}),
+    ...(report.result
+      ? {
+          result: {
+            stacks: report.result.stacks.map((stack) => ({
+              ...pick(stack, RESULT_FIELDS),
+              errorMessage: mapDefined(stack.errorMessage, (text) =>
+                mapMessage(stack.stackKey, text, false),
+              ),
+            })),
+          },
+        }
+      : {}),
+    ...(report.reconciliations && report.reconciliations.length > 0
+      ? {
+          reconciliations: report.reconciliations.map((record) =>
+            pick(record, RECONCILIATION_FIELDS),
+          ),
+        }
+      : {}),
+  };
+}
+
 /**
  * AWS 由来の自由記述文字列を出力直前にも再度マスクする多層防御(NFR-4)。
  * redactor 自体は usecase が実効パラメータから構成し、秘匿値を report に保持しない。
@@ -181,83 +324,9 @@ export function redactReportMessages(
   report: DeployReport,
   redact: ReportTextRedactor,
 ): DeployReport {
-  return {
-    connection: {
-      accountId: report.connection.accountId,
-      regions: [...report.connection.regions],
-    },
-    diffs: report.diffs.map((diff) => ({
-      ...diff,
-      resources: diff.resources.map((resource) => ({
-        ...resource,
-        changedProperties: [...resource.changedProperties],
-        scope: [...resource.scope],
-        details: resource.details.map((detail) => ({
-          ...detail,
-          target: detail.target
-            ? {
-                ...detail.target,
-                beforeValue:
-                  detail.target.beforeValue === undefined
-                    ? undefined
-                    : redact(diff.stackKey, detail.target.beforeValue),
-                afterValue:
-                  detail.target.afterValue === undefined
-                    ? undefined
-                    : redact(diff.stackKey, detail.target.afterValue),
-              }
-            : undefined,
-        })),
-        beforeContext: resource.containsNoEchoChange
-          ? resource.beforeContext === undefined
-            ? undefined
-            : '****'
-          : resource.beforeContext === undefined
-            ? undefined
-            : redact(diff.stackKey, resource.beforeContext),
-        afterContext: resource.containsNoEchoChange
-          ? resource.afterContext === undefined
-            ? undefined
-            : '****'
-          : resource.afterContext === undefined
-            ? undefined
-            : redact(diff.stackKey, resource.afterContext),
-      })),
-      warnings: diff.warnings.map((warning) => redact(diff.stackKey, warning)),
-    })),
-    ...(report.cancelled === true ? { cancelled: true as const } : {}),
-    ...(report.reconciliations
-      ? {
-          reconciliations: report.reconciliations.map((record) => ({
-            ...record,
-          })),
-        }
-      : {}),
-    ...(report.events
-      ? {
-          events: report.events.map((event) => ({
-            ...event,
-            resourceStatusReason:
-              event.resourceStatusReason === undefined
-                ? undefined
-                : redact(event.stackKey, event.resourceStatusReason),
-          })),
-        }
-      : {}),
-    ...(report.result
-      ? {
-          result: {
-            stacks: report.result.stacks.map((stack) => ({
-              ...stack,
-              errorMessage:
-                stack.errorMessage === undefined
-                  ? undefined
-                  : redact(stack.stackKey, stack.errorMessage),
-            })),
-          },
-        }
-      : {}),
-  };
+  return projectReport(report, (stackKey, text, forceMask) =>
+    forceMask ? MASK : redact(stackKey, text),
+  );
 }
 
 // ===========================================================================
@@ -307,34 +376,30 @@ function buildResourceDiffLine(
         target: detail.target
           ? {
               ...detail.target,
-              beforeValue:
-                detail.target.beforeValue === undefined
-                  ? undefined
-                  : noEcho
-                    ? '****'
-                    : redact(detail.target.beforeValue),
-              afterValue:
-                detail.target.afterValue === undefined
-                  ? undefined
-                  : noEcho
-                    ? '****'
-                    : redact(detail.target.afterValue),
+              beforeValue: maskOrRedact(
+                detail.target.beforeValue,
+                noEcho,
+                redact,
+              ),
+              afterValue: maskOrRedact(
+                detail.target.afterValue,
+                noEcho,
+                redact,
+              ),
             }
           : undefined,
       };
     }),
-    beforeContext:
-      change.beforeContext === undefined
-        ? undefined
-        : containsNoEchoChange
-          ? '****'
-          : redact(change.beforeContext),
-    afterContext:
-      change.afterContext === undefined
-        ? undefined
-        : containsNoEchoChange
-          ? '****'
-          : redact(change.afterContext),
+    beforeContext: maskOrRedact(
+      change.beforeContext,
+      containsNoEchoChange,
+      redact,
+    ),
+    afterContext: maskOrRedact(
+      change.afterContext,
+      containsNoEchoChange,
+      redact,
+    ),
     containsNoEchoChange,
   };
 }
@@ -396,23 +461,6 @@ export function buildStackDiff(input: {
     resources,
     warnings,
   };
-}
-
-// ===========================================================================
-// maskNoEcho(NFR-4)
-// ===========================================================================
-
-/** `noEchoParams` に含まれるキーの値を `****` に置換する(NFR-4)。それ以外は変更しない。 */
-export function maskNoEcho(
-  parameters: Record<string, string>,
-  noEchoParams: string[],
-): Record<string, string> {
-  const noEchoSet = new Set(noEchoParams);
-  const masked: Record<string, string> = {};
-  for (const [key, value] of Object.entries(parameters)) {
-    masked[key] = noEchoSet.has(key) ? '****' : value;
-  }
-  return masked;
 }
 
 // ===========================================================================
@@ -633,78 +681,14 @@ export function renderText(
  * が付与されていても出力には一切現れない(NFR-4 / FR-7-8 の多層防御)。
  */
 export function renderJson(report: DeployReport): string {
-  const payload = {
-    connection: {
-      accountId: report.connection.accountId,
-      regions: [...report.connection.regions],
-    },
-    // FR-5-16 / FR-12-6c1: 承認拒否が発生した実行にだけ現れる追加フィールド。
-    ...(report.cancelled === true ? { cancelled: true } : {}),
-    diffs: report.diffs.map((diff) => ({
-      stackKey: diff.stackKey,
-      region: diff.region,
-      stackName: diff.stackName,
-      operation: diff.operation,
-      resources: diff.resources.map((resource) => ({
-        action: resource.action,
-        logicalResourceId: resource.logicalResourceId,
-        resourceType: resource.resourceType,
-        replacement: resource.replacement,
-        replacementType: resource.replacementType,
-        physicalResourceId: resource.physicalResourceId,
-        scope: [...resource.scope],
-        changedProperties: [...resource.changedProperties],
-        details: resource.details.map((detail) => ({
-          target: detail.target ? { ...detail.target } : undefined,
-          evaluation: detail.evaluation,
-          changeSource: detail.changeSource,
-          causingEntity: detail.causingEntity,
-        })),
-        beforeContext: resource.beforeContext,
-        afterContext: resource.afterContext,
-      })),
-      warnings: [...diff.warnings],
-    })),
-    ...(report.events
-      ? {
-          events: report.events.map((event) => ({
-            stackKey: event.stackKey,
-            region: event.region,
-            timestamp: event.timestamp,
-            logicalResourceId: event.logicalResourceId,
-            resourceType: event.resourceType,
-            resourceStatus: event.resourceStatus,
-            resourceStatusReason: event.resourceStatusReason,
-          })),
-        }
-      : {}),
-    ...(report.result
-      ? {
-          result: {
-            stacks: report.result.stacks.map((stackResult) => ({
-              stackKey: stackResult.stackKey,
-              region: stackResult.region,
-              stackName: stackResult.stackName,
-              outcome: stackResult.outcome,
-              errorMessage: stackResult.errorMessage,
-              rolledBack: stackResult.rolledBack,
-            })),
-          },
-        }
-      : {}),
-    // FR-5-18a / FR-5-18c: 再同期が発生した実行にだけ現れる追加フィールド。
-    ...(report.reconciliations && report.reconciliations.length > 0
-      ? {
-          reconciliations: report.reconciliations.map((record) => ({
-            stackKey: record.stackKey,
-            region: record.region,
-            kind: record.kind,
-            stateUpdated: record.stateUpdated,
-          })),
-        }
-      : {}),
-  };
-  return JSON.stringify(payload, null, 2);
+  const payload = projectReport(report, (_stackKey, text, forceMask) =>
+    forceMask ? MASK : text,
+  );
+  return JSON.stringify(
+    payload,
+    (key, value) => (key === 'containsNoEchoChange' ? undefined : value),
+    2,
+  );
 }
 
 // ===========================================================================
@@ -800,16 +784,18 @@ export function renderApprovalSummary(
 /**
  * リージョンごとの依存グラフをトポロジカル順序に基づく階層(レベル)としてテキスト
  * 出力する(FR-8-3 / FR-8-6)。同一レベル内のスタックは並列デプロイ可能であることを
- * 表し、diamond 依存でも依存関係の記述を重複させない。循環がある場合は
- * `computeLevels`(内部の `topologicalOrder`)がそのまま `DependencyCycleError` を
- * 投げる(FR-8-4。フェイルクローズド — 部分的なレベル表示は行わない)。
+ * 表し、diamond 依存でも依存関係の記述を重複させない。循環検出とレベル計算は
+ * usecase 境界で完了しており、この関数は受け取ったレベルを整形するだけである。
  */
-export function renderGraphText(graphs: Map<string, RegionGraph>): string {
+export function renderGraphText(
+  graphs: Map<string, RegionGraph>,
+  levels: Map<string, string[][]>,
+): string {
   const lines: string[] = [];
-  for (const [region, graph] of graphs) {
+  for (const [region] of graphs) {
     lines.push(`region: ${region}`);
-    const levels = computeLevels(graph);
-    levels.forEach((nodes, index) => {
+    const regionLevels = levels.get(region) ?? [];
+    regionLevels.forEach((nodes, index) => {
       lines.push(`  Lv${index}:`);
       for (const node of nodes) {
         lines.push(`    ${node}`);

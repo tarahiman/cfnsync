@@ -15,6 +15,7 @@ import {
   TemplateParseError,
 } from '../core/errors.js';
 import type { RegionGraph } from '../core/graph.js';
+import type { LockInfo } from '../ports/index.js';
 import {
   type DeployReport,
   renderGraphJson,
@@ -22,6 +23,8 @@ import {
   renderJson,
   renderText,
 } from '../report/index.js';
+import type { ForceUnlockResult } from './forceUnlock.js';
+import type { ImportReport, ImportResult } from './importer.js';
 import type { StatusEntry } from './status.js';
 
 export type { CfnSyncConfig };
@@ -118,9 +121,10 @@ export function renderStatus(entries: StatusEntry[], json: boolean): string {
 
 export function renderGraph(
   graphs: Map<string, RegionGraph>,
+  levels: Map<string, string[][]>,
   json: boolean,
 ): string {
-  return json ? renderGraphJson(graphs) : renderGraphText(graphs);
+  return json ? renderGraphJson(graphs) : renderGraphText(graphs, levels);
 }
 
 export function renderDeploy(
@@ -129,4 +133,67 @@ export function renderDeploy(
   color = false,
 ): string {
   return json ? renderJson(report) : renderText(report, { color });
+}
+
+function projectImportReport(report: ImportReport): ImportReport {
+  return {
+    connection: {
+      accountId: report.connection.accountId,
+      regions: [...report.connection.regions],
+    },
+    stacks: report.stacks.map((stack) => ({
+      stackKey: stack.stackKey,
+      region: stack.region,
+      templatePath: stack.templatePath,
+      stackName: stack.stackName,
+      status: stack.status,
+      templateComparison: stack.templateComparison,
+      reconcile: stack.reconcile,
+      wroteTemplate: stack.wroteTemplate,
+      recorded: stack.recorded,
+      noEchoPlaceholders: [...stack.noEchoPlaceholders],
+      message: stack.message,
+    })),
+    configWritten: report.configWritten,
+    stateSaved: report.stateSaved,
+    accountStateInitialized: report.accountStateInitialized,
+    importEntriesSaved: report.importEntriesSaved,
+    aborted: report.aborted,
+    warnings: [...report.warnings],
+  };
+}
+
+export function renderImport(result: ImportResult, json: boolean): string {
+  if (json) return JSON.stringify(projectImportReport(result.report), null, 2);
+  return (
+    result.report.stacks
+      .map((stack) => `${stack.status}: ${stack.stackKey}`)
+      .join('\n') || 'No stacks to import.'
+  );
+}
+
+function projectLock(lock: LockInfo | undefined): LockInfo | undefined {
+  if (lock === undefined) return undefined;
+  return {
+    runId: lock.runId,
+    startedAt: lock.startedAt,
+    owner: lock.owner,
+  };
+}
+
+export function renderForceUnlock(
+  result: ForceUnlockResult,
+  json: boolean,
+): string {
+  if (!json) return result.message;
+  return JSON.stringify(
+    {
+      exitCode: result.exitCode,
+      released: result.released,
+      lock: projectLock(result.lock),
+      message: result.message,
+    },
+    null,
+    2,
+  );
 }

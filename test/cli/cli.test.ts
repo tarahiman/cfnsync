@@ -289,8 +289,8 @@ afterEach(() => {
 
 describe('T-19 cli', () => {
   it('FR-12-1: 6 サブコマンドを定義する', () => {
-    const names = createCliProgram(dependencies()).commands.map((command) =>
-      command.name(),
+    const names = createCliProgram(dependencies()).program.commands.map(
+      (command) => command.name(),
     );
     expect(names).toEqual([
       'status',
@@ -505,7 +505,7 @@ describe('T-19 cli', () => {
       region: 'us-west-2',
       profile: 'work',
     });
-    expect(deps.loadConfig).toHaveBeenCalledWith('./cfnsync.yaml');
+    expect(deps.loadConfig).toHaveBeenCalledWith('./cfnsync.yaml', {});
   });
 
   it('FR-8-2: --region 適用後に消える明示依存を usecase 呼出前に拒否する', async () => {

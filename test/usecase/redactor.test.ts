@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { createNoEchoRedactor } from '../../src/usecase/redactor.js';
 
 describe('NoEcho usecase redactor', () => {
+  it('NFR-4: maskNoEcho は NoEcho キーの値のみ **** に置換する', () => {
+    const redact = createNoEchoRedactor(
+      { DbPassword: 'S3cr3t-Raw-Value-Do-Not-Leak', Other: 'plain' },
+      ['DbPassword'],
+    );
+    expect({
+      DbPassword: redact('S3cr3t-Raw-Value-Do-Not-Leak'),
+      Other: redact('plain'),
+    }).toEqual({ DbPassword: '****', Other: 'plain' });
+  });
+
+  it('NFR-4: maskNoEcho は noEchoParams に無いキーを変更しない', () => {
+    const redact = createNoEchoRedactor({ A: 'value-a', B: 'value-b' }, []);
+    expect({ A: redact('value-a'), B: redact('value-b') }).toEqual({
+      A: 'value-a',
+      B: 'value-b',
+    });
+  });
+
   it('NFR-4: 対象 NoEcho パラメータの実効値を出現箇所すべてで **** に置換する', () => {
     const redact = createNoEchoRedactor(
       { Secret: 'sensitive-value', Plain: 'visible-value' },
