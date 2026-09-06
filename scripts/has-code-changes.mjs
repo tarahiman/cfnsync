@@ -1,5 +1,8 @@
+// @ts-check
+
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
+import { runAsScript } from './lib/cli.mjs';
 
 const CODE_DIRECTORIES = [
   '.github/workflows/',
@@ -24,6 +27,7 @@ const CODE_FILES = new Set([
   'vitest.config.ts',
 ]);
 
+/** @param {string} filePath */
 export function isCodeRelatedPath(filePath) {
   const normalizedPath = filePath.replaceAll('\\', '/').replace(/^\.\//, '');
 
@@ -33,10 +37,12 @@ export function isCodeRelatedPath(filePath) {
   );
 }
 
+/** @param {string[]} filePaths */
 export function hasCodeRelatedPaths(filePaths) {
   return filePaths.some(isCodeRelatedPath);
 }
 
+/** @param {string[]} args */
 function changedPaths(args) {
   const result = spawnSync(
     'git',
@@ -60,6 +66,7 @@ function changedPaths(args) {
     .filter((filePath) => filePath.length > 0);
 }
 
+/** @param {string[]} args */
 function parseArguments(args) {
   if (args.length === 1 && args[0] === '--staged') {
     return ['--cached'];
@@ -80,15 +87,17 @@ export function main(args = process.argv.slice(2)) {
   );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+function runMain() {
   try {
     main();
   } catch (error) {
-    console.error(
+    throw new Error(
       `Unable to determine whether code changed: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      { cause: error },
     );
-    process.exitCode = 2;
   }
 }
+
+runAsScript(import.meta.url, runMain);

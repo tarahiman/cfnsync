@@ -21,6 +21,8 @@ pnpm run quality:check# skill/docs checks, format, lint, test type-check, tests,
 
 Run the test suite before and after any change — it must stay green.
 
+Repository scripts use exit code 1 for verification failures and 2 when verification cannot run.
+
 `pnpm run build` type-checks only `src/` because it emits `dist/`. `test/` is far
 larger than `src/`, so `typecheck:test` type-checks both together with
 `tsconfig.test.json` (`noEmit`), which is what stops a test from silently

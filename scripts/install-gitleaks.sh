@@ -15,7 +15,7 @@ case "$os_name" in
     ;;
   *)
     echo "Unsupported operating system for the pinned Gitleaks installer: $os_name" >&2
-    exit 1
+    exit 2
     ;;
 esac
 
@@ -28,7 +28,7 @@ case "$architecture" in
     ;;
   *)
     echo "Unsupported architecture for the pinned Gitleaks installer: $architecture" >&2
-    exit 1
+    exit 2
     ;;
 esac
 
@@ -52,20 +52,26 @@ install_directory=${GITLEAKS_INSTALL_DIR:-.tools/bin}
 install_path="${install_directory}/gitleaks"
 
 if [ -x "$install_path" ]; then
-  installed_version=$("$install_path" version)
+  if ! installed_version=$("$install_path" version); then
+    echo "Unable to inspect the Gitleaks binary at $install_path." >&2
+    exit 2
+  fi
   if [ "$installed_version" = "$version" ]; then
     echo "Gitleaks $version is already installed at $install_path."
     exit 0
   fi
 fi
 
-temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/cfnsync-gitleaks.XXXXXX")
+if ! temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/cfnsync-gitleaks.XXXXXX"); then
+  echo 'Unable to create a temporary directory for Gitleaks.' >&2
+  exit 2
+fi
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
 download_path="${temporary_directory}/${archive}"
 url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
 
-curl \
+if ! curl \
   --fail \
   --location \
   --proto '=https' \
@@ -75,6 +81,10 @@ curl \
   --tlsv1.2 \
   --output "$download_path" \
   "$url"
+then
+  echo "Unable to download Gitleaks from $url." >&2
+  exit 2
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
   actual_sha256=$(sha256sum "$download_path" | awk '{print $1}')
@@ -82,7 +92,7 @@ elif command -v shasum >/dev/null 2>&1; then
   actual_sha256=$(shasum -a 256 "$download_path" | awk '{print $1}')
 else
   echo 'A SHA-256 utility (sha256sum or shasum) is required.' >&2
-  exit 1
+  exit 2
 fi
 
 if [ "$actual_sha256" != "$expected_sha256" ]; then
@@ -90,8 +100,17 @@ if [ "$actual_sha256" != "$expected_sha256" ]; then
   exit 1
 fi
 
-tar -xzf "$download_path" -C "$temporary_directory" gitleaks
-mkdir -p "$install_directory"
-install -m 0755 "${temporary_directory}/gitleaks" "$install_path"
+if ! tar -xzf "$download_path" -C "$temporary_directory" gitleaks; then
+  echo 'Unable to extract the Gitleaks archive.' >&2
+  exit 2
+fi
+if ! mkdir -p "$install_directory"; then
+  echo "Unable to create $install_directory." >&2
+  exit 2
+fi
+if ! install -m 0755 "${temporary_directory}/gitleaks" "$install_path"; then
+  echo "Unable to install Gitleaks at $install_path." >&2
+  exit 2
+fi
 
 echo "Installed Gitleaks $version at $install_path."

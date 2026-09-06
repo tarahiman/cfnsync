@@ -54,8 +54,9 @@
     "lint": "biome check --error-on-warnings . && node scripts/check-control-chars.mjs && node scripts/check-message-language.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "typecheck:test": "tsc -p tsconfig.test.json",
-    "quality:check": "npm run check:skill-references && npm run check:docs && npm run format:check && npm run lint && npm run typecheck:test && npm test && npm run build",
+    "quality:check": "npm run check:skill-references && npm run check:docs && npm run format:check && npm run lint && npm run typecheck:scripts && npm run typecheck:test && npm test && npm run build",
     "gitleaks:install": "sh scripts/install-gitleaks.sh",
     "hooks:install": "node scripts/install-hooks.mjs",
     "hooks:setup": "pnpm run gitleaks:install && pnpm run hooks:install"
