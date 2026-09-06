@@ -88,7 +88,7 @@ git checkout -b "$BRANCH" "origin/$BASE"
 1. `git diff --stat` と `git status --short` で変更範囲を把握し、報告と一致するか確認
 2. `pnpm run quality:check` を自分で通しで実行して緑を確認
 3. テスト件数がベースライン以上で、`it()` 名が変わっていないことを `git diff` で確認
-4. コミット。件名は変更全体を表す 1 行、本文に Issue ごとの箇条書きと `Closes #N` を並べる
+4. コミット。件名は変更全体を表す 1 行、本文に Issue ごとの箇条書きを並べる
 5. `git push -u origin "$BRANCH"`（Step 2 で決めたブランチ。ネットワーク失敗時のみ 2s / 4s / 8s / 16s のバックオフで最大 4 回リトライ）
 6. PR 作成（ready for review）。テンプレート（`.github/pull_request_template.md` 等）があれば見出し構成をなぞる。本文には次を入れる:
    - 対象 Issue と**束ねた理由**（相互依存の説明）
@@ -96,7 +96,10 @@ git checkout -b "$BRANCH" "origin/$BASE"
    - Issue 本文に選択肢があった箇所で**どちらを選びなぜか**
    - 検証結果（`quality:check`、テスト件数、受け入れ条件の確認）
    - 見送った項目と理由
+   - **`Closes #N`(対象 Issue 全件、1 つずつ)を本文のどこかに含める** — GitHub がマージ時に Issue を自動クローズする条件は「PR 本文(または通常マージなら取り込まれる各コミットメッセージ)に closing keyword があること」であり、コミットメッセージだけに書いて PR 本文に書き忘れると自動クローズされない。レビュー対応で本文を書き直す場合も、この行を消さないこと
 7. PR 作成後ただちに `subscribe_pr_activity` を呼ぶ
+
+**PR 本文を後から書き直す(Step 6 のレビュー反映等)ときの注意**: `Closes #N` を含む行を必ず引き継ぐ。書き直した本文にそれが無いままマージされると、Issue が自動クローズされない(実際に発生した事例: PR #39)。マージ後に `mcp__github__issue_read` で対象 Issue の `state` を確認し、`open` のままなら手動で `state_reason: completed` でクローズする。
 
 ## Step 5. レビューサブエージェント
 
@@ -138,3 +141,4 @@ git checkout -b "$BRANCH" "origin/$BASE"
 - サブエージェントにコミット・push・GitHub への投稿をさせない。外部に出る操作は親が行う
 - サブエージェントの報告は**検証すべき主張**であって事実ではない。`quality:check` は自分で通す
 - 破壊的な操作（`git reset --hard`、`git stash drop`、ブランチ削除、force push）はユーザーの明示的な指示なしに行わない
+- PR がマージされたら、対象 Issue が実際にクローズされたかを `mcp__github__issue_read` で確認する。`Closes #N` を PR 本文へ入れ忘れていた等の理由で `open` のまま残っていたら、手動でクローズする
