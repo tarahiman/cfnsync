@@ -909,11 +909,11 @@ describe('usecase/deploy — FR-6-9: 新スタックが作成されていなけ�
 
 // ===========================================================================
 // 異常系 8: Issue #29 回帰 — スキップされた削除待ちの stackName が予約キーへ
-// フォールバックしないこと(FR-5-16)
+// フォールバックしないこと(FR-6-14)
 // ===========================================================================
 
 describe('usecase/deploy — Issue #29 回帰: 削除待ちのスキップ経路での stackName', () => {
-  it('FR-5-16(Issue #29): 依存起因でスキップされた削除待ちスタックは、result.stacks[].stackName に予約キーではなく実スタック名を報告する', async () => {
+  it('FR-6-14(Issue #29): 依存起因でスキップされた削除待ちスタックは、result.stacks[].stackName に予約キーではなく実スタック名を報告する', async () => {
     const config = configOf({});
     const templates = new Map<string, string>();
     const PENDING_SAFE = `Safe@${REGION}`;
