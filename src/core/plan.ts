@@ -13,7 +13,12 @@
 
 import type { DetectedEntry, DetectionResult } from './detect.js';
 import { InvariantError } from './errors.js';
-import { type RegionGraph, reverseOrder, topologicalOrder } from './graph.js';
+import {
+  adjacencyOf,
+  type RegionGraph,
+  reverseOrder,
+  topologicalOrder,
+} from './graph.js';
 import { parseStackKey, type StackKey } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -224,23 +229,16 @@ export function buildPlan(input: BuildPlanInput): ExecutionPlan {
 // ---------------------------------------------------------------------------
 
 /**
- * `graph` の辺(`from` が依存される側、`to` が依存する側)を辿り、`start` に
- * (直接・間接を問わず)依存するスタックキー全員の集合を返す(`start` 自身は
- * 含まない)。
+ * `graph` の辺を指定方向へ辿り、`start` から到達可能なスタックキー全員の
+ * 集合を返す(`start` 自身は含まない)。forward は dependent、reverse は
+ * provider を辿る。
  */
-function transitiveDependents(
+function transitiveClosure(
   graph: RegionGraph,
   start: StackKey,
+  direction: 'forward' | 'reverse',
 ): Set<StackKey> {
-  const adjacency = new Map<StackKey, StackKey[]>();
-  for (const edge of graph.edges) {
-    const list = adjacency.get(edge.from);
-    if (list) {
-      list.push(edge.to);
-    } else {
-      adjacency.set(edge.from, [edge.to]);
-    }
-  }
+  const adjacency = adjacencyOf(graph.edges, direction);
 
   const visited = new Set<StackKey>();
   const toVisit = [...(adjacency.get(start) ?? [])];
@@ -252,31 +250,6 @@ function transitiveDependents(
       if (!visited.has(neighbor)) {
         toVisit.push(neighbor);
       }
-    }
-  }
-  return visited;
-}
-
-/** delete 失敗対象から辺を逆向きに辿り、必要な provider を推移的に返す。 */
-function transitiveProviders(
-  graph: RegionGraph,
-  start: StackKey,
-): Set<StackKey> {
-  const reverseAdjacency = new Map<StackKey, StackKey[]>();
-  for (const edge of graph.edges) {
-    const list = reverseAdjacency.get(edge.to);
-    if (list) list.push(edge.from);
-    else reverseAdjacency.set(edge.to, [edge.from]);
-  }
-
-  const visited = new Set<StackKey>();
-  const toVisit = [...(reverseAdjacency.get(start) ?? [])];
-  while (toVisit.length > 0) {
-    const next = toVisit.pop();
-    if (next === undefined || visited.has(next)) continue;
-    visited.add(next);
-    for (const neighbor of reverseAdjacency.get(next) ?? []) {
-      if (!visited.has(neighbor)) toVisit.push(neighbor);
     }
   }
   return visited;
@@ -305,9 +278,11 @@ export function computeSkips(input: ComputeSkipsInput): ComputeSkipsResult {
       : flattened[failedIndex].region;
   const failedRegionGraph = mergedGraphs.get(failedRegion);
   const protectedByFailure = failedRegionGraph
-    ? input.failureKind === 'delete'
-      ? transitiveProviders(failedRegionGraph, failedStackKey)
-      : transitiveDependents(failedRegionGraph, failedStackKey)
+    ? transitiveClosure(
+        failedRegionGraph,
+        failedStackKey,
+        input.failureKind === 'delete' ? 'reverse' : 'forward',
+      )
     : new Set<StackKey>();
 
   const skipped: StackKey[] = [];

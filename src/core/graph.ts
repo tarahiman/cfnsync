@@ -6,9 +6,8 @@
  * 独立したグラフを構築し、トポロジカルソート・新旧グラフの統合を提供する。
  */
 
-import { resolveDependsOnKey } from './dependency.js';
-import { ConfigError, DependencyCycleError } from './errors.js';
-import type { StackKey } from './types.js';
+import { DependencyCycleError } from './errors.js';
+import { resolveManagedDependsOn, type StackKey } from './types.js';
 
 /**
  * グラフ構築の入力単位。1 スタックキー(テンプレート×リージョン)に対応する。
@@ -34,8 +33,44 @@ export interface RegionGraph {
   edges: Array<{ from: StackKey; to: StackKey }>;
 }
 
+type GraphEdge = RegionGraph['edges'][number];
+
+function pushInto<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const values = map.get(key);
+  if (values === undefined) map.set(key, [value]);
+  else values.push(value);
+}
+
+export function adjacencyOf(
+  edges: RegionGraph['edges'],
+  direction: 'forward' | 'reverse',
+): Map<StackKey, StackKey[]> {
+  const adjacency = new Map<StackKey, StackKey[]>();
+  for (const edge of edges) {
+    const from = direction === 'forward' ? edge.from : edge.to;
+    const to = direction === 'forward' ? edge.to : edge.from;
+    pushInto(adjacency, from, to);
+  }
+  return adjacency;
+}
+
+function createEdgeCollector(): {
+  edges: GraphEdge[];
+  addEdge: (edge: GraphEdge) => void;
+} {
+  const edges: GraphEdge[] = [];
+  const seenEdges = new Set<string>();
+  const addEdge = (edge: GraphEdge): void => {
+    const dedupeKey = `${edge.from}\0${edge.to}`;
+    if (seenEdges.has(dedupeKey)) return;
+    seenEdges.add(dedupeKey);
+    edges.push(edge);
+  };
+  return { edges, addEdge };
+}
+
 /**
- * `dependsOn` の値(テンプレートパス、またはスタックキー `path@region`)を、
+ * `dependsOn` の値(テンプレートパス、またはスタックキー)を、
  * `node` と同一リージョンのスタックキーに解決する(FR-8-2)。スタックキー
  * 形式で与えられた場合でも、埋め込まれたリージョンは無視し、常に `region`
  * 引数のリージョンへ解決する — 「同一リージョン内のスタックキーに解決」の
@@ -60,14 +95,7 @@ function buildRegionGraph(
     }
   }
 
-  const edges: Array<{ from: StackKey; to: StackKey }> = [];
-  const seenEdges = new Set<string>();
-  const addEdge = (from: StackKey, to: StackKey): void => {
-    const dedupeKey = `${from}\0${to}`;
-    if (seenEdges.has(dedupeKey)) return;
-    seenEdges.add(dedupeKey);
-    edges.push({ from, to });
-  };
+  const { edges, addEdge } = createEdgeCollector();
 
   for (const n of regionNodes) {
     // FR-8-1: import → export の自動解析。提供者がいない import はエラーに
@@ -75,30 +103,20 @@ function buildRegionGraph(
     for (const importName of n.imports) {
       const provider = exportIndex.get(importName);
       if (provider !== undefined) {
-        addEdge(provider, n.stackKey);
+        addEdge({ from: provider, to: n.stackKey });
       }
     }
 
     // FR-8-2: 設定ファイルの明示依存を自動解析結果とマージ。解決先がグラフに
     // 存在しない/自己参照は core 単独利用でも無言で破棄しない。
     for (const raw of n.explicitDependsOn) {
-      const resolved = resolveDependsOnKey(raw, n.region);
-      if (resolved === n.stackKey) {
-        throw new ConfigError(
-          `Explicit dependsOn '${raw}' cannot reference itself`,
-          {
-            stackKey: n.stackKey,
-            region: n.region,
-          },
-        );
-      }
-      if (!nodeKeySet.has(resolved)) {
-        throw new ConfigError(
-          `Explicit dependsOn '${raw}' does not resolve to a managed target in the same region: ${resolved}`,
-          { stackKey: n.stackKey, region: n.region },
-        );
-      }
-      addEdge(resolved, n.stackKey);
+      const resolved = resolveManagedDependsOn(
+        raw,
+        n.stackKey,
+        n.region,
+        nodeKeySet,
+      );
+      addEdge({ from: resolved, to: n.stackKey });
     }
   }
 
@@ -113,12 +131,7 @@ function buildRegionGraph(
 export function buildGraphs(nodes: StackNode[]): Map<string, RegionGraph> {
   const byRegion = new Map<string, StackNode[]>();
   for (const n of nodes) {
-    const list = byRegion.get(n.region);
-    if (list) {
-      list.push(n);
-    } else {
-      byRegion.set(n.region, [n]);
-    }
+    pushInto(byRegion, n.region, n);
   }
 
   const graphs = new Map<string, RegionGraph>();
@@ -181,71 +194,21 @@ function findCycleMembers(
  */
 export function topologicalOrder(graph: RegionGraph): StackKey[] {
   const inDegree = new Map<StackKey, number>();
-  const adjacency = new Map<StackKey, StackKey[]>();
   for (const key of graph.nodes) {
     inDegree.set(key, 0);
-    adjacency.set(key, []);
   }
   for (const edge of graph.edges) {
-    adjacency.get(edge.from)?.push(edge.to);
     inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
   }
+  const adjacency = adjacencyOf(graph.edges, 'forward');
 
   const remaining = new Set(graph.nodes);
   const result: StackKey[] = [];
-  const orderIndex = new Map(
-    graph.nodes.map((key, index) => [key, index] as const),
-  );
-  const ready: StackKey[] = [];
-  const pushReady = (key: StackKey): void => {
-    ready.push(key);
-    let index = ready.length - 1;
-    while (index > 0) {
-      const parent = Math.floor((index - 1) / 2);
-      if (
-        (orderIndex.get(ready[parent]) ?? 0) <=
-        (orderIndex.get(ready[index]) ?? 0)
-      )
-        break;
-      [ready[parent], ready[index]] = [ready[index], ready[parent]];
-      index = parent;
-    }
-  };
-  const popReady = (): StackKey | undefined => {
-    const first = ready[0];
-    const last = ready.pop();
-    if (ready.length > 0 && last !== undefined) {
-      ready[0] = last;
-      let index = 0;
-      for (;;) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        if (left >= ready.length) break;
-        let smallest = left;
-        if (
-          right < ready.length &&
-          (orderIndex.get(ready[right]) ?? 0) <
-            (orderIndex.get(ready[left]) ?? 0)
-        )
-          smallest = right;
-        if (
-          (orderIndex.get(ready[index]) ?? 0) <=
-          (orderIndex.get(ready[smallest]) ?? 0)
-        )
-          break;
-        [ready[index], ready[smallest]] = [ready[smallest], ready[index]];
-        index = smallest;
-      }
-    }
-    return first;
-  };
-
-  for (const key of graph.nodes) {
-    if ((inDegree.get(key) ?? 0) === 0) pushReady(key);
-  }
 
   while (remaining.size > 0) {
-    const next = popReady();
+    const next = graph.nodes.find(
+      (key) => remaining.has(key) && (inDegree.get(key) ?? 0) === 0,
+    );
 
     if (next === undefined) {
       const cycle = findCycleMembers(graph.nodes, remaining, adjacency);
@@ -258,7 +221,6 @@ export function topologicalOrder(graph: RegionGraph): StackKey[] {
       if (remaining.has(neighbor)) {
         const nextDegree = (inDegree.get(neighbor) ?? 0) - 1;
         inDegree.set(neighbor, nextDegree);
-        if (nextDegree === 0) pushReady(neighbor);
       }
     }
   }
@@ -284,14 +246,7 @@ export function mergeGraphs(
     }
   }
 
-  const edges: Array<{ from: StackKey; to: StackKey }> = [];
-  const seenEdges = new Set<string>();
-  const addEdge = (edge: { from: StackKey; to: StackKey }): void => {
-    const dedupeKey = `${edge.from}\0${edge.to}`;
-    if (seenEdges.has(dedupeKey)) return;
-    seenEdges.add(dedupeKey);
-    edges.push(edge);
-  };
+  const { edges, addEdge } = createEdgeCollector();
   for (const edge of current.edges) addEdge(edge);
   for (const edge of old.edges) addEdge(edge);
 
@@ -313,15 +268,7 @@ export function mergeGraphs(
 export function computeLevels(graph: RegionGraph): StackKey[][] {
   const order = topologicalOrder(graph);
 
-  const predecessors = new Map<StackKey, StackKey[]>();
-  for (const edge of graph.edges) {
-    const list = predecessors.get(edge.to);
-    if (list) {
-      list.push(edge.from);
-    } else {
-      predecessors.set(edge.to, [edge.from]);
-    }
-  }
+  const predecessors = adjacencyOf(graph.edges, 'reverse');
 
   const level = new Map<StackKey, number>();
   for (const key of order) {
