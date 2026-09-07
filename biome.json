@@ -44,7 +44,8 @@
           "options": {
             "maxLines": 365
           }
-        }
+        },
+        "useLiteralKeys": "error"
       },
       "correctness": {
         "noPrivateImports": "error",
@@ -73,6 +74,7 @@
         "useDefaultSwitchClause": "error",
         "useExplicitLengthCheck": "error",
         "useFilenamingConvention": "error",
+        "useTemplate": "error",
         "useThrowOnlyError": "error"
       },
       "suspicious": {
@@ -90,7 +92,7 @@
             "noExcessiveCognitiveComplexity": {
               "level": "error",
               "options": {
-                "maxAllowedComplexity": 15
+                "maxAllowedComplexity": 9
               }
             },
             "noExcessiveLinesPerFunction": {
