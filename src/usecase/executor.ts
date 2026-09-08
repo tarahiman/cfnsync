@@ -51,13 +51,6 @@ export interface ExecutorContext {
   redact?: TextRedactor;
 }
 
-function targetContext(ctx: ExecutorContext): {
-  stackKey: string;
-  region: string;
-} {
-  return ctx.target;
-}
-
 // ===========================================================================
 // 命名規則 / 所有権判定(FR-2-6 / FR-2-7)
 // ===========================================================================
@@ -139,12 +132,38 @@ export interface PrepareResult {
 }
 
 /**
+ * FR-2-4 / FR-2-8: 変更セット作成前のスタック状態ガード。`ROLLBACK_COMPLETE`(スタック削除の
+ * 必要性を案内)と `*_IN_PROGRESS`(並行操作)を拒否する。CREATE 経路(`changeSetPhase.ts` の
+ * REVIEW_IN_PROGRESS でない既存スタック分岐)・UPDATE 経路(`prepareStack`)の双方が呼び、
+ * 拒否メッセージを 1 本化する。
+ */
+export function assertDeployableStackStatus(
+  stackName: string,
+  status: string,
+  context: { stackKey: string; region: string },
+): void {
+  if (status === 'ROLLBACK_COMPLETE') {
+    throw new StackStateError(
+      `Cannot deploy stack '${stackName}' because it is in ${status} state (a leftover after a failed CREATE). ` +
+        `Action: delete the stack, then re-run`,
+      context,
+    );
+  }
+
+  if (status.endsWith('_IN_PROGRESS')) {
+    throw new StackStateError(
+      `Stack '${stackName}' is in ${status} state. Another operation may be in progress, so aborting without creating a change set`,
+      context,
+    );
+  }
+}
+
+/**
  * 変更セット作成前のスタック状態ガード(design.md §7)。
  * - 不存在 → `CREATE`
  * - `REVIEW_IN_PROGRESS` → 残存変更セットを回収(自ステートのみ削除・他主体は中断)後 `CREATE`。
  *   **`DeleteStack` は決して呼ばない**(FR-2-10)。
- * - `ROLLBACK_COMPLETE` → `StackStateError`(スタック削除の必要性を案内。FR-2-4)
- * - `*_IN_PROGRESS` → `StackStateError`(並行操作。FR-2-8)
+ * - `ROLLBACK_COMPLETE` / `*_IN_PROGRESS` → `assertDeployableStackStatus` が拒否(FR-2-4 / FR-2-8)。
  * - その他の完了系 → `UPDATE`
  */
 export async function prepareStack(
@@ -170,20 +189,7 @@ export async function prepareStack(
     return { kind: 'create', stackStatus: status, reviewInProgress: true };
   }
 
-  if (status === 'ROLLBACK_COMPLETE') {
-    throw new StackStateError(
-      `Cannot deploy stack '${stackName}' because it is in ${status} state (a leftover after a failed CREATE). ` +
-        `Action: delete the stack, then re-run`,
-      targetContext(ctx),
-    );
-  }
-
-  if (status.endsWith('_IN_PROGRESS')) {
-    throw new StackStateError(
-      `Stack '${stackName}' is in ${status} state. Another operation may be in progress, so aborting without creating a change set`,
-      targetContext(ctx),
-    );
-  }
+  assertDeployableStackStatus(stackName, status, ctx.target);
 
   return { kind: 'update', stackStatus: status, reviewInProgress: false };
 }
@@ -222,7 +228,7 @@ export async function reclaimStaleChangeSets(
       `Stack '${stackName}' has unexecuted change set(s) not owned by cfnsync (this state): ` +
         `${foreign.join(', ')}. The same stack may be operated on by a different state configuration, another tool, or a human. ` +
         `Resolve it manually (execute or delete the change set), then re-run`,
-      targetContext(ctx),
+      ctx.target,
     );
   }
 
@@ -401,7 +407,7 @@ export async function executeWithReinspection(
       `The re-inspection immediately before execution could not uniquely confirm the name and ARN of own change set '${ownChangeSetName}' (${ownChangeSetId}): ` +
         `${summaries.map((summary) => `${summary.name} (${summary.id})`).join(', ') || '(none)'}. ` +
         `Aborting execution because ExecuteChangeSet implicitly deletes other change sets on the same stack`,
-      targetContext(ctx),
+      ctx.target,
     );
   }
 

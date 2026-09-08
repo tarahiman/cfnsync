@@ -2,15 +2,10 @@ import type { ResolvedStackTarget } from '../../core/config.js';
 import { InvariantError, StackStateError } from '../../core/errors.js';
 import type { PlannedOperation } from '../../core/plan.js';
 import type { StackEntry } from '../../core/state.js';
-import type { CloudFormationGateway } from '../../ports/index.js';
+import type { CloudFormationGateway, StackSummary } from '../../ports/index.js';
+import { buildStackDiff, type StackEventLine } from '../../report/index.js';
 import {
-  buildStackDiff,
-  type DeployReport,
-  type ReconciliationRecord,
-  type StackEventLine,
-  type StackResult,
-} from '../../report/index.js';
-import {
+  assertDeployableStackStatus,
   createManagedChangeSet,
   type ExecutorContext,
   executeWithReinspection,
@@ -21,7 +16,7 @@ import { fencedGateway } from '../fencing.js';
 import { identityRedactor } from '../redactor.js';
 import { requiredTemplate } from './planning.js';
 import { recoverExistingCreate } from './recovery.js';
-import { emitProgress, publicErrorMessage, stackResult } from './results.js';
+import { publicErrorMessage, recordDone, stackResult } from './results.js';
 import { saveSuccessfulEntry } from './statePersistence.js';
 import {
   type CreatedChangeSet,
@@ -30,6 +25,7 @@ import {
   type PendingChangeSetExecution,
   type PhaseAResult,
   type PreparedPlan,
+  type RunAccumulator,
   StackExecutionFailure,
   UPDATE_EXECUTABLE_STATUSES,
 } from './types.js';
@@ -38,11 +34,9 @@ export async function planCreateOrUpdate(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   prepared: PreparedPlan,
-  report: DeployReport,
-  resultByOperation: Map<PlannedOperation, StackResult>,
-  reconciliations: ReconciliationRecord[],
-  createdChangeSets: Set<CreatedChangeSet>,
+  run: RunAccumulator,
 ): Promise<PhaseAResult> {
+  const { report, resultByOperation, reconciliations, createdChangeSets } = run;
   const target = operation.entry.target;
   if (!target)
     throw new InvariantError(
@@ -60,41 +54,25 @@ export async function planCreateOrUpdate(
 
   const rawCfn = ctx.deps.cfnFactory(operation.region);
   const cfn = fencedGateway(rawCfn, ctx.deps.backend, ctx.lock);
-  let knownSummary:
-    | { summary: Awaited<ReturnType<CloudFormationGateway['describeStack']>> }
-    | undefined;
+  let knownSummary: { summary: StackSummary | undefined } | undefined;
 
   // design §7: added だが完成済みの同名スタックがある場合は CREATE 復旧比較へ分岐。
   if (operation.kind === 'create') {
     const existing = await cfn.describeStack(target.stackName);
     knownSummary = { summary: existing };
     if (existing && existing.status !== 'REVIEW_IN_PROGRESS') {
-      if (existing.status === 'ROLLBACK_COMPLETE') {
-        throw new StackStateError(
-          `Stack '${target.stackName}' is in ROLLBACK_COMPLETE state. Delete it and re-run`,
-          { stackKey: target.stackKey, region: target.region },
-        );
-      }
-      if (existing.status.endsWith('_IN_PROGRESS')) {
-        throw new StackStateError(
-          `Stack '${target.stackName}' is in ${existing.status} state. Re-run after the in-progress operation completes`,
-          { stackKey: target.stackKey, region: target.region },
-        );
-      }
-      await recoverExistingCreate(
-        ctx,
-        target,
+      assertDeployableStackStatus(target.stackName, existing.status, {
+        stackKey: target.stackKey,
+        region: target.region,
+      });
+      await recoverExistingCreate(ctx, run, {
+        operation,
         source,
-        prepared.parsedTemplates.get(target.templatePath),
+        parsed: prepared.parsedTemplates.get(target.templatePath),
         analysis,
-        operation.entry.templateHash,
-        operation.entry.inputsHash,
-        operation.entry.renamedFrom,
         existing,
         cfn,
-        report,
-        reconciliations,
-      );
+      });
       resultByOperation.set(operation, stackResult(target, 'no-change'));
       return { hasDiff: false };
     }
@@ -125,12 +103,7 @@ export async function planCreateOrUpdate(
     await requireManagedStackIdentity(cfn, target, operation.entry.stateEntry);
   }
 
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
-    'changeset-create-start',
-    'Creating change set',
-  );
+  run.notify(operation, 'changeset-create-start', 'Creating change set');
   // FR-5-12c: CreateChangeSet が ARN を返した直後に回収対象へ登録する。以降の待機例外・
   // name/ARN 不一致・非空 FAILED はいずれも「AWS 上に変更セットが実在する」状態で throw
   // されるため、成功復帰を待って登録すると回収漏れになる。
@@ -172,9 +145,8 @@ export async function planCreateOrUpdate(
     diff.warnings.push(...analysis.warnings);
     report.diffs.push(diff);
     resultByOperation.set(operation, stackResult(target, 'no-change'));
-    emitProgress(
-      ctx.deps,
-      { stackKey: operation.stackKey, region: operation.region },
+    run.notify(
+      operation,
       'no-change',
       'Treating as no changes because the change set is empty',
     );
@@ -217,9 +189,8 @@ export async function planCreateOrUpdate(
   });
   diff.warnings.push(...analysis.warnings);
   report.diffs.push(diff);
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
+  run.notify(
+    operation,
     'diff-ready',
     `Diff finalized (${diff.resources.length} resource(s))`,
   );
@@ -336,10 +307,9 @@ async function assertExecutableStackState(
 export async function executeApprovedChangeSet(
   ctx: LockedRunContext,
   action: PendingChangeSetExecution,
-  report: DeployReport,
-  resultByOperation: Map<PlannedOperation, StackResult>,
-  createdChangeSets: Set<CreatedChangeSet>,
+  run: RunAccumulator,
 ): Promise<OperationResult> {
+  const { report, createdChangeSets } = run;
   const { operation, target, cfn, executor, analysis } = action;
   const redact = executor.redact ?? identityRedactor;
 
@@ -352,12 +322,7 @@ export async function executeApprovedChangeSet(
   // FR-5-17e 手順 1: DescribeStacks による存在・stackId・状態の確認。
   await assertExecutableStackState(action);
 
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
-    'execute-start',
-    'Executing change set',
-  );
+  run.notify(operation, 'execute-start', 'Executing change set');
   // FR-5-17e 手順 2〜4: ListChangeSets 再検査 → fencing(fencedGateway の verifyLock)
   // → ExecuteChangeSet。この 3 つの間に AWS 呼び出しを挟んではならない。
   await executeWithReinspection(
@@ -372,7 +337,7 @@ export async function executeApprovedChangeSet(
       createdChangeSets.delete(action.changeSet);
     },
   );
-  let final: Awaited<ReturnType<CloudFormationGateway['waitForStack']>>;
+  let final: StackSummary;
   try {
     final = await cfn.waitForStack(target.stackName, {
       eventCursor,
@@ -454,11 +419,10 @@ export async function executeApprovedChangeSet(
     action.changeSetKind === 'create' ? 'CREATE' : 'UPDATE',
     final.stackId,
   );
-  resultByOperation.set(operation, stackResult(target, 'succeeded'));
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
-    'done',
+  recordDone(
+    run,
+    operation,
+    stackResult(target, 'succeeded'),
     'Deployment completed',
   );
   return { hasDiff: true };
@@ -473,9 +437,7 @@ async function requireManagedStackIdentity(
   cfn: CloudFormationGateway,
   target: ResolvedStackTarget,
   stateEntry: StackEntry | undefined,
-): Promise<
-  NonNullable<Awaited<ReturnType<CloudFormationGateway['describeStack']>>>
-> {
+): Promise<StackSummary> {
   if (!stateEntry?.stackId) {
     throw new StackStateError(
       `The state for stack '${target.stackName}' has no recorded stackId (ARN). Refusing automatic UPDATE. Run cfnsync import or a state migration`,

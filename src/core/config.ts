@@ -281,6 +281,19 @@ export function resolveTargets(config: CfnSyncConfig): ResolvedStackTarget[] {
   return targets;
 }
 
+/** 設定上の対象リージョンを出現順・重複排除で返す(接続先ヘッダ用。FR-7-8)。 */
+export function targetRegions(config: CfnSyncConfig): string[] {
+  const seen = new Set<string>();
+  const regions: string[] = [];
+  for (const target of resolveTargets(config)) {
+    if (!seen.has(target.region)) {
+      seen.add(target.region);
+      regions.push(target.region);
+    }
+  }
+  return regions;
+}
+
 /** dependsOn のテンプレートパスを同一リージョンのスタックキーへ解決する。 */
 /** design.md §8.2: 値が __REQUIRED__ のままのパラメータ名を列挙する。 */
 export function findRequiredPlaceholders(

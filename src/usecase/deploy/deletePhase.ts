@@ -7,14 +7,9 @@ import {
   removePendingDeletion,
   removeStackEntry,
 } from '../../core/state.js';
-import {
-  buildStackDiff,
-  type DeployReport,
-  type ReconciliationRecord,
-  type StackResult,
-} from '../../report/index.js';
+import { buildStackDiff } from '../../report/index.js';
 import { deleteManagedStack } from '../delete.js';
-import { emitProgress, resultForOperation } from './results.js';
+import { recordDone, recordFailed, resultForOperation } from './results.js';
 import { saveState } from './statePersistence.js';
 import type {
   LockedRunContext,
@@ -22,6 +17,7 @@ import type {
   PendingStackDeletion,
   PhaseAResult,
   PreparedPlan,
+  RunAccumulator,
 } from './types.js';
 
 export function deletableRecord(
@@ -34,10 +30,9 @@ export async function planDeletion(
   ctx: LockedRunContext,
   operation: PlannedOperation,
   prepared: PreparedPlan,
-  report: DeployReport,
-  resultByOperation: Map<PlannedOperation, StackResult>,
-  reconciliations: ReconciliationRecord[],
+  run: RunAccumulator,
 ): Promise<PhaseAResult> {
+  const { report, resultByOperation, reconciliations } = run;
   const record = deletableRecord(operation.entry);
   if (!record)
     throw new InvariantError(
@@ -89,14 +84,10 @@ export async function planDeletion(
       kind: 'deleted-absent',
       stateUpdated,
     });
-    resultByOperation.set(
+    recordDone(
+      run,
       operation,
       resultForOperation(operation, 'succeeded'),
-    );
-    emitProgress(
-      ctx.deps,
-      { stackKey: operation.stackKey, region: operation.region },
-      'done',
       'The stack no longer exists; synced as already deleted',
     );
     return { hasDiff: true };
@@ -112,12 +103,7 @@ export async function planDeletion(
       const message =
         'Marked for deletion. --allow-delete is required to actually delete it';
       diff.warnings.push(message);
-      emitProgress(
-        ctx.deps,
-        { stackKey: operation.stackKey, region: operation.region },
-        'skipped',
-        message,
-      );
+      run.notify(operation, 'skipped', message);
     }
     resultByOperation.set(operation, resultForOperation(operation, 'skipped'));
     return { hasDiff: true };
@@ -167,7 +153,7 @@ async function reconcileAbsentDeletion(
 export async function deleteApprovedStack(
   ctx: LockedRunContext,
   action: PendingStackDeletion,
-  resultByOperation: Map<PlannedOperation, StackResult>,
+  run: RunAccumulator,
 ): Promise<OperationResult> {
   const { operation, record, diff, cfn } = action;
 
@@ -205,25 +191,11 @@ export async function deleteApprovedStack(
       `the state has no record of the paired new stack's create succeeding. ` +
       `Refusing DeleteStack to avoid deleting only the old stack`;
     diff.warnings.push(message);
-    const failure = resultForOperation(operation, 'failed');
-    failure.errorMessage = message;
-    failure.rolledBack = false;
-    resultByOperation.set(operation, failure);
-    emitProgress(
-      ctx.deps,
-      { stackKey: operation.stackKey, region: operation.region },
-      'failed',
-      message,
-    );
+    recordFailed(run, operation, message);
     return { hasDiff: true, failed: true };
   }
 
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
-    'delete-start',
-    'Deleting stack',
-  );
+  run.notify(operation, 'delete-start', 'Deleting stack');
 
   const deleted = await deleteManagedStack({
     target: {
@@ -245,30 +217,19 @@ export async function deleteApprovedStack(
   });
 
   if (deleted.outcome === 'refused') {
-    diff.warnings.push(
-      deleted.errorMessage ?? 'Deletion refused by a safety guard',
-    );
-    const failure = resultForOperation(operation, 'failed');
-    failure.errorMessage =
+    const message =
       deleted.errorMessage ?? 'Deletion refused by a safety guard';
-    failure.rolledBack = false;
-    resultByOperation.set(operation, failure);
-    emitProgress(
-      ctx.deps,
-      { stackKey: operation.stackKey, region: operation.region },
-      'failed',
-      deleted.errorMessage ?? 'Deletion refused by a safety guard',
-    );
+    diff.warnings.push(message);
+    recordFailed(run, operation, message);
     return { hasDiff: true, failed: true };
   }
 
   ctx.state.state = deleted.state;
   ctx.state.version = deleted.version;
-  resultByOperation.set(operation, resultForOperation(operation, 'succeeded'));
-  emitProgress(
-    ctx.deps,
-    { stackKey: operation.stackKey, region: operation.region },
-    'done',
+  recordDone(
+    run,
+    operation,
+    resultForOperation(operation, 'succeeded'),
     'Stack deleted',
   );
   return { hasDiff: true };

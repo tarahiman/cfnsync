@@ -14,6 +14,19 @@ export interface FencedLockScope {
   backend: StateBackend;
 }
 
+/**
+ * `withFencedLock` へ渡す `LockInfo` を組み立てる。`owner` の解決(環境変数 →
+ * 既定値 `'cfnsync'`)を deploy / import で共有する。`runId` / `startedAt` は
+ * 呼び出し側がテスト注入可能な形で解決済みの値を渡すこと。
+ */
+export function makeLockInfo(runId: string, startedAt: string): LockInfo {
+  return {
+    runId,
+    startedAt,
+    owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
+  };
+}
+
 export async function assertFenced(
   backend: StateBackend,
   lock: LockHandle,

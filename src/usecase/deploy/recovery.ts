@@ -1,40 +1,45 @@
-import type { ResolvedStackTarget } from '../../core/config.js';
 import type { DetectedEntry } from '../../core/detect.js';
 import { InvariantError, StackStateError } from '../../core/errors.js';
+import type { PlannedOperation } from '../../core/plan.js';
 import {
   extractParameterDefaults,
   parseCfnTemplate,
   parsedTemplatesEquivalent,
   type TemplateAnalysis,
 } from '../../core/template.js';
-import type { CloudFormationGateway } from '../../ports/index.js';
-import {
-  buildStackDiff,
-  type DeployReport,
-  type ReconciliationRecord,
-} from '../../report/index.js';
+import type { CloudFormationGateway, StackSummary } from '../../ports/index.js';
+import { buildStackDiff } from '../../report/index.js';
 import { MANAGEMENT_TAG_KEY } from '../executor.js';
-import { emitProgress } from './results.js';
 import { saveSuccessfulEntry } from './statePersistence.js';
-import type { LockedRunContext } from './types.js';
+import type { LockedRunContext, RunAccumulator } from './types.js';
 
 export async function recoverExistingCreate(
   ctx: LockedRunContext,
-  target: ResolvedStackTarget,
-  source: string,
-  desiredParsed: unknown,
-  analysis: TemplateAnalysis,
-  templateHash: string | undefined,
-  inputsHash: string | undefined,
-  /** FR-1-18: リネームの新名側なら、再同期と同一 CAS で旧名の削除待ちを記録する。 */
-  renamedFrom: DetectedEntry['renamedFrom'],
-  existing: NonNullable<
-    Awaited<ReturnType<CloudFormationGateway['describeStack']>>
-  >,
-  cfn: CloudFormationGateway,
-  report: DeployReport,
-  reconciliations: ReconciliationRecord[],
+  run: RunAccumulator,
+  args: {
+    operation: PlannedOperation;
+    source: string;
+    parsed: unknown;
+    analysis: TemplateAnalysis;
+    existing: StackSummary;
+    cfn: CloudFormationGateway;
+  },
 ): Promise<void> {
+  const {
+    operation,
+    source,
+    parsed: desiredParsed,
+    analysis,
+    existing,
+    cfn,
+  } = args;
+  const target = operation.entry.target;
+  if (!target)
+    throw new InvariantError(
+      `Internal error: no target for ${operation.stackKey}`,
+      { stackKey: operation.stackKey, region: operation.region },
+    );
+
   // FR-5-5b4: 管理タグは「自ステート由来」であることしか証明せず、どの入力で作成された
   // かは証明しない。NoEcho の実値と dependsOn は AWS 側と照合できないため、これらが
   // 存在する対象を「事実確認済み」として再同期すると、未適用の希望値を適用済みとして
@@ -115,33 +120,27 @@ export async function recoverExistingCreate(
   // FR-5-5b3: ここへ到達するのは NoEcho も dependsOn も持たない対象だけであり、
   // inputsHash の全構成要素を AWS 側と照合できている(比較から除外した項目はない)。
   diff.warnings.push(...analysis.warnings);
-  report.diffs.push(diff);
+  run.report.diffs.push(diff);
 
-  if (!templateHash || !inputsHash) {
+  if (!operation.entry.templateHash || !operation.entry.inputsHash) {
     throw new InvariantError(`Internal error: no hash for ${target.stackKey}`, {
       stackKey: target.stackKey,
       region: target.region,
     });
   }
-  const entry: DetectedEntry = {
-    stackKey: target.stackKey,
-    changeType: 'added',
-    target,
-    templateHash,
-    inputsHash,
-    // FR-1-18: 再同期は同一スタックキーを新スタック名で上書きするため、
-    // 旧スタック名の削除待ちを同じ保存に含めないと追跡が失われる(Issue #16)。
-    ...(renamedFrom ? { renamedFrom } : {}),
-  };
+  // FR-1-18: 再同期は同一スタックキーを新スタック名で上書きするため、旧スタック名の
+  // 削除待ち(renamedFrom があれば)も同じ保存に含めないと追跡が失われる(Issue #16)。
+  // operation.entry は既に此の CREATE 対象の added エントリそのものであり、
+  // target/templateHash/inputsHash/renamedFrom を個別の引数として渡し直す必要はない。
+  const entry: DetectedEntry = { ...operation.entry, changeType: 'added' };
   await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
-  reconciliations.push({
+  run.reconciliations.push({
     stackKey: target.stackKey,
     region: target.region,
     kind: 'create-recovery',
     stateUpdated: true,
   });
-  emitProgress(
-    ctx.deps,
+  run.notify(
     { stackKey: target.stackKey, region: target.region },
     'no-change',
     'Re-synced as no changes via CREATE recovery',
@@ -174,10 +173,3 @@ function recordsEqual(
 function arraysEqual(a: string[], b: string[]): boolean {
   return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 }
-
-/**
- * FR-5-4: 進捗マイルストーンを onProgress へ fire-and-forget で通知する。
- * 純粋に観測用であり、exitCode / hasDiff / スキップ判定など制御フローには一切影響しない。
- * message は cfnsync 由来の静的文字列か、'failed' 段階に限り report の errorMessage に
- * 格納するのと同一の redactor 適用済み文字列(NFR-4)であること。
- */

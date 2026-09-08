@@ -1,5 +1,5 @@
 import type { ResolvedStackTarget } from '../../core/config.js';
-import { CfnSyncError } from '../../core/errors.js';
+import { publicMessageOf } from '../../core/errors.js';
 import type { PlannedOperation } from '../../core/plan.js';
 import { parseStackKey, type StackKey } from '../../core/types.js';
 import type {
@@ -19,20 +19,13 @@ import {
 } from './types.js';
 
 export function markUnprocessedAsSkipped(
-  ctx: LockedRunContext,
+  run: RunAccumulator,
   prepared: PreparedPlan,
-  resultByOperation: Map<PlannedOperation, StackResult>,
   message: string,
 ): void {
   for (const operation of prepared.plan.index.flattened) {
-    if (resultByOperation.has(operation)) continue;
-    resultByOperation.set(operation, resultForOperation(operation, 'skipped'));
-    emitProgress(
-      ctx.deps,
-      { stackKey: operation.stackKey, region: operation.region },
-      'skipped',
-      message,
-    );
+    if (run.resultByOperation.has(operation)) continue;
+    recordSkipped(run, operation, message);
   }
 }
 
@@ -252,5 +245,5 @@ export function publicErrorMessage(
   error: unknown,
   fallback = 'An unexpected error occurred',
 ): string {
-  return error instanceof CfnSyncError ? error.publicMessage : fallback;
+  return publicMessageOf(error, fallback);
 }
