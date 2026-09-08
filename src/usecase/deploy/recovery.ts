@@ -1,3 +1,4 @@
+import { arraysEqual } from '../../core/arrays.js';
 import type { DetectedEntry } from '../../core/detect.js';
 import { InvariantError, StackStateError } from '../../core/errors.js';
 import type { PlannedOperation } from '../../core/plan.js';
@@ -168,8 +169,4 @@ function recordsEqual(
     aKey.localeCompare(bKey),
   );
   return JSON.stringify(aEntries) === JSON.stringify(bEntries);
-}
-
-function arraysEqual(a: string[], b: string[]): boolean {
-  return JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 }

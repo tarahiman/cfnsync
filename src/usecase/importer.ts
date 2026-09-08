@@ -29,6 +29,7 @@
  */
 
 import { parseDocument } from 'yaml';
+import { arraysEqual } from '../core/arrays.js';
 
 import type {
   Capability,
@@ -672,9 +673,10 @@ function resolveTemplateRepresentation(
     representation.parsed,
     deployedParsed,
   );
-  const sameCapabilities =
-    JSON.stringify([...representation.capabilities].sort()) ===
-    JSON.stringify([...summary.capabilities].sort());
+  const sameCapabilities = arraysEqual(
+    representation.capabilities,
+    summary.capabilities,
+  );
   if (!sameTemplate || !sameCapabilities) {
     const regions = representation.regions.join(', ');
     const differences = [
