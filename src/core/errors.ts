@@ -13,6 +13,16 @@ function causeMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/**
+ * Node/DOM 例外の `code` プロパティ(`ENOENT` / `EEXIST` / `ABORT_ERR` 等)を
+ * 型安全に取り出す。`err` が `code` を持たない場合は undefined。
+ */
+export function errorCode(err: unknown): string | undefined {
+  return typeof err === 'object' && err !== null && 'code' in err
+    ? ((err as { code?: unknown }).code as string | undefined)
+    : undefined;
+}
+
 export class CfnSyncError extends Error {
   readonly publicMessage: string;
   readonly stackKey?: string;

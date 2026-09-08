@@ -619,6 +619,58 @@ describe('待機(ポーリング間隔は注入で 0ms)', () => {
     ).toBe(true);
   });
 
+  // 上の NFR-5 テストが実質的に担っている FR-2 / FR-3 の内容を、対応 ID を含む
+  // it() 名でも明示的に固定する(docs/spec/README.md の「テスト名に対応 ID を含める」)。
+  it('FR-2: waitForChangeSet は複数ページの Changes を結合し、リソース種別・置換要否等を正規化する', async () => {
+    cfnMock
+      .on(DescribeChangeSetCommand)
+      .resolvesOnce({
+        ChangeSetName: 'cs',
+        ChangeSetId: 'arn:cs/1',
+        Status: 'CREATE_COMPLETE',
+        ExecutionStatus: 'AVAILABLE',
+        Changes: [makeChange('A')],
+        NextToken: 'page-2',
+      })
+      .resolvesOnce({ Changes: [makeChange('B')] });
+
+    const detail = await makeGateway().waitForChangeSet('stk', 'cs');
+
+    expect(detail.changes.map((change) => change.logicalResourceId)).toEqual([
+      'A',
+      'B',
+    ]);
+    expect(detail.changes[0]).toMatchObject({
+      action: 'Modify',
+      logicalResourceId: 'A',
+      resourceType: 'AWS::EC2::VPC',
+      replacement: 'True',
+      scope: ['Properties'],
+    });
+  });
+
+  it('FR-3: waitForChangeSet は全ページで DescribeChangeSet に IncludePropertyValues=true を指定する', async () => {
+    cfnMock
+      .on(DescribeChangeSetCommand)
+      .resolvesOnce({
+        ChangeSetName: 'cs',
+        ChangeSetId: 'arn:cs/1',
+        Status: 'CREATE_COMPLETE',
+        ExecutionStatus: 'AVAILABLE',
+        Changes: [makeChange('A')],
+        NextToken: 'page-2',
+      })
+      .resolvesOnce({ Changes: [makeChange('B')] });
+
+    await makeGateway().waitForChangeSet('stk', 'cs');
+
+    const calls = cfnMock.commandCalls(DescribeChangeSetCommand);
+    expect(calls.length).toBeGreaterThan(1);
+    expect(
+      calls.every((call) => call.args[0].input.IncludePropertyValues === true),
+    ).toBe(true);
+  });
+
   it('NFR-5: waitForStack はイベントを5秒ごと、スタック状態を5→10→15秒の上限付きバックオフで確認する', async () => {
     cfnMock
       .on(DescribeStacksCommand)
