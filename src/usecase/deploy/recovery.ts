@@ -134,7 +134,12 @@ export async function recoverExistingCreate(
   // operation.entry は既に此の CREATE 対象の added エントリそのものであり、
   // target/templateHash/inputsHash/renamedFrom を個別の引数として渡し直す必要はない。
   const entry: DetectedEntry = { ...operation.entry, changeType: 'added' };
-  await saveSuccessfulEntry(ctx, entry, analysis, 'SYNC', existing.stackId);
+  await saveSuccessfulEntry(ctx, {
+    detected: entry,
+    analysis,
+    lastAction: 'SYNC',
+    stackId: existing.stackId,
+  });
   run.reconciliations.push({
     stackKey: target.stackKey,
     region: target.region,

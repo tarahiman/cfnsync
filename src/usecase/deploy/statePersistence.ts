@@ -22,11 +22,14 @@ import type { DeployDeps, LockedRunContext } from './types.js';
 
 export async function saveSuccessfulEntry(
   ctx: LockedRunContext,
-  detected: DetectedEntry,
-  analysis: TemplateAnalysis,
-  lastAction: StackEntry['lastAction'],
-  stackId: string,
+  args: {
+    detected: DetectedEntry;
+    analysis: TemplateAnalysis;
+    lastAction: StackEntry['lastAction'];
+    stackId: string;
+  },
 ): Promise<void> {
+  const { detected, analysis, lastAction, stackId } = args;
   const target = detected.target;
   if (!target || !detected.templateHash || !detected.inputsHash) {
     throw new InvariantError(

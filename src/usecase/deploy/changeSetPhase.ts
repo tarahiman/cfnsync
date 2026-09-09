@@ -162,13 +162,12 @@ export async function planCreateOrUpdate(
         : await requireExistingStackId(cfn, target);
     // FR-5-5b1: CloudFormation 自身が実パラメータ(NoEcho 含む)で比較した結果であり、
     // 既成事実の記録として承認前に保存してよい。
-    await saveSuccessfulEntry(
-      ctx,
-      operation.entry,
+    await saveSuccessfulEntry(ctx, {
+      detected: operation.entry,
       analysis,
-      stack.kind === 'create' ? 'CREATE' : 'UPDATE',
+      lastAction: stack.kind === 'create' ? 'CREATE' : 'UPDATE',
       stackId,
-    );
+    });
     reconciliations.push({
       stackKey: operation.stackKey,
       region: operation.region,
@@ -412,13 +411,12 @@ export async function executeApprovedChangeSet(
   }
 
   // FR-1-9: waitForStack 完了後、CAS 保存直前に saveSuccessfulEntry が再 fencing する。
-  await saveSuccessfulEntry(
-    ctx,
-    action.entry,
+  await saveSuccessfulEntry(ctx, {
+    detected: action.entry,
     analysis,
-    action.changeSetKind === 'create' ? 'CREATE' : 'UPDATE',
-    final.stackId,
-  );
+    lastAction: action.changeSetKind === 'create' ? 'CREATE' : 'UPDATE',
+    stackId: final.stackId,
+  });
   recordDone(
     run,
     operation,

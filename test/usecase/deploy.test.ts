@@ -743,6 +743,90 @@ Resources:
     expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
   });
 
+  // 上の「rolledBack false」テストは最終結果の形だけを見ており、CREATE 経路
+  // (changeSetPhase.ts の `if (operation.kind === 'create')` 内)の
+  // assertDeployableStackStatus 呼び出しを消しても、後続の CREATE 復旧
+  // (recoverExistingCreate)が別理由(管理タグ不一致)で失敗するため偽陽性で
+  // 通ってしまう。以下の 2 件は guard 自身の呼び出しを直接ピン止めする:
+  // guard 由来の StackStateError メッセージそのもの、かつ recoverExistingCreate
+  // の最初の AWS 読み取りである getTemplate が 0 回であることを確認する
+  // (getTemplate が 1 回でも呼ばれていれば、guard を経由せず復旧処理へ
+  // 進んでしまったことを意味する)。
+  it('FR-2-4(CREATE 経路): added だが同名スタックが ROLLBACK_COMPLETE の場合、CREATE 復旧へ進まず guard で拒否する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    // accountId を先に記録した空ステートを渡し、FR-1-13 の初回ブートストラップ保存
+    // (verifyStateAccount)を発生させない。こうしないと saveCalls が guard とは
+    // 無関係に 1 件になり、guard 由来の保存有無を判定できない。
+    const s = setup(
+      config,
+      templatesOf({ 'a.yaml': TEMPLATE_A }),
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        status: 'ROLLBACK_COMPLETE',
+      }),
+    );
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      outcome: 'failed',
+      rolledBack: false,
+      errorMessage:
+        "Cannot deploy stack 'A' because it is in ROLLBACK_COMPLETE state " +
+        '(a leftover after a failed CREATE). Action: delete the stack, then re-run',
+    });
+    // recoverExistingCreate へ進んでいれば真っ先に getTemplate を呼ぶ。0 回のままなら
+    // guard が recoverExistingCreate の**手前**で拒否したことの直接の証拠になる。
+    expect(fake.callsOf('getTemplate')).toHaveLength(0);
+    expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
+  it('FR-2-8(CREATE 経路): added だが同名スタックが *_IN_PROGRESS の場合、CREATE 復旧へ進まず guard で拒否する', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const s = setup(
+      config,
+      templatesOf({ 'a.yaml': TEMPLATE_A }),
+      withAccountId(createInitialState(), ACCOUNT),
+    );
+    const fake = gatewayFor(s);
+    fake.stacks.set(
+      'A',
+      makeStackSummary({
+        stackName: 'A',
+        status: 'UPDATE_IN_PROGRESS',
+      }),
+    );
+
+    const result = await s.run();
+    const failed = result.report.result?.stacks.find(
+      (stack) => stack.stackName === 'A',
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(failed).toMatchObject({
+      outcome: 'failed',
+      rolledBack: false,
+      errorMessage:
+        "Stack 'A' is in UPDATE_IN_PROGRESS state. Another operation may be " +
+        'in progress, so aborting without creating a change set',
+    });
+    expect(fake.callsOf('getTemplate')).toHaveLength(0);
+    expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+    expect(fake.callsOf('executeChangeSet')).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
   it('FR-4-3(否定): rollback を観測しない UPDATE_FAILED は reason に ROLLBACK が含まれても false', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
@@ -1463,6 +1547,142 @@ Resources:
     );
   });
 
+  // design §4.3: requireManagedStackIdentity は 1 回の update で最大 3 回呼ばれ、それぞれが
+  // 別の副作用(reclaimStaleChangeSets / CreateChangeSet / 空変更セット state 保存)を
+  // 個別に守る、意図的な非重複実装(issue #28 item 3 の CAUTION)。上の 2 テストは
+  // 「state 側の stackId が最初から壊れている」ケースであり、その場合は 1 回目の照合が
+  // 即座に検出するため、2 回目・3 回目の呼び出しを個別に消しても検出できない
+  // (Codex のレビューで実証済み: 3 箇所いずれを単独で無効化しても既存 739 件は全緑)。
+  // 以下の 3 件は「1 回目は通過し、その後で差し替えが起きる」タイミングを再現し、
+  // 各呼び出し位置を単独でピン止めする。
+  it('design §4.3(1 回目): reclaimStaleChangeSets 直前の身元照合が、差し替えを検出し ListChangeSets へ進ませない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const initial = recordedState(config, templates, { modified: true });
+    // state 側の stackId を最初から壊す(=1 回目の照合が即座に検出できる状態)。
+    initial.stacks[`a.yaml@${REGION}`].stackId =
+      'arn:aws:cloudformation:replaced-before-reclaim';
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    // 自ステート所有の残存変更セットを登録しておく。reclaimStaleChangeSets が実際に
+    // 走れば ListChangeSets で検出し DeleteChangeSet で回収するはずのもの。1 回目の
+    // 照合が手前で拒否していれば、この 2 つの AWS 呼び出しは一切発生しない。
+    fake.changeSets.set('A', [
+      makeChangeSetSummary(
+        `cfnsync-${STATE_ID}-0000000000000000-20260101T000000000`,
+      ),
+    ]);
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/stackId|ARN|import/i),
+      }),
+    );
+    expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+    // 既存の「§4.3(Stack ARN再レビュー⑥)」テストが確認していない部分:
+    // 1 回目の照合が無効化され reclaimStaleChangeSets まで進んでいた場合、
+    // ここが 0 から 1 以上に変わる。
+    expect(fake.callsOf('listChangeSets')).toHaveLength(0);
+    expect(fake.callsOf('deleteChangeSet')).toHaveLength(0);
+  });
+
+  it('design §4.3(2 回目): CreateChangeSet 直前の身元照合が、承認前の差し替えを検出し CreateChangeSet へ進ませない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const initial = recordedState(config, templates, { modified: true });
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    const staleName = `cfnsync-${STATE_ID}-0000000000000000-20260101T000000000`;
+    // 自ステート所有の残存変更セット。1 回目の照合を通過させて reclaimStaleChangeSets が
+    // 実際に走ったこと(=1 回目は無傷であること)を回収の有無で確認できるようにする。
+    fake.changeSets.set('A', [makeChangeSetSummary(staleName)]);
+
+    // 呼び出し回数ではなく、実際のマイルストーン(reclaimStaleChangeSets 完了後 /
+    // CreateChangeSet 前)で差し替えを注入する。こうすることで、2 回目の照合自体を
+    // 消した場合に Phase B の実行直前再検査(別の防御層)が偶然この注入を拾って
+    // 「結局どこかで拒否される」という別要因の偽陰性を避けられる — 2 回目の照合の
+    // 有無だけを CreateChangeSet 呼び出しの有無として観測できるようにする。
+    const describeStack = fake.describeStack.bind(fake);
+    fake.describeStack = async (stackName) => {
+      const summary = await describeStack(stackName);
+      if (stackName !== 'A' || !summary) return summary;
+      const reclaimed = fake.callsOf('listChangeSets').length > 0;
+      const created = fake.callsOf('createChangeSet').length > 0;
+      if (reclaimed && !created) {
+        return {
+          ...summary,
+          stackId: 'arn:aws:cloudformation:replaced-before-create',
+        };
+      }
+      return summary;
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    // 1 回目の照合は無傷 → reclaimStaleChangeSets が実際に走り、残存変更セットを回収済み。
+    expect(fake.callsOf('listChangeSets')).toHaveLength(1);
+    expect(fake.callsOf('deleteChangeSet')).toHaveLength(1);
+    // 2 回目の照合が防いでいれば CreateChangeSet には到達しない。
+    expect(fake.callsOf('createChangeSet')).toHaveLength(0);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/stackId|ARN|import/i),
+      }),
+    );
+  });
+
+  it('design §4.3(3 回目): 空変更セット state 保存直前の身元照合が、承認前の差し替えを検出し state を保存させない', async () => {
+    const config = configOf({ 'a.yaml': { stackName: 'A' } });
+    const templates = templatesOf({ 'a.yaml': TEMPLATE_A });
+    const initial = recordedState(config, templates, { modified: true });
+    const s = setup(config, templates, initial);
+    const fake = gatewayFor(s);
+    setExistingStacks(config, fake);
+    // 空変更セット(FR-2 の既知の「変更なし」定型文)を発生させ、3 回目の
+    // requireManagedStackIdentity(state 保存直前)まで到達させる。
+    fake.defaultChangeSetDetail = makeChangeSetDetail({
+      status: 'FAILED',
+      statusReason:
+        "The submitted information didn't contain changes. Submit different information to create a change set.",
+    });
+
+    let describeCount = 0;
+    const describeStack = fake.describeStack.bind(fake);
+    fake.describeStack = async (stackName) => {
+      const summary = await describeStack(stackName);
+      if (stackName !== 'A' || !summary) return summary;
+      describeCount += 1;
+      // 1〜3 回目(prepareStack 自身 / 1・2 回目の requireManagedStackIdentity)は
+      // 一致させ、CreateChangeSet(空変更セット判定)まで正常に進めさせる。4 回目
+      // (3 回目の requireManagedStackIdentity、state 保存直前)から差し替えを注入する。
+      if (describeCount <= 3) return summary;
+      return {
+        ...summary,
+        stackId: 'arn:aws:cloudformation:replaced-before-save',
+      };
+    };
+
+    const result = await s.run();
+
+    expect(result.exitCode).toBe(1);
+    // CreateChangeSet(空変更セット)自体は成功している = 1・2 回目の照合は無傷。
+    expect(fake.callsOf('createChangeSet')).toHaveLength(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/stackId|ARN|import/i),
+      }),
+    );
+    // 3 回目の照合が防いでいれば、空変更セットの再同期は一切 state へ保存されない
+    // (FR-5-5b1 の既成事実の記録も、身元が確認できなければ保存してはならない)。
+    expect(s.backend.saveCalls).toHaveLength(0);
+  });
+
   it('FR-6-5 / FR-8-7(不完全解析): 明示 dependsOn があれば解析警告を解消済みとして保存する', async () => {
     const dynamic = `
 Resources: {}
@@ -1726,6 +1946,38 @@ Outputs:
       ),
     ).toHaveLength(1);
     expect(fake.callsOf('deleteStack')).toHaveLength(0);
+  });
+
+  // index.ts の 2 回目の assertRegionsAllowed(計画確定後)専用の回帰テスト。
+  // 1 回目(ロック取得前)は現行 config の targetRegions(config) しか見ないため、
+  // config から削除済みのテンプレートが state に残す旧リージョンは検査対象に入らない。
+  // 2 回目は計画確定後の全対象リージョン(削除対象の旧リージョンを含む)を再照合する
+  // (FR-13-8)。これを削除しても既存テストは 1 件も落ちない、という Codex の実験結果を
+  // 踏まえ、削除対象の旧リージョンが allowedRegions から外れたケースを直接ピン止めする。
+  it('FR-13-8(計画確定後の再照合): deleted の旧リージョンが allowedRegions から外れていれば AWS 呼び出し前に拒否する', async () => {
+    // Old.yaml はかつて REGION(ap-northeast-1)へデプロイされていたが、現在の config は
+    // REGION_2(us-west-2)しか許可しておらず、テンプレート自体も config から消えている
+    // (=deleted)。1 回目の assertRegionsAllowed は現行 config が対象に持つリージョンが
+    // 空(何もテンプレートが残っていない)なので何も検出できない。
+    const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } }, [REGION]);
+    const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
+    const state = recordedState(oldConfig, oldTemplates);
+    const config = configOf({}, [REGION_2]);
+    const s = setup(config, new Map(), state);
+    const fake = gatewayFor(s, REGION);
+
+    const result = await s.run({ allowDelete: true });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.report.result?.stacks).toContainEqual(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/allowedRegions|not allowed/i),
+      }),
+    );
+    // fail-closed: 計画確定後の再照合で拒否されていれば、削除対象リージョンの
+    // CloudFormation へは一切アクセスしない(DescribeStacks / DeleteStack を含む)。
+    expect(fake.calls).toHaveLength(0);
+    expect(s.backend.saveCalls).toHaveLength(0);
   });
 
   it('security(再レビュー2): テンプレートのパス変更で同一物理スタックを削除しない', async () => {
