@@ -76,3 +76,15 @@ export class LockError extends CfnSyncError {}
 /** テンプレートの解析失敗(構文・サポート外タグ)。元例外のソース断片は
  * 秘匿値を含みうるため message には surface しない(NFR-4)。 */
 export class TemplateParseError extends CfnSyncError {}
+
+/**
+ * 例外から利用者向けの安全なメッセージを取り出す(NFR-4)。`CfnSyncError` なら
+ * その `publicMessage`(秘匿値を含まない)、それ以外(分類不能な例外)は
+ * `fallback` の定型文へ置換する。
+ */
+export function publicMessageOf(
+  error: unknown,
+  fallback = 'An unexpected error occurred',
+): string {
+  return error instanceof CfnSyncError ? error.publicMessage : fallback;
+}

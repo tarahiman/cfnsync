@@ -100,14 +100,11 @@ export async function deleteManagedStack(
     !Array.isArray(target.entry.exports) ||
     !Array.isArray(target.entry.imports)
   ) {
-    return {
-      outcome: 'refused',
-      state: input.state,
-      version: input.version,
-      errorMessage:
-        `Stack '${target.entry.stackName}' has no dependency information (exports/imports) in the state. ` +
+    return refused(
+      input,
+      `Stack '${target.entry.stackName}' has no dependency information (exports/imports) in the state. ` +
         `Refusing to delete because a safe delete order cannot be reconstructed. Handle it manually`,
-    };
+    );
   }
 
   if (!Array.isArray(target.entry.dependsOn)) {
@@ -199,14 +196,11 @@ export async function deleteManagedStack(
 
   // FR-6-3: 削除保護は自動解除しない。解除 API 自体を ports 契約に持たない。
   if (summary.terminationProtection) {
-    return {
-      outcome: 'refused',
-      state: input.state,
-      version: input.version,
-      errorMessage:
-        `Stack '${target.entry.stackName}' has termination protection enabled. ` +
+    return refused(
+      input,
+      `Stack '${target.entry.stackName}' has termination protection enabled. ` +
         `Refusing to delete without automatically disabling it`,
-    };
+    );
   }
 
   // FR-1-9(削除): DeleteStack の実 API 呼び出し直前に fencing。
