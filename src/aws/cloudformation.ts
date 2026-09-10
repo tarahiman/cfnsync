@@ -3,12 +3,13 @@
  *
  * design.md §7(変更セットライフサイクル)/ §9(リトライ)/ NFR-3 に対応する。
  *
- * 本番のリトライは SDK の adaptive retry へ一本化する。外側リトライは既定 0 で、
- * SDK middleware を通らないテストクライアントの障害注入時だけ明示的に有効化できる。
+ * リトライは SDK の adaptive retry へ一本化し、ゲートウェイ層ではエラーを分類する。
  */
 
 import {
+  type $Command,
   CloudFormationClient,
+  type CloudFormationClientResolvedConfig,
   CreateChangeSetCommand,
   DeleteChangeSetCommand,
   DeleteStackCommand,
@@ -20,8 +21,9 @@ import {
   ExecuteChangeSetCommand,
   GetTemplateCommand,
   ListChangeSetsCommand,
+  type ServiceInputTypes,
+  type ServiceOutputTypes,
 } from '@aws-sdk/client-cloudformation';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { AwsError } from '../core/errors.js';
 import type {
   ChangeSetDetail,
@@ -35,6 +37,7 @@ import type {
   TemplateStage,
   WaitForStackOptions,
 } from '../ports/index.js';
+import { awsClientConfig } from './clientConfig.js';
 import { errorMessage, errorName, toAwsError } from './errors.js';
 
 /** `CloudFormationGatewayImpl` のコンストラクタオプション。 */
@@ -44,36 +47,12 @@ export interface CloudFormationGatewayOptions {
   profile?: string;
   /** SDK クライアントの maxAttempts(NFR-3)。既定 10。 */
   maxAttempts?: number;
-  /** テスト用外側再試行回数。本番既定は 0。 */
-  maxRetries?: number;
-  /** スロットリングリトライの基底バックオフ(ms)。既定 100。 */
-  baseDelayMs?: number;
-  /** ゲートウェイ層リトライの総経過時間上限(ms)。既定 60 秒。 */
-  maxRetryElapsedMs?: number;
-  /** full jitter 用乱数。既定 Math.random。テストで固定値を注入。 */
-  random?: () => number;
-  /** リトライ経過時間を測る時計。既定 Date.now。テストで注入。 */
-  retryNow?: () => number;
   /** 待機ポーリング間隔(ms)。既定 5000。テストで 0 を注入。 */
   pollIntervalMs?: number;
   /** 待機タイムアウト(ms)。既定 30 分。 */
   pollTimeoutMs?: number;
   /** バックオフ・ポーリングの sleep。既定は setTimeout。テストで no-op を注入。 */
   sleep?: (ms: number) => Promise<void>;
-}
-
-/** スロットリングとして再試行するエラー名(api-notes.md の 3 種 + 一般的な throttle 名)。 */
-const THROTTLING_ERROR_NAMES = new Set([
-  'ThrottlingException',
-  'Throttling',
-  'TooManyRequestsException',
-  'RequestLimitExceeded',
-  'ProvisionedThroughputExceededException',
-]);
-
-function isThrottlingError(err: unknown): boolean {
-  const name = errorName(err);
-  return typeof name === 'string' && THROTTLING_ERROR_NAMES.has(name);
 }
 
 /** `DescribeStacks` の「スタック不存在」ValidationError を判定する(§7)。 */
@@ -84,17 +63,7 @@ function isStackNotExistError(err: unknown): boolean {
   );
 }
 
-/** スタックのステータスが終端(進行中でない)か。`REVIEW_IN_PROGRESS` 等の `_IN_PROGRESS` は非終端。 */
-function isStackTerminal(status: string): boolean {
-  return (
-    status !== '' &&
-    !status.endsWith('_IN_PROGRESS') &&
-    !status.endsWith('_PENDING')
-  );
-}
-
-/** 変更セットのステータスが終端(`CREATE_COMPLETE` / `FAILED` / `DELETE_*` / `OBSOLETE`)か。 */
-function isChangeSetTerminal(status: string): boolean {
+function isTerminalStatus(status: string): boolean {
   return (
     status !== '' &&
     !status.endsWith('_IN_PROGRESS') &&
@@ -143,83 +112,56 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   /** テスト・診断のために公開(config の retryMode / maxAttempts を確認できる)。 */
   readonly client: CloudFormationClient;
 
-  private readonly maxRetries: number;
-  private readonly baseDelayMs: number;
-  private readonly maxRetryElapsedMs: number;
-  private readonly random: () => number;
-  private readonly retryNow: () => number;
   private readonly pollIntervalMs: number;
   private readonly pollTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: CloudFormationGatewayOptions) {
-    this.maxRetries = options.maxRetries ?? 0;
-    this.baseDelayMs = options.baseDelayMs ?? 100;
-    this.maxRetryElapsedMs = options.maxRetryElapsedMs ?? 60_000;
-    this.random = options.random ?? Math.random;
-    this.retryNow = options.retryNow ?? Date.now;
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.pollTimeoutMs = options.pollTimeoutMs ?? 30 * 60 * 1_000;
     this.sleep = options.sleep ?? defaultSleep;
 
-    this.client = new CloudFormationClient({
-      region: options.region,
-      // NFR-3: スロットリングに指数バックオフでリトライ。
-      retryMode: 'adaptive',
-      maxAttempts: options.maxAttempts ?? 10,
-      // FR-7-1: profile 指定時のみ、既定クレデンシャルチェーンに profile を適用する。
-      // 未指定時は SDK 標準チェーン(環境変数 → プロファイル → IAM ロール)に委ねる(FR-7-2)。
-      ...(options.profile !== undefined
-        ? { credentials: defaultProvider({ profile: options.profile }) }
-        : {}),
-    });
+    this.client = new CloudFormationClient(awsClientConfig(options));
   }
 
-  /**
-   * SDK 呼び出しをスロットリングリトライで包む(NFR-3)。スロットリング名のエラーのみ
-   * 指数バックオフ(注入 sleep)で再試行し、上限超過・非スロットリングは即伝播する。
-   */
+  /** SDK 例外を共通の AwsError へ分類する。再試行は SDK adaptive retry が担う。 */
   private async withRetry<T>(
     operation: string,
     fn: () => Promise<T>,
     passthrough?: (error: unknown) => boolean,
   ): Promise<T> {
-    let attempt = 0;
-    const startedAt = this.retryNow();
-    for (;;) {
-      try {
-        return await fn();
-      } catch (err) {
-        if (isThrottlingError(err) && attempt < this.maxRetries) {
-          const elapsed = Math.max(0, this.retryNow() - startedAt);
-          const remaining = this.maxRetryElapsedMs - elapsed;
-          if (remaining > 0) {
-            // Full jitter: [0, exponential cap)。上限までの残り時間を超えて待たない。
-            const exponentialCap = this.baseDelayMs * 2 ** attempt;
-            const delay = Math.min(
-              Math.floor(this.random() * exponentialCap),
-              remaining,
-            );
-            await this.sleep(delay);
-            if (this.retryNow() - startedAt < this.maxRetryElapsedMs) {
-              attempt += 1;
-              continue;
-            }
-          }
-        }
-        if (passthrough?.(err)) throw err;
-        throw toAwsError(`CloudFormation ${operation}`, err);
-      }
+    try {
+      return await fn();
+    } catch (err) {
+      if (passthrough?.(err)) throw err;
+      throw toAwsError(`CloudFormation ${operation}`, err);
     }
+  }
+
+  private call<I extends ServiceInputTypes, O extends ServiceOutputTypes>(
+    operation: string,
+    command: $Command<
+      I,
+      O,
+      CloudFormationClientResolvedConfig,
+      ServiceInputTypes,
+      ServiceOutputTypes
+    >,
+    passthrough?: (error: unknown) => boolean,
+  ): Promise<O> {
+    return this.withRetry(
+      operation,
+      () => this.client.send(command),
+      passthrough,
+    );
   }
 
   async describeStack(stackName: string): Promise<StackSummary | undefined> {
     let output: DescribeStacksCommandOutput;
     try {
-      output = await this.withRetry(
+      output = await this.call(
         'DescribeStacks',
-        () =>
-          this.client.send(new DescribeStacksCommand({ StackName: stackName })),
+        new DescribeStacksCommand({ StackName: stackName }),
         isStackNotExistError,
       );
     } catch (err) {
@@ -262,13 +204,12 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
 
     // §7(Codex 承認条件): NextToken を辿って全ページを走査する。
     do {
-      const output = await this.withRetry('ListChangeSets', () =>
-        this.client.send(
-          new ListChangeSetsCommand({
-            StackName: stackName,
-            NextToken: nextToken,
-          }),
-        ),
+      const output = await this.call(
+        'ListChangeSets',
+        new ListChangeSetsCommand({
+          StackName: stackName,
+          NextToken: nextToken,
+        }),
       );
       for (const summary of output.Summaries ?? []) {
         summaries.push({
@@ -289,19 +230,18 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   async createChangeSet(
     input: CreateChangeSetInput,
   ): Promise<{ id: string; stackId?: string }> {
-    const output = await this.withRetry('CreateChangeSet', () =>
-      this.client.send(
-        new CreateChangeSetCommand({
-          StackName: input.stackName,
-          ChangeSetName: input.changeSetName,
-          ChangeSetType: input.changeSetType,
-          TemplateBody: input.templateBody,
-          Parameters: recordToParameters(input.parameters),
-          Capabilities: input.capabilities,
-          Tags: recordToTags(input.tags),
-          Description: input.description,
-        }),
-      ),
+    const output = await this.call(
+      'CreateChangeSet',
+      new CreateChangeSetCommand({
+        StackName: input.stackName,
+        ChangeSetName: input.changeSetName,
+        ChangeSetType: input.changeSetType,
+        TemplateBody: input.templateBody,
+        Parameters: recordToParameters(input.parameters),
+        Capabilities: input.capabilities,
+        Tags: recordToTags(input.tags),
+        Description: input.description,
+      }),
     );
     // StackId は CREATE 型でこの呼び出しが作った REVIEW_IN_PROGRESS の殻の ARN。
     // 承認待ちを挟んだ実行直前再検査(FR-5-17c2)で「自身の変更セットに対応する殻か」を
@@ -309,33 +249,20 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     return { id: output.Id ?? '', stackId: output.StackId };
   }
 
-  async describeChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<ChangeSetDetail> {
-    const firstPage = await this.fetchChangeSetPage(
-      stackName,
-      changeSetName,
-      undefined,
-    );
-    return this.collectChangeSetPages(stackName, changeSetName, firstPage);
-  }
-
   private async fetchChangeSetPage(
     stackName: string,
     changeSetName: string,
     nextToken: string | undefined,
   ): Promise<DescribeChangeSetCommandOutput> {
-    return this.withRetry('DescribeChangeSet', () =>
-      this.client.send(
-        new DescribeChangeSetCommand({
-          StackName: stackName,
-          ChangeSetName: changeSetName,
-          NextToken: nextToken,
-          // FR-3: CloudFormation 自身が算出したプロパティ前後値を取得する。
-          IncludePropertyValues: true,
-        }),
-      ),
+    return this.call(
+      'DescribeChangeSet',
+      new DescribeChangeSetCommand({
+        StackName: stackName,
+        ChangeSetName: changeSetName,
+        NextToken: nextToken,
+        // FR-3: CloudFormation 自身が算出したプロパティ前後値を取得する。
+        IncludePropertyValues: true,
+      }),
     );
   }
 
@@ -396,7 +323,8 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
         changeSetName,
         undefined,
       );
-      if (isChangeSetTerminal(firstPage.Status ?? '')) {
+      // 変更セットの終端: `CREATE_COMPLETE` / `FAILED` / `DELETE_*` / `OBSOLETE`。
+      if (isTerminalStatus(firstPage.Status ?? '')) {
         return this.collectChangeSetPages(stackName, changeSetName, firstPage);
       }
       if (Date.now() >= deadline) {
@@ -415,13 +343,12 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     stackName: string,
     changeSetName: string,
   ): Promise<void> {
-    await this.withRetry('DeleteChangeSet', () =>
-      this.client.send(
-        new DeleteChangeSetCommand({
-          StackName: stackName,
-          ChangeSetName: changeSetName,
-        }),
-      ),
+    await this.call(
+      'DeleteChangeSet',
+      new DeleteChangeSetCommand({
+        StackName: stackName,
+        ChangeSetName: changeSetName,
+      }),
     );
   }
 
@@ -429,28 +356,27 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     stackName: string,
     changeSetName: string,
   ): Promise<void> {
-    await this.withRetry('ExecuteChangeSet', () =>
-      this.client.send(
-        new ExecuteChangeSetCommand({
-          StackName: stackName,
-          ChangeSetName: changeSetName,
-        }),
-      ),
+    await this.call(
+      'ExecuteChangeSet',
+      new ExecuteChangeSetCommand({
+        StackName: stackName,
+        ChangeSetName: changeSetName,
+      }),
     );
   }
 
   async deleteStack(stackName: string): Promise<void> {
-    await this.withRetry('DeleteStack', () =>
-      this.client.send(new DeleteStackCommand({ StackName: stackName })),
+    await this.call(
+      'DeleteStack',
+      new DeleteStackCommand({ StackName: stackName }),
     );
   }
 
   async getStackEventCursor(stackName: string): Promise<StackEventCursor> {
     const capturedAt = new Date().toISOString();
-    const output = await this.withRetry('DescribeStackEvents', () =>
-      this.client.send(
-        new DescribeStackEventsCommand({ StackName: stackName }),
-      ),
+    const output = await this.call(
+      'DescribeStackEvents',
+      new DescribeStackEventsCommand({ StackName: stackName }),
     );
     const latest = output.StackEvents?.[0];
     return {
@@ -470,13 +396,12 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
     let nextToken: string | undefined;
 
     do {
-      const output = await this.withRetry('DescribeStackEvents', () =>
-        this.client.send(
-          new DescribeStackEventsCommand({
-            StackName: stackName,
-            NextToken: nextToken,
-          }),
-        ),
+      const output = await this.call(
+        'DescribeStackEvents',
+        new DescribeStackEventsCommand({
+          StackName: stackName,
+          NextToken: nextToken,
+        }),
       );
       const pageEvents = output.StackEvents ?? [];
       let newInPage = 0;
@@ -517,10 +442,9 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
   }
 
   async getTemplate(stackName: string, stage: TemplateStage): Promise<string> {
-    const output = await this.withRetry('GetTemplate', () =>
-      this.client.send(
-        new GetTemplateCommand({ StackName: stackName, TemplateStage: stage }),
-      ),
+    const output = await this.call(
+      'GetTemplate',
+      new GetTemplateCommand({ StackName: stackName, TemplateStage: stage }),
     );
     return output.TemplateBody ?? '';
   }
@@ -578,7 +502,8 @@ export class CloudFormationGatewayImpl implements CloudFormationGateway {
             };
       }
 
-      if (isStackTerminal(summary.status)) return summary;
+      // スタックの終端: `REVIEW_IN_PROGRESS` 等の `_IN_PROGRESS` は含めない。
+      if (isTerminalStatus(summary.status)) return summary;
       if (Date.now() >= deadline) {
         throw new AwsError(
           `Timed out waiting for the stack to complete: ${stackName}`,

@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, open, readFile, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { StateConflictError } from '../core/errors.js';
+import { errorCode, StateConflictError } from '../core/errors.js';
 import {
   type CfnSyncState,
   parseState,
@@ -55,7 +55,7 @@ export class LocalStateBackend implements StateBackend {
     try {
       text = await readFile(this.statePath, 'utf8');
     } catch (err) {
-      if (isFileNotFound(err)) return undefined;
+      if (errorCode(err) === 'ENOENT') return undefined;
       throw err;
     }
     // 破損(不完全 JSON・スキーマ不一致)は StateCorruptionError が伝播 = fail-closed。
@@ -75,7 +75,7 @@ export class LocalStateBackend implements StateBackend {
     try {
       saveLock = await open(saveLockPath, 'wx');
     } catch (cause) {
-      if (isAlreadyExists(cause)) {
+      if (errorCode(cause) === 'EEXIST') {
         throw new StateConflictError(
           `Cannot acquire the local state save lock '${saveLockPath}'. Aborting as a conflict because another process is saving`,
           { cause },
@@ -113,7 +113,7 @@ export class LocalStateBackend implements StateBackend {
     } finally {
       await saveLock.close();
       await unlink(saveLockPath).catch((error) => {
-        if (!isFileNotFound(error)) throw error;
+        if (errorCode(error) !== 'ENOENT') throw error;
       });
     }
   }
@@ -156,7 +156,7 @@ export class LocalStateBackend implements StateBackend {
     try {
       text = await readFile(this.statePath, 'utf8');
     } catch (err) {
-      if (isFileNotFound(err)) return undefined;
+      if (errorCode(err) === 'ENOENT') return undefined;
       throw err;
     }
     return parseState(text).generation;
@@ -194,22 +194,4 @@ export class LocalStateBackend implements StateBackend {
     // 原子的置換。
     await rename(tmpPath, this.statePath);
   }
-}
-
-function isFileNotFound(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === 'ENOENT'
-  );
-}
-
-function isAlreadyExists(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === 'EEXIST'
-  );
 }
