@@ -775,6 +775,21 @@ describe('NFR-3(リトライ): スロットリング対応', () => {
     expect(resolvedMa).toBe(10);
   });
 
+  it('NFR-3: maxAttempts 未指定でも既定の 10 で構成される', async () => {
+    // makeGateway は maxAttempts: 10 を明示的に渡すため、既定値の退行を検出できない。
+    // 本番の composition root(src/cli/dependencies.ts)は maxAttempts を渡さないので、
+    // 未指定で生成したときに 10 になることを直接固定する。
+    const gateway = new CloudFormationGatewayImpl({
+      region: 'ap-northeast-1',
+      pollIntervalMs: 0,
+      pollTimeoutMs: 60_000,
+      sleep: async () => {},
+    });
+    const ma = gateway.client.config.maxAttempts;
+    const resolvedMa = typeof ma === 'function' ? await ma() : ma;
+    expect(resolvedMa).toBe(10);
+  });
+
   it('NFR-3: スロットリング以外のエラーはリトライせず即伝播する', async () => {
     const sleep = vi.fn(async () => {});
     cfnMock

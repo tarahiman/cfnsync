@@ -18,9 +18,13 @@ function causeMessage(cause: unknown): string {
  * 型安全に取り出す。`err` が `code` を持たない場合は undefined。
  */
 export function errorCode(err: unknown): string | undefined {
-  return typeof err === 'object' && err !== null && 'code' in err
-    ? ((err as { code?: unknown }).code as string | undefined)
-    : undefined;
+  if (typeof err !== 'object' || err === null || !('code' in err)) {
+    return undefined;
+  }
+  const code: unknown = (err as { code?: unknown }).code;
+  // Node の system error は文字列コードだが、任意の値が載りうるため実際に検査する。
+  // 検査しないと戻り値の型注釈(string | undefined)が実行時の値と食い違う。
+  return typeof code === 'string' ? code : undefined;
 }
 
 export class CfnSyncError extends Error {
