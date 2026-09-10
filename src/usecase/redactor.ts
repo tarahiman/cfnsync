@@ -5,7 +5,7 @@
  * 空文字・4 文字未満は一般的な断片まで過剰にマスクするため対象外とする。
  */
 
-import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
+import { MASK, REQUIRED_PLACEHOLDER } from '../core/constants.js';
 
 export type TextRedactor = (text: string) => string;
 
@@ -50,7 +50,7 @@ export function createNoEchoRedactor(
   return (text) => {
     let redacted = text;
     for (const value of values) {
-      redacted = redacted.replaceAll(value, '****');
+      redacted = redacted.replaceAll(value, MASK);
     }
     return redacted;
   };
