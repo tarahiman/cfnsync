@@ -1,5 +1,8 @@
+// @ts-check
+
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
+import { runAsScript } from './lib/cli.mjs';
 
 const CODE_DIRECTORIES = [
   '.github/workflows/',
@@ -19,24 +22,35 @@ const CODE_FILES = new Set([
   'package.json',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
-  'tsconfig.json',
-  'tsconfig.test.json',
   'vitest.config.ts',
 ]);
 
+// Root-level tsconfig*.json files (tsconfig.json, tsconfig.test.json,
+// tsconfig.scripts.json, ...) are matched by pattern rather than hand-listed
+// in CODE_FILES: a new tsconfig variant is code-related by construction, and
+// a hand-maintained list is exactly what let tsconfig.scripts.json slip
+// through unclassified when it was introduced. The pattern is anchored to
+// the repository root (no `/`) so it cannot widen to nested files such as
+// `some/package/tsconfig.json`.
+const ROOT_TSCONFIG_PATTERN = /^tsconfig(\.[^./]+)*\.json$/;
+
+/** @param {string} filePath */
 export function isCodeRelatedPath(filePath) {
   const normalizedPath = filePath.replaceAll('\\', '/').replace(/^\.\//, '');
 
   return (
     CODE_FILES.has(normalizedPath) ||
+    ROOT_TSCONFIG_PATTERN.test(normalizedPath) ||
     CODE_DIRECTORIES.some((directory) => normalizedPath.startsWith(directory))
   );
 }
 
+/** @param {string[]} filePaths */
 export function hasCodeRelatedPaths(filePaths) {
   return filePaths.some(isCodeRelatedPath);
 }
 
+/** @param {string[]} args */
 function changedPaths(args) {
   const result = spawnSync(
     'git',
@@ -60,6 +74,7 @@ function changedPaths(args) {
     .filter((filePath) => filePath.length > 0);
 }
 
+/** @param {string[]} args */
 function parseArguments(args) {
   if (args.length === 1 && args[0] === '--staged') {
     return ['--cached'];
@@ -80,15 +95,17 @@ export function main(args = process.argv.slice(2)) {
   );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+function runMain() {
   try {
     main();
   } catch (error) {
-    console.error(
+    throw new Error(
       `Unable to determine whether code changed: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      { cause: error },
     );
-    process.exitCode = 2;
   }
 }
+
+runAsScript(import.meta.url, runMain);
