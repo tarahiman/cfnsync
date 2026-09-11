@@ -21,7 +21,11 @@ pnpm run quality:check# skill/docs checks, format, lint, test type-check, tests,
 
 Run the test suite before and after any change — it must stay green.
 
-Repository scripts use exit code 1 for verification failures and 2 when verification cannot run.
+Repository scripts under `scripts/` use exit code 1 for verification failures and 2 when
+verification cannot run. The rule governs those scripts' own exits. It does not reinterpret
+the codes of third-party tools that `quality:check` chains: `tsc`, for example, exits 2 for a
+type error, which is a verification failure. `scripts/run-staged-quality-checks.sh` therefore
+normalizes any failure of the nested `quality:check` to 1 rather than propagating it.
 
 `pnpm run build` type-checks only `src/` because it emits `dist/`. `test/` is far
 larger than `src/`, so `typecheck:test` type-checks both together with

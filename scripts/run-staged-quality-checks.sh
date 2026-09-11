@@ -48,3 +48,8 @@ fi
   # added to "quality:check" is picked up here without touching this script.
   npm run quality:check
 ) || exit 1
+# The nested exit code is deliberately normalized to 1 ("verification failed") rather than
+# propagated. "quality:check" chains third-party tools whose codes do not follow this
+# repository's 1/2 convention -- tsc exits 2 for a type error, which is a verification
+# failure, not "cannot run". Propagating would misclassify every type error. This script's
+# own "cannot run" conditions above still exit 2.
