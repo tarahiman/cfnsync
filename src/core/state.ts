@@ -10,9 +10,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { type ErrorContext, StateCorruptionError } from './errors.js';
-import { parseStackKey, type StackKey } from './types.js';
+import { makeStackKey, parseStackKey, type StackKey } from './types.js';
 
-/** 破損したステート(不完全 JSON・スキーマ不一致)を検出した際のエラー(FR-1-12, fail-closed)。 */
 const StackEntryBaseSchema = z.object({
   stackName: z.string().min(1),
   region: z.string().min(1),
@@ -105,9 +104,7 @@ export interface DeletableStackRecord {
 }
 
 /** design.md §4.3 のステートスキーマから導出したステート全体の型。 */
-export type CfnSyncState = z.infer<typeof CfnSyncStateV3Schema> & {
-  stacks: Record<StackKey, StackEntry>;
-};
+export type CfnSyncState = z.infer<typeof CfnSyncStateV3Schema>;
 
 /**
  * FR-1-21 / §4.4: 削除待ちを変更検知・実行計画へ載せるためのスタックキーの予約
@@ -121,7 +118,7 @@ export const PENDING_DELETION_STACK_KEY_PREFIX = 'cfnsync:pending/';
  * であり、CloudFormation のスタック名は `@` を含められないため曖昧さがない。
  */
 export function pendingDeletionId(region: string, stackName: string): string {
-  return `${stackName}@${region}`;
+  return makeStackKey(stackName, region);
 }
 
 /** FR-1-21: 削除待ちの ID から、実行計画で用いる予約スタックキーを導出する。 */
@@ -153,7 +150,7 @@ export function parseState(
 
   const v3Result = CfnSyncStateV3Schema.safeParse(parsedJson);
   if (v3Result.success) {
-    const state = v3Result.data as CfnSyncState;
+    const state: CfnSyncState = v3Result.data;
     assertStateConsistency(state, context);
     return state;
   }
@@ -161,13 +158,13 @@ export function parseState(
   // FR-1-17: v2 は削除待ちなしとして受理し、v3 の形へ移行する。
   const v2Result = CfnSyncStateV2Schema.safeParse(parsedJson);
   if (v2Result.success) {
-    const state = {
+    const state: CfnSyncState = {
       schemaVersion: 3,
       accountId: v2Result.data.accountId,
       generation: v2Result.data.generation,
       stacks: v2Result.data.stacks,
       pendingDeletions: {},
-    } as CfnSyncState;
+    };
     assertStateConsistency(state, context);
     return state;
   }
@@ -192,14 +189,14 @@ export function parseState(
       dependencyAnalysisIncomplete: entry.dependencyAnalysisIncomplete ?? true,
     };
   }
-  const migrated = {
+  const migrated: CfnSyncState = {
     schemaVersion: 3,
     accountId: v1Result.data.accountId,
     generation: v1Result.data.generation,
     stacks,
     // FR-1-17: v1 にも削除待ちは存在しない。
     pendingDeletions: {},
-  } as CfnSyncState;
+  };
   assertStateConsistency(migrated, context);
   return migrated;
 }
