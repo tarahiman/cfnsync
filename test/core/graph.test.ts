@@ -173,6 +173,49 @@ describe('core/graph — FR-8-2: 明示依存(dependsOn)のマージ', () => {
 
     expect(() => buildGraphs([app])).toThrow(ConfigError);
   });
+
+  it('FR-8-2: 未解決依存の本文は逐語で固定する(graph 経路)', () => {
+    // #33 item 6 以前、この文言は config.ts 側にしかテストが無く、graph 側のコピーだけが
+    // 変わっても誰も気づけなかった。統合後も両経路が同一本文を出すことを固定する。
+    const app = node({
+      stackKey: makeStackKey('app.yaml', REGION_A),
+      region: REGION_A,
+      explicitDependsOn: ['not-in-graph.yaml'],
+    });
+
+    // toThrowError(string) は部分一致なので、末尾に文字が増える退行を検知できない。
+    // 逐語固定が目的なので message を toBe で完全一致させる。
+    // CfnSyncError.message は (stackKey: ...) (region: ...) を付けて装飾されるため、
+    // 逐語固定の対象は装飾前の publicMessage。toThrowError(string) は部分一致で
+    // 末尾追加を検知できないので toBe で完全一致させる。
+    let publicMessage: string | undefined;
+    try {
+      buildGraphs([app]);
+    } catch (error) {
+      publicMessage = (error as ConfigError).publicMessage;
+    }
+    expect(publicMessage).toBe(
+      `Explicit dependsOn 'not-in-graph.yaml' does not resolve to a managed target in the same region: ${makeStackKey('not-in-graph.yaml', REGION_A)}`,
+    );
+  });
+
+  it('FR-8-2: 自己依存の本文は逐語で固定する(graph 経路)', () => {
+    const app = node({
+      stackKey: makeStackKey('app.yaml', REGION_A),
+      region: REGION_A,
+      explicitDependsOn: ['app.yaml'],
+    });
+
+    let publicMessage: string | undefined;
+    try {
+      buildGraphs([app]);
+    } catch (error) {
+      publicMessage = (error as ConfigError).publicMessage;
+    }
+    expect(publicMessage).toBe(
+      "Explicit dependsOn 'app.yaml' cannot reference itself",
+    );
+  });
 });
 
 describe('core/graph — FR-8-4: 循環検出', () => {
