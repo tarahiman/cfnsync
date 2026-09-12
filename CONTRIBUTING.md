@@ -78,6 +78,7 @@ If Gitleaks is already managed by your system, you may enable only the hook with
 
 ## Making changes
 
+- **Follow the coding standards.** Use the [coding standards](./docs/coding-standards.md) to distinguish machine-enforced rules from review-only guidance and to ratchet complexity walls downward.
 - **Specs first.** Follow the [specification change flow](./docs/spec/README.md#仕様変更の流れ). Any behavior change must be reflected in [`docs/spec/requirements.md`](./docs/spec/requirements.md) and [`docs/spec/design.md`](./docs/spec/design.md) *before* implementation, then propagated to traceability, tests, user documentation, and the changelog as applicable.
 - **Do not weaken the safety invariants** documented in the design spec and the README "Safety model" section (fail-closed guards, state compare-and-swap, change-set ownership). These came out of adversarial review and are load-bearing.
 - **User-facing CLI messages are English.** Keep help text and command output in English.
