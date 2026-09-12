@@ -151,24 +151,30 @@
   PR の実際の diff に含まれる。両 PR のマージ後に再測定して有効化する。
 - **レビュー観点（導入延期）**: `style/noExportedImports` は違反が `src/usecase/cliBoundary.ts`
   (PR #45, #35)にのみあり、同 PR の diff に含まれる。マージ後に有効化する。
-- **レビュー観点（導入延期・要修正）**: `nursery/noUnnecessaryConditions` の違反は
-  `src/usecase/executor.ts:155` の 1 件のみだが、この行は #43〜#47 のどの PR の diff にも
-  含まれていない。Issue #32 が対象として言及しているが、#32 に対応する PR はまだ存在しない。
-  つまり「他 PR が所有している」のではなく、単に着手前で本 batch のファイル所有権
-  (`biome.json` / `docs/**` / `CONTRIBUTING.md` / `src/core/template.ts`)の外にあるため
-  この PR からは直せない。
-- **レビュー観点（導入延期・要修正）**: `nursery/noExcessiveClassesPerFile` の違反は
-  `src/core/errors.ts:6` の 1 件のみだが、この行も #43〜#47 のどの PR の diff にも
-  含まれていない。ファイル分割が必要という記載のみで、対応する issue 番号は未採番。
-  上記と同じ理由で本 PR からは直せない。
-- **レビュー観点（導入延期）**: `nursery/useErrorCause` の違反 15 件のうち、
-  `core/config.ts` / `core/state.ts`(PR #43, #33)、`usecase/deploy.ts`(PR #47, #27 / #28)、
-  `aws/s3state.ts`(PR #44, #34)は現在オープン中の PR の diff に含まれる。残る
-  `core/template.ts` / `backend/local.ts` / `cli/filesystem.ts`(2 件)/ `usecase/delete.ts` / `usecase/guard.ts` /
-  `usecase/importer.ts` は、#43〜#47 のどの PR の diff にも含まれておらず、対応する
-  follow-up issue も未採番である。これらについてのみ「他 PR の所有ファイル」という
-  説明は成立せず、新規 issue が必要な状態のまま残っている。
-  なお有効化を検討する際は、**Biome 2.3.13 の当該ルールがショートハンドの `{ cause }` を
+- **不採用（誤検知）**: `nursery/noUnnecessaryConditions` は採用しない。
+  唯一の違反 `src/usecase/executor.ts:155`(`prepareStack` の `known ? ... : ...`)に対して
+  Biome 2.3.13 は「この条件は型上つねに truthy」と報告するが、**これは誤検知である**。
+  `known` は省略可能引数で、呼び出し元 `usecase/deploy.ts` の `knownSummary` は
+  `{ summary: ... } | undefined` として宣言され、`operation.kind === 'create'` の
+  ブロック内でしか代入されない。update 操作ではブロックを抜けた時点で `undefined` の
+  ままであり、else 分岐(`await ctx.cfn.describeStack(stackName)`)は**本番で実行される**。
+  Issue #32 の項目 5 はこの診断を「型上あり得ない死んだ防御コード」として額面どおり
+  受け取っているが、前提が成り立たない。条件を削ると update 経路が壊れる。
+  明示比較(`known !== undefined`)にすれば診断は消えるものの、それは壊れた解析を
+  黙らせるだけで、ルールを有効化すれば同種の誤検知を今後も引き受けることになる。
+  Biome 側が修正されたことを確認できるまで有効化しない。
+- **レビュー観点（導入延期）**: `nursery/noExcessiveClassesPerFile` の違反は
+  `src/core/errors.ts:6` の 1 件のみ。同ファイルは PR #44(#34)と PR #47(#27 / #28)の
+  diff に含まれるため、本 PR から触るとコンフリクトする。解消にはエラークラスの
+  ファイル分割が必要で、対応する issue 番号は未採番。両 PR のマージ後に新規 issue を
+  立てて対応する。
+- **レビュー観点（導入延期）**: `nursery/useErrorCause` の違反は 15 件。
+  `core/config.ts` / `core/state.ts`(#33)、`usecase/deploy.ts` / `usecase/delete.ts` /
+  `usecase/importer.ts`(#27 / #28)、`aws/s3state.ts` / `backend/local.ts`(#34)は、
+  いずれも本 batch の他 PR が変更中のファイルであり、本 PR から触るとコンフリクトする。
+  **どの issue にも紐づいていないのは `core/template.ts` / `cli/filesystem.ts`(2 件)/
+  `usecase/guard.ts` のみで、これらには新規 issue が必要である。**
+  また有効化を検討する際は、**Biome 2.3.13 の当該ルールがショートハンドの `{ cause }` を
   「cause 未指定」と誤検知する**(明示形 `{ cause: cause }` は通る)ことに注意する。
   ルールのバグ回避のために本番コードを冗長な書き方へ変えるべきではないので、
   有効化は Biome 側の修正を確認してから行う。
