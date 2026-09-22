@@ -23,10 +23,18 @@ import ts from 'typescript';
 
 const CORE_GRAPH_TARGET = resolve(process.cwd(), 'src/core/graph');
 
+/**
+ * @param {string} path
+ * @returns {string}
+ */
 function stripKnownExtension(path) {
   return path.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
 }
 
+/**
+ * @param {string} directory
+ * @returns {string[]}
+ */
 function filesUnder(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(directory, entry.name);
@@ -37,6 +45,8 @@ function filesUnder(directory) {
 /**
  * Whether an import clause carries at least one binding that is a *value*
  * (as opposed to being wholly `import type { ... }` or `import { type X }`).
+ * @param {ts.ImportClause | undefined} importClause
+ * @returns {boolean}
  */
 function hasValueBinding(importClause) {
   if (importClause === undefined) return false; // side-effect-only import
@@ -53,6 +63,9 @@ function hasValueBinding(importClause) {
  * `src/core/graph`. `import type` and `export type` are ignored; a mixed
  * clause (e.g. `{ type RegionGraph, computeLevels }`) is flagged because
  * `computeLevels` is a value binding.
+ * @param {string} source
+ * @param {string} filePath
+ * @returns {{ line: number; specifier: string }[]}
  */
 export function findCoreGraphValueImports(source, filePath) {
   const sourceFile = ts.createSourceFile(
@@ -62,6 +75,7 @@ export function findCoreGraphValueImports(source, filePath) {
     /* setParentNodes */ false,
     filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  /** @type {{ line: number; specifier: string }[]} */
   const violations = [];
 
   for (const statement of sourceFile.statements) {
@@ -70,9 +84,12 @@ export function findCoreGraphValueImports(source, filePath) {
       ts.isExportDeclaration(statement) &&
       statement.moduleSpecifier !== undefined;
     if (!isImport && !isExportFrom) continue;
-    if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const moduleSpecifier = statement.moduleSpecifier;
+    if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) {
+      continue;
+    }
 
-    const specifier = statement.moduleSpecifier.text;
+    const specifier = moduleSpecifier.text;
     if (!specifier.startsWith('.')) continue; // only relative imports resolve into src/
 
     const resolved = stripKnownExtension(resolve(dirname(filePath), specifier));
@@ -98,6 +115,7 @@ export function findCoreGraphValueImports(source, filePath) {
 }
 
 export function main() {
+  /** @type {string[]} */
   const violations = [];
   let checked = 0;
   const reportDir = resolve(process.cwd(), 'src/report');
