@@ -29,9 +29,14 @@
  */
 
 import { parseDocument } from 'yaml';
+import { arraysEqual } from '../core/arrays.js';
 
-import type { Capability, CfnSyncConfig } from '../core/config.js';
-import { resolveTargets } from '../core/config.js';
+import type {
+  Capability,
+  CfnSyncConfig,
+  ResolvedStackTarget,
+} from '../core/config.js';
+import { resolveTargets, targetRegions } from '../core/config.js';
 import { REQUIRED_PLACEHOLDER } from '../core/constants.js';
 import { resolveDependsOnKey } from '../core/dependency.js';
 import { computeInputsHash, computeTemplateHash } from '../core/detect.js';
@@ -40,6 +45,7 @@ import {
   GuardError,
   InvariantError,
   LockError,
+  publicMessageOf,
   StackStateError,
   StatePersistenceError,
 } from '../core/errors.js';
@@ -54,18 +60,20 @@ import {
   parsedTemplatesEquivalent,
   resolveStaticTemplateAnalysis,
   type StaticTemplateAnalysis,
+  type TemplateAnalysis,
 } from '../core/template.js';
 import type { StackKey } from '../core/types.js';
 import type {
   CloudFormationGateway,
   LockHandle,
+  StackSummary,
   StateBackend,
   StateVersion,
   StsGateway,
 } from '../ports/index.js';
 import type { ConnectionInfo } from '../report/index.js';
 import { MANAGEMENT_TAG_KEY, newRunId } from './executor.js';
-import { withFencedLock } from './fencing.js';
+import { makeLockInfo, withFencedLock } from './fencing.js';
 import {
   connectionHeader,
   resolveConnection,
@@ -176,18 +184,14 @@ export async function runImport(input: {
   const connection = await resolveConnection(deps.sts);
   const header = connectionHeader({
     accountId: connection.accountId,
-    regions: uniqueRegions(config),
+    regions: targetRegions(config),
   });
 
   // 1. 共通 runner でロック取得・fenced scope・条件付き解放を固定する。
   try {
     return await withFencedLock({
       backend: deps.backend,
-      info: {
-        runId: newRunId(),
-        startedAt: new Date().toISOString(),
-        owner: process.env.USER ?? process.env.LOGNAME ?? 'cfnsync',
-      },
+      info: makeLockInfo(newRunId(), new Date().toISOString()),
       run: async ({ lock, backend: fenced }) => {
         // 2. ロック配下でステートを再読込し accountId を照合(FR-10-8)。
         //    不一致 → GuardError(書き込みゼロ)/ 未記録 → 同一ロック区間の CAS 保存で記録。
@@ -264,6 +268,22 @@ export async function runImport(input: {
   }
 }
 
+/**
+ * FR-1-9(import): ローカル書き込み(cfnsync.yaml・テンプレートファイル・ステート保存)の
+ * 直前ごとに `backend.verifyLock` する定型を集約する。所有権を失っていれば `fn` を呼ばず
+ * `'ownership-lost'` を返す。`fn` が投げる例外(InvariantError / StatePersistenceError 等)は
+ * そのまま呼び出し側へ伝播する(fencing の関心事と分離)。
+ */
+async function withFencedWrite(
+  deps: ImportDeps,
+  lock: LockHandle,
+  fn: () => void | Promise<void>,
+): Promise<'written' | 'ownership-lost'> {
+  if (!(await deps.backend.verifyLock(lock))) return 'ownership-lost';
+  await fn();
+  return 'written';
+}
+
 async function runImportLocked(input: {
   config: CfnSyncConfig;
   configPath: string;
@@ -317,7 +337,8 @@ async function runImportLocked(input: {
     };
   }
 
-  // 8. 各ローカル書き込みの直前ごとに fencing 検証(FR-1-9(import))。
+  // 8. 各ローカル書き込みの直前ごとに fencing 検証(FR-1-9(import))。withFencedWrite が
+  // verifyLock → 実書き込みの定型と「所有権喪失」の手動フラグ伝播をヘルパ内に閉じる。
   let configWritten = false;
   let stateSaved = false;
   let ownershipLost = false;
@@ -329,35 +350,36 @@ async function runImportLocked(input: {
       applyReflect(doc, templatePath, reflect);
     }
     const nextConfigText = doc.toString();
-    if (await deps.backend.verifyLock(lock)) {
+    const outcome = await withFencedWrite(deps, lock, () => {
       fs.writeFile(configPath, nextConfigText);
-      configWritten = true;
-    } else {
-      ownershipLost = true;
-    }
+    });
+    if (outcome === 'ownership-lost') ownershipLost = true;
+    else configWritten = true;
   }
 
   // 5. テンプレートファイルの書き出し(reconcile remote / write-template。FR-10-4/5)。
   if (!ownershipLost) {
     for (const write of plan.templateWrites) {
-      if (!(await deps.backend.verifyLock(lock))) {
+      const outcome = await withFencedWrite(deps, lock, () => {
+        const safePath = templatePaths.get(write.templatePath);
+        if (safePath === undefined) {
+          throw new InvariantError(
+            `No verified real path for template: ${write.templatePath}`,
+            { stackKey: write.templatePath },
+          );
+        }
+        fs.writeFile(safePath, write.content);
+      });
+      if (outcome === 'ownership-lost') {
         ownershipLost = true;
         break;
       }
-      const safePath = templatePaths.get(write.templatePath);
-      if (safePath === undefined) {
-        throw new InvariantError(
-          `No verified real path for template: ${write.templatePath}`,
-          { stackKey: write.templatePath },
-        );
-      }
-      fs.writeFile(safePath, write.content);
     }
   }
 
   // 6. ステート保存(CAS。FR-10-6)。
   if (!ownershipLost && plan.entries.length > 0) {
-    if (await deps.backend.verifyLock(lock)) {
+    const outcome = await withFencedWrite(deps, lock, async () => {
       const importedEntries = Object.fromEntries(
         plan.entries.map(({ key, entry }) => [key, entry]),
       );
@@ -373,10 +395,9 @@ async function runImportLocked(input: {
           { cause },
         );
       }
-      stateSaved = true;
-    } else {
-      ownershipLost = true;
-    }
+    });
+    if (outcome === 'ownership-lost') ownershipLost = true;
+    else stateSaved = true;
   }
 
   return {
@@ -500,48 +521,20 @@ async function buildImportPlan(args: {
     const deployedParsed = parseCfnTemplate(deployedTemplate);
     const deployedHash = computeTemplateHash(deployedTemplate);
 
-    const representation = representableByTemplate.get(target.templatePath);
-    let staticAnalysis: StaticTemplateAnalysis;
-    if (representation === undefined) {
-      staticAnalysis = analyzeStaticTemplate(deployedParsed);
-      representableByTemplate.set(target.templatePath, {
-        parsed: deployedParsed,
-        staticAnalysis,
-        capabilities: [...summary.capabilities],
-        regions: [target.region],
-      });
-    } else {
-      representation.regions.push(target.region);
-      const sameTemplate = parsedTemplatesEquivalent(
-        representation.parsed,
-        deployedParsed,
-      );
-      const sameCapabilities =
-        JSON.stringify([...representation.capabilities].sort()) ===
-        JSON.stringify([...summary.capabilities].sort());
-      if (!sameTemplate || !sameCapabilities) {
-        blocked = true;
-        const regions = representation.regions.join(', ');
-        const differences = [
-          !sameTemplate ? 'template' : undefined,
-          !sameCapabilities ? 'Capabilities' : undefined,
-        ].filter((value): value is string => value !== undefined);
-        const message = `The ${differences.join(' / ')} for the same templatePath '${target.templatePath}' do not match across regions and cannot be represented in the configuration: ${regions}`;
-        warnings.push(message);
-        stacks.push({
-          stackKey: target.stackKey,
-          region: target.region,
-          templatePath: target.templatePath,
-          stackName: summary.stackName,
-          status: 'template-mismatch',
-          recorded: false,
-          noEchoPlaceholders: [],
-          message,
-        });
-        continue;
-      }
-      staticAnalysis = representation.staticAnalysis;
+    const representationResult = resolveTemplateRepresentation(
+      target,
+      summary,
+      deployedParsed,
+      representableByTemplate,
+    );
+    if (representationResult.kind === 'blocked') {
+      blocked = true;
+      warnings.push(representationResult.warning);
+      stacks.push(representationResult.report);
+      continue;
     }
+    const staticAnalysis = representationResult.staticAnalysis;
+
     const configParameters = toConfigParameters(
       summary.parameters,
       staticAnalysis.noEchoParams,
@@ -556,124 +549,40 @@ async function buildImportPlan(args: {
       (key) => configParameters[key] === REQUIRED_PLACEHOLDER,
     );
 
-    const templateAbsPath = templatePaths.get(target.templatePath);
-    if (templateAbsPath === undefined) {
-      throw new InvariantError(
-        `Internal error: no safe real path for ${target.templatePath}`,
-        { stackKey: target.stackKey, region: target.region },
-      );
-    }
-    const localExists = fs.exists(templateAbsPath);
-
     // FR-10-3/4/5: テンプレート比較 → 記録に使う基準内容(baseline)と書き出し内容を決める。
-    let comparison: 'match' | 'differs' | 'local-missing';
-    let baselineHash: string;
-    let writeContent: string | undefined;
-    let reconcileUsed: 'remote' | 'local' | undefined;
-
-    if (!localExists) {
-      comparison = 'local-missing';
-      if (options.writeTemplate) {
-        // FR-10-5: デプロイ済みテンプレートをローカルへ書き出す。
-        baselineHash = deployedHash;
-        writeContent = deployedTemplate;
-      } else {
-        blocked = true;
-        stacks.push({
-          stackKey: target.stackKey,
-          region: target.region,
-          templatePath: target.templatePath,
-          stackName: summary.stackName,
-          status: 'template-missing',
-          templateComparison: 'local-missing',
-          recorded: false,
-          noEchoPlaceholders,
-          message:
-            'The local template file does not exist. Specify --write-template to write it out',
-        });
-        continue;
-      }
-    } else {
-      let local = localTemplates.get(target.templatePath);
-      if (local === undefined) {
-        const content = fs.readFile(templateAbsPath);
-        local = {
-          content,
-          parsed: parseCfnTemplate(content),
-          hash: computeTemplateHash(content),
-        };
-        localTemplates.set(target.templatePath, local);
-      }
-      if (parsedTemplatesEquivalent(local.parsed, deployedParsed)) {
-        // FR-10-3: テンプレート内容が一致 → ローカル(= デプロイ済みと同値)を基準に記録。
-        // テンプレート・パラメータ・タグ・Capabilities・dependsOn がすべて実スタックの
-        // 記録値と一致する限り次回 plan は unchanged になるが、design.md §4.2 の通り
-        // defaultTags が実スタックに未付与のキーを追加する場合はタグが一致しないため
-        // 対象外(その場合は次回 modified として検知され、意図した挙動)。
-        comparison = 'match';
-        baselineHash = local.hash;
-      } else if (options.reconcile === 'remote') {
-        // FR-10-4(a): デプロイ済みでローカルを上書き。
-        comparison = 'differs';
-        reconcileUsed = 'remote';
-        baselineHash = deployedHash;
-        writeContent = deployedTemplate;
-      } else if (options.reconcile === 'local') {
-        // FR-10-4(b): ローカルを維持し、ステートにはデプロイ済み側のハッシュを記録
-        //             → 次回 plan で modified として顕在化する。
-        comparison = 'differs';
-        reconcileUsed = 'local';
-        baselineHash = deployedHash;
-      } else {
-        // FR-10-4: 差分 + オプションなし → fail-closed。
-        blocked = true;
-        stacks.push({
-          stackKey: target.stackKey,
-          region: target.region,
-          templatePath: target.templatePath,
-          stackName: summary.stackName,
-          status: 'template-mismatch',
-          templateComparison: 'differs',
-          recorded: false,
-          noEchoPlaceholders,
-          message:
-            'The deployed template differs from the local one. Specify --reconcile remote|local',
-        });
-        continue;
-      }
+    const baseline = decideTemplateBaseline({
+      target,
+      stackName: summary.stackName,
+      options,
+      fs,
+      templatePaths,
+      deployedTemplate,
+      deployedParsed,
+      deployedHash,
+      noEchoPlaceholders,
+      localTemplates,
+    });
+    if (baseline.kind === 'blocked') {
+      blocked = true;
+      stacks.push(baseline.report);
+      continue;
     }
+    const { comparison, baselineHash, writeContent, reconcileUsed } = baseline;
 
     // FR-10-6 / FR-10-11: デプロイ済み内容(baseline)に基づくハッシュ・依存辺を記録する。
-    const baselineAnalysis = deployedAnalysis;
     entries.push({
       key: target.stackKey,
-      entry: {
-        stackName: summary.stackName,
-        stackId: summary.stackId,
-        region: target.region,
-        templateHash: baselineHash,
-        inputsHash: computeInputsHash({
-          templateHash: baselineHash,
-          stackName: summary.stackName,
-          parameters: configParameters,
-          tags: configTags,
-          capabilities: summary.capabilities,
-          // dependsOn は実スタックから検証できないため、ローカルの希望値を記録する(§7)。
-          dependsOn: target.dependsOn,
-        }),
-        exports: baselineAnalysis.exports,
-        imports: baselineAnalysis.imports,
-        dependsOn: target.dependsOn.map((raw) =>
-          resolveDependsOnKey(raw, target.region),
-        ),
-        dependencyAnalysisIncomplete:
-          baselineAnalysis.warnings.length > 0 && target.dependsOn.length === 0,
-        lastAction: 'IMPORT',
-        lastSuccessAt: new Date().toISOString(),
-      },
+      entry: buildStateEntry({
+        target,
+        summary,
+        configParameters,
+        configTags,
+        baselineHash,
+        analysis: deployedAnalysis,
+      }),
     });
-    if (baselineAnalysis.warnings.length > 0) {
-      warnings.push(...baselineAnalysis.warnings);
+    if (deployedAnalysis.warnings.length > 0) {
+      warnings.push(...deployedAnalysis.warnings);
     }
 
     // FR-10-1: cfnsync.yaml への反映データを集約(templatePath 単位)。
@@ -723,6 +632,257 @@ async function buildImportPlan(args: {
     reflect,
     templateWrites: [...templateWritesByPath.values()],
     blocked,
+  };
+}
+
+/**
+ * templatePath 単位のリージョン間一致検査(FR-10 補助)。同一 templatePath を指す複数
+ * リージョンのデプロイ済みテンプレート/Capabilities が食い違うと 1 つの設定エントリで
+ * 表現できないため、最初に見た内容をキャッシュへ登録し、以降は突き合わせるだけにする。
+ */
+function resolveTemplateRepresentation(
+  target: ResolvedStackTarget,
+  summary: StackSummary,
+  deployedParsed: unknown,
+  cache: Map<
+    string,
+    {
+      parsed: unknown;
+      staticAnalysis: StaticTemplateAnalysis;
+      capabilities: Capability[];
+      regions: string[];
+    }
+  >,
+):
+  | { kind: 'ok'; staticAnalysis: StaticTemplateAnalysis }
+  | { kind: 'blocked'; warning: string; report: ImportStackReport } {
+  const representation = cache.get(target.templatePath);
+  if (representation === undefined) {
+    const staticAnalysis = analyzeStaticTemplate(deployedParsed);
+    cache.set(target.templatePath, {
+      parsed: deployedParsed,
+      staticAnalysis,
+      capabilities: [...summary.capabilities],
+      regions: [target.region],
+    });
+    return { kind: 'ok', staticAnalysis };
+  }
+
+  representation.regions.push(target.region);
+  const sameTemplate = parsedTemplatesEquivalent(
+    representation.parsed,
+    deployedParsed,
+  );
+  const sameCapabilities = arraysEqual(
+    representation.capabilities,
+    summary.capabilities,
+  );
+  if (!sameTemplate || !sameCapabilities) {
+    const regions = representation.regions.join(', ');
+    const differences = [
+      !sameTemplate ? 'template' : undefined,
+      !sameCapabilities ? 'Capabilities' : undefined,
+    ].filter((value): value is string => value !== undefined);
+    const message = `The ${differences.join(' / ')} for the same templatePath '${target.templatePath}' do not match across regions and cannot be represented in the configuration: ${regions}`;
+    return {
+      kind: 'blocked',
+      warning: message,
+      report: {
+        stackKey: target.stackKey,
+        region: target.region,
+        templatePath: target.templatePath,
+        stackName: summary.stackName,
+        status: 'template-mismatch',
+        recorded: false,
+        noEchoPlaceholders: [],
+        message,
+      },
+    };
+  }
+  return { kind: 'ok', staticAnalysis: representation.staticAnalysis };
+}
+
+/**
+ * FR-10-3/4/5: デプロイ済みとローカルのテンプレートを比較し、state に記録する基準
+ * (baseline)のハッシュと、書き出すテンプレート内容(あれば)を決める。解決不能な差分・
+ * 欠如(fail-closed 対象)は `blocked` として呼び出し側の `continue` に委ねる。
+ */
+function decideTemplateBaseline(args: {
+  target: ResolvedStackTarget;
+  stackName: string;
+  options: ImportOptions;
+  fs: ImportFileSystem;
+  templatePaths: Map<string, string>;
+  deployedTemplate: string;
+  deployedParsed: unknown;
+  deployedHash: string;
+  noEchoPlaceholders: string[];
+  localTemplates: Map<
+    string,
+    { content: string; parsed: unknown; hash: string }
+  >;
+}):
+  | {
+      kind: 'ok';
+      comparison: 'match' | 'differs' | 'local-missing';
+      baselineHash: string;
+      writeContent: string | undefined;
+      reconcileUsed: 'remote' | 'local' | undefined;
+    }
+  | { kind: 'blocked'; report: ImportStackReport } {
+  const {
+    target,
+    stackName,
+    options,
+    fs,
+    templatePaths,
+    deployedTemplate,
+    deployedParsed,
+    deployedHash,
+    noEchoPlaceholders,
+    localTemplates,
+  } = args;
+
+  const templateAbsPath = templatePaths.get(target.templatePath);
+  if (templateAbsPath === undefined) {
+    throw new InvariantError(
+      `Internal error: no safe real path for ${target.templatePath}`,
+      { stackKey: target.stackKey, region: target.region },
+    );
+  }
+  const localExists = fs.exists(templateAbsPath);
+
+  if (!localExists) {
+    if (options.writeTemplate) {
+      // FR-10-5: デプロイ済みテンプレートをローカルへ書き出す。
+      return {
+        kind: 'ok',
+        comparison: 'local-missing',
+        baselineHash: deployedHash,
+        writeContent: deployedTemplate,
+        reconcileUsed: undefined,
+      };
+    }
+    return {
+      kind: 'blocked',
+      report: {
+        stackKey: target.stackKey,
+        region: target.region,
+        templatePath: target.templatePath,
+        stackName,
+        status: 'template-missing',
+        templateComparison: 'local-missing',
+        recorded: false,
+        noEchoPlaceholders,
+        message:
+          'The local template file does not exist. Specify --write-template to write it out',
+      },
+    };
+  }
+
+  let local = localTemplates.get(target.templatePath);
+  if (local === undefined) {
+    const content = fs.readFile(templateAbsPath);
+    local = {
+      content,
+      parsed: parseCfnTemplate(content),
+      hash: computeTemplateHash(content),
+    };
+    localTemplates.set(target.templatePath, local);
+  }
+  if (parsedTemplatesEquivalent(local.parsed, deployedParsed)) {
+    // FR-10-3: テンプレート内容が一致 → ローカル(= デプロイ済みと同値)を基準に記録。
+    // テンプレート・パラメータ・タグ・Capabilities・dependsOn がすべて実スタックの
+    // 記録値と一致する限り次回 plan は unchanged になるが、design.md §4.2 の通り
+    // defaultTags が実スタックに未付与のキーを追加する場合はタグが一致しないため
+    // 対象外(その場合は次回 modified として検知され、意図した挙動)。
+    return {
+      kind: 'ok',
+      comparison: 'match',
+      baselineHash: local.hash,
+      writeContent: undefined,
+      reconcileUsed: undefined,
+    };
+  }
+  if (options.reconcile === 'remote') {
+    // FR-10-4(a): デプロイ済みでローカルを上書き。
+    return {
+      kind: 'ok',
+      comparison: 'differs',
+      baselineHash: deployedHash,
+      writeContent: deployedTemplate,
+      reconcileUsed: 'remote',
+    };
+  }
+  if (options.reconcile === 'local') {
+    // FR-10-4(b): ローカルを維持し、ステートにはデプロイ済み側のハッシュを記録
+    //             → 次回 plan で modified として顕在化する。
+    return {
+      kind: 'ok',
+      comparison: 'differs',
+      baselineHash: deployedHash,
+      writeContent: undefined,
+      reconcileUsed: 'local',
+    };
+  }
+  // FR-10-4: 差分 + オプションなし → fail-closed。
+  return {
+    kind: 'blocked',
+    report: {
+      stackKey: target.stackKey,
+      region: target.region,
+      templatePath: target.templatePath,
+      stackName,
+      status: 'template-mismatch',
+      templateComparison: 'differs',
+      recorded: false,
+      noEchoPlaceholders,
+      message:
+        'The deployed template differs from the local one. Specify --reconcile remote|local',
+    },
+  };
+}
+
+/** FR-10-6 / FR-10-11: デプロイ済み内容(baseline)に基づくハッシュ・依存辺を含む state エントリを組み立てる。 */
+function buildStateEntry(args: {
+  target: ResolvedStackTarget;
+  summary: StackSummary;
+  configParameters: Record<string, string>;
+  configTags: Record<string, string>;
+  baselineHash: string;
+  analysis: TemplateAnalysis;
+}): StackEntry {
+  const {
+    target,
+    summary,
+    configParameters,
+    configTags,
+    baselineHash,
+    analysis,
+  } = args;
+  return {
+    stackName: summary.stackName,
+    stackId: summary.stackId,
+    region: target.region,
+    templateHash: baselineHash,
+    inputsHash: computeInputsHash({
+      templateHash: baselineHash,
+      stackName: summary.stackName,
+      parameters: configParameters,
+      tags: configTags,
+      capabilities: summary.capabilities,
+      // dependsOn は実スタックから検証できないため、ローカルの希望値を記録する(§7)。
+      dependsOn: target.dependsOn,
+    }),
+    exports: analysis.exports,
+    imports: analysis.imports,
+    dependsOn: target.dependsOn.map((raw) =>
+      resolveDependsOnKey(raw, target.region),
+    ),
+    dependencyAnalysisIncomplete:
+      analysis.warnings.length > 0 && target.dependsOn.length === 0,
+    lastAction: 'IMPORT',
+    lastSuccessAt: new Date().toISOString(),
   };
 }
 
@@ -807,19 +967,6 @@ function toConfigTags(
   return result;
 }
 
-/** 設定上の対象リージョンを出現順・重複排除で返す(接続先ヘッダ用。FR-7-8)。 */
-function uniqueRegions(config: CfnSyncConfig): string[] {
-  const seen = new Set<string>();
-  const regions: string[] = [];
-  for (const target of resolveTargets(config)) {
-    if (!seen.has(target.region)) {
-      seen.add(target.region);
-      regions.push(target.region);
-    }
-  }
-  return regions;
-}
-
 function emptyReport(
   connection: ConnectionInfo,
   aborted: ImportReport['aborted'],
@@ -838,9 +985,7 @@ function emptyReport(
 }
 
 function publicWarningMessage(error: unknown): string {
-  return error instanceof CfnSyncError
-    ? error.publicMessage
-    : 'An unexpected error occurred';
+  return publicMessageOf(error);
 }
 
 function textDiagnosticMessage(error: unknown): string {

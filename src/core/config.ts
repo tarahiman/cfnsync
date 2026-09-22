@@ -285,3 +285,16 @@ export function findRequiredPlaceholders(
     .filter(([, value]) => value === REQUIRED_PLACEHOLDER)
     .map(([key]) => key);
 }
+
+/** 設定上の対象リージョンを出現順・重複排除で返す(接続先ヘッダ用。FR-7-8)。 */
+export function targetRegions(config: CfnSyncConfig): string[] {
+  const seen = new Set<string>();
+  const regions: string[] = [];
+  for (const target of resolveTargets(config)) {
+    if (!seen.has(target.region)) {
+      seen.add(target.region);
+      regions.push(target.region);
+    }
+  }
+  return regions;
+}
