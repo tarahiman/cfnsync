@@ -1835,7 +1835,9 @@ Outputs:
     );
     expect(s.backend.saveCalls).toHaveLength(0);
   });
+});
 
+describe('deploy — T-14 integration(削除)', () => {
   it('§7 DELETE 復旧: deleted だが実スタック不存在なら state entry を CAS 除去する', async () => {
     const oldConfig = configOf({ 'old.yaml': { stackName: 'Old' } });
     const oldTemplates = templatesOf({ 'old.yaml': TEMPLATE_C });
@@ -2049,7 +2051,9 @@ Outputs:
     );
     expect(result.exitCode).toBe(0);
   });
+});
 
+describe('deploy — T-14 integration(進捗通知)', () => {
   it('FR-5-4: CREATE 成功は changeset-create-start→diff-ready→execute-start→done を通知する', async () => {
     const config = configOf({ 'a.yaml': { stackName: 'A' } });
     const s = setup(config, templatesOf({ 'a.yaml': TEMPLATE_A }));
