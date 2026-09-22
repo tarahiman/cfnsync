@@ -431,13 +431,13 @@ function formatTemplatePath(path: Array<string | number>): string {
 }
 
 function extractNoEchoParams(template: Record<string, unknown>): string[] {
-  const params = template['Parameters'];
+  const params = template.Parameters;
   if (!isRecord(params)) return [];
 
   const noEchoParams: string[] = [];
   for (const [name, def] of Object.entries(params)) {
     if (!isRecord(def)) continue;
-    const noEcho = def['NoEcho'];
+    const noEcho = def.NoEcho;
     if (noEcho === true || noEcho === 'true') {
       noEchoParams.push(name);
     }
@@ -489,15 +489,15 @@ export function analyzeStaticTemplate(parsed: unknown): StaticTemplateAnalysis {
   const importCandidates: DependencyNameCandidate[] = [];
   walkForImports(template, importCandidates, []);
   const exportCandidates: StaticTemplateAnalysis['exportCandidates'] = [];
-  const outputs = template['Outputs'];
+  const outputs = template.Outputs;
   if (isRecord(outputs)) {
     for (const [outputName, outputDef] of Object.entries(outputs)) {
       if (!isRecord(outputDef)) continue;
-      const exportDef = outputDef['Export'];
+      const exportDef = outputDef.Export;
       if (!isRecord(exportDef)) continue;
       exportCandidates.push({
         path: `Outputs.${outputName}.Export.Name`,
-        value: exportDef['Name'],
+        value: exportDef.Name,
       });
     }
   }
