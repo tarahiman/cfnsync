@@ -1,11 +1,17 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-import { renderApprovalSummary } from '../report/index.js';
+import {
+  type ProgressEvent,
+  renderApprovalSummary,
+  type StackEventLine,
+} from '../report/index.js';
 import {
   type CfnSyncConfig,
   renderDeploy,
+  renderForceUnlock,
   renderGraph,
+  renderImport,
   renderStatus,
   validateEffectiveConfig,
 } from '../usecase/cliBoundary.js';
@@ -73,10 +79,7 @@ function loadBaseInputs(
 } {
   const configPath = resolve(options.config);
   const configDir = dirname(configPath);
-  const loaded =
-    Object.keys(loadOptions).length === 0
-      ? ctx.deps.loadConfig(options.config)
-      : ctx.deps.loadConfig(options.config, loadOptions);
+  const loaded = ctx.deps.loadConfig(options.config, loadOptions);
   const region = effectiveRegion(options, loaded);
   const config =
     region === loaded.defaultRegion
@@ -180,7 +183,7 @@ export async function runGraph(
     writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
-    renderGraph(result.graphs, options.output === 'json'),
+    renderGraph(result.graphs, result.levels, options.output === 'json'),
   );
   return 0;
 }
@@ -191,17 +194,13 @@ function deploymentDeps(
 ) {
   return {
     ...awsDeps(ctx, input),
-    onEvent: (event: {
-      stackKey: string;
-      resourceStatus: string;
-      logicalResourceId: string;
-    }) => {
+    onEvent: (event: StackEventLine) => {
       writeLine(
         ctx.io.stderr,
         `[${event.stackKey}] ${event.logicalResourceId} ${event.resourceStatus}`,
       );
     },
-    onProgress: (event: { stackKey: string; message: string }) => {
+    onProgress: (event: ProgressEvent) => {
       writeLine(ctx.io.stderr, `[${event.stackKey}] ${event.message}`);
     },
   };
@@ -283,14 +282,7 @@ export async function runImporter(
       : (result.textDiagnostics ?? result.report.warnings);
   for (const warning of warnings)
     writeLine(ctx.io.stderr, `warning: ${warning}`);
-  writeLine(
-    ctx.io.stdout,
-    options.output === 'json'
-      ? JSON.stringify(result.report, null, 2)
-      : result.report.stacks
-          .map((stack) => `${stack.status}: ${stack.stackKey}`)
-          .join('\n') || 'No stacks to import.',
-  );
+  writeLine(ctx.io.stdout, renderImport(result, options.output === 'json'));
   return result.exitCode;
 }
 
@@ -308,9 +300,7 @@ export async function runForceUnlock(
     options.output === 'json' || result.exitCode === 0
       ? ctx.io.stdout
       : ctx.io.stderr,
-    options.output === 'json'
-      ? JSON.stringify(result, null, 2)
-      : result.message,
+    renderForceUnlock(result, options.output === 'json'),
   );
   return result.exitCode;
 }
@@ -326,7 +316,7 @@ function isPromptAborted(error: unknown): boolean {
   return (
     error instanceof Error &&
     (error.name === 'AbortError' ||
-      (error as { code?: unknown }).code === 'ABORT_ERR')
+      ('code' in error && error.code === 'ABORT_ERR'))
   );
 }
 

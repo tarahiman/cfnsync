@@ -28,8 +28,16 @@ type ExitCode = 0 | 1 | 2;
 function readPackageVersion(): string {
   try {
     const url = new URL('../../package.json', import.meta.url);
-    const pkg = JSON.parse(readFileSync(url, 'utf8')) as { version?: string };
-    return pkg.version ?? 'unknown';
+    const pkg: unknown = JSON.parse(readFileSync(url, 'utf8'));
+    if (
+      typeof pkg === 'object' &&
+      pkg !== null &&
+      'version' in pkg &&
+      typeof pkg.version === 'string'
+    ) {
+      return pkg.version;
+    }
+    return 'unknown';
   } catch {
     return 'unknown';
   }
@@ -66,15 +74,22 @@ function commonOptions(command: Command): CommonOptions {
   return options;
 }
 
-function detectJsonOutput(argv: string[]): boolean {
-  const valueOptions = new Set([
-    '--config',
-    '--profile',
-    '--region',
-    '--output',
-    '--on-failure',
-    '--reconcile',
-  ]);
+export function deriveValueOptions(program: Command): Set<string> {
+  return new Set(
+    [
+      ...program.options,
+      ...program.commands.flatMap((command) => command.options),
+    ]
+      .filter((option) => option.required || option.optional)
+      .map((option) => option.long)
+      .filter((long): long is string => long !== undefined),
+  );
+}
+
+function detectJsonOutput(
+  argv: string[],
+  valueOptions: ReadonlySet<string>,
+): boolean {
   let jsonRequested = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -100,34 +115,30 @@ function detectJsonOutput(argv: string[]): boolean {
 function writeError(
   runtime: Runtime,
   error: unknown,
-  usageError = false,
+  options: { type?: 'CliUsageError'; emitText?: boolean } = {},
 ): void {
   if (runtime.errorEmitted) return;
   runtime.errorEmitted = true;
   if (runtime.jsonRequested) {
-    runtime.io.stdout(
-      `${renderCliError(error, usageError ? 'CliUsageError' : undefined)}\n`,
-    );
+    runtime.io.stdout(`${renderCliError(error, options.type)}\n`);
     return;
   }
-  if (!usageError) {
+  if (options.emitText ?? options.type !== 'CliUsageError') {
     const message = error instanceof Error ? error.message : String(error);
     runtime.io.stderr(`error: ${message}\n`);
   }
 }
 
-function invoke(
+async function run(
   runtime: Runtime,
   action: () => Promise<ExitCode>,
-): () => Promise<void> {
-  return async () => {
-    try {
-      runtime.exitCode = await action();
-    } catch (error) {
-      runtime.exitCode = 1;
-      writeError(runtime, error);
-    }
-  };
+): Promise<void> {
+  try {
+    runtime.exitCode = await action();
+  } catch (error) {
+    runtime.exitCode = 1;
+    writeError(runtime, error);
+  }
 }
 
 function addCommonOptions(program: Command): void {
@@ -145,7 +156,7 @@ function addCommonOptions(program: Command): void {
 export function createCliProgram(
   deps: CliDependencies = defaultCliDependencies,
   runtimeOverrides: Omit<RunCliOptions, 'deps'> = {},
-): Command {
+): { program: Command; runtime: Runtime } {
   const runtime: Runtime = {
     deps,
     io: runtimeOverrides.io ?? defaultIo,
@@ -171,7 +182,7 @@ export function createCliProgram(
     .command('status')
     .description('Show locally detected changes')
     .action((_opts, command) =>
-      invoke(runtime, () => runStatus(runtime, commonOptions(command)))(),
+      run(runtime, () => runStatus(runtime, commonOptions(command))),
     );
 
   // FR-5-20a: 差分確認を提供する公開コマンドは plan だけ。deploy に同じ目的の
@@ -182,13 +193,13 @@ export function createCliProgram(
     .description('Create change sets and show the diff')
     .option('--no-color', 'Disable ANSI colors in the diff')
     .action((local: { color?: boolean }, command) =>
-      invoke(runtime, () =>
+      run(runtime, () =>
         runDeployment(runtime, {
           ...commonOptions(command),
           ...local,
           dryRun: true,
         }),
-      )(),
+      ),
     );
 
   program
@@ -212,7 +223,7 @@ export function createCliProgram(
         },
         command,
       ) =>
-        invoke(runtime, async () => {
+        run(runtime, async () => {
           // FR-12-3b: 承認を求められない非 TTY で --auto-approve がない deploy は、
           // AWS・ステートバックエンドへ一切アクセスする前に CLI 境界で拒否する
           // (fail-closed)。差分確認だけを行いたい場合は plan を使う(FR-5-20a)。
@@ -220,14 +231,10 @@ export function createCliProgram(
             const message =
               'deploy shows the diff and asks for approval by default, but this environment has no TTY. ' +
               'In non-interactive environments such as CI, specify --auto-approve (-y)';
-            runtime.errorEmitted = true;
-            if (runtime.jsonRequested) {
-              runtime.io.stdout(
-                `${renderCliError(new Error(message), 'CliUsageError')}\n`,
-              );
-            } else {
-              runtime.io.stderr(`error: ${message}\n`);
-            }
+            writeError(runtime, new Error(message), {
+              type: 'CliUsageError',
+              emitText: true,
+            });
             return 1;
           }
           return runDeployment(runtime, {
@@ -235,14 +242,14 @@ export function createCliProgram(
             ...local,
             prompt: runtime.prompt,
           });
-        })(),
+        }),
     );
 
   program
     .command('graph')
     .description('Show the dependency graph')
     .action((_opts, command) =>
-      invoke(runtime, () => runGraph(runtime, commonOptions(command)))(),
+      run(runtime, () => runGraph(runtime, commonOptions(command))),
     );
 
   program
@@ -260,35 +267,32 @@ export function createCliProgram(
         local: { reconcile?: 'remote' | 'local'; writeTemplate?: boolean },
         command,
       ) =>
-        invoke(runtime, () =>
+        run(runtime, () =>
           runImporter(runtime, { ...commonOptions(command), ...local }),
-        )(),
+        ),
     );
 
   program
     .command('force-unlock <runId>')
     .description('Manually release a stale state lock')
     .action((runId: string, _local: unknown, command: Command) =>
-      invoke(runtime, () =>
+      run(runtime, () =>
         runForceUnlock(runtime, commonOptions(command), runId),
-      )(),
+      ),
     );
 
-  Object.defineProperty(program, '__cfnsyncRuntime', { value: runtime });
-  return program;
+  return { program, runtime };
 }
 
 export async function runCli(
   argv: string[],
   options: RunCliOptions = {},
 ): Promise<ExitCode> {
-  const program = createCliProgram(
+  const { program, runtime } = createCliProgram(
     options.deps ?? defaultCliDependencies,
     options,
   );
-  const runtime = (program as Command & { __cfnsyncRuntime: Runtime })
-    .__cfnsyncRuntime;
-  runtime.jsonRequested = detectJsonOutput(argv);
+  runtime.jsonRequested = detectJsonOutput(argv, deriveValueOptions(program));
   program.configureOutput({
     writeOut: runtime.io.stdout,
     writeErr: runtime.io.stderr,
@@ -296,10 +300,15 @@ export async function runCli(
   try {
     await program.parseAsync(argv, { from: 'user' });
   } catch (error) {
-    const commanderError = error as { exitCode?: number; message?: string };
-    if (commanderError.exitCode === 0) return 0;
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'exitCode' in error &&
+      error.exitCode === 0
+    )
+      return 0;
     runtime.exitCode = 1;
-    writeError(runtime, error, true);
+    writeError(runtime, error, { type: 'CliUsageError' });
   }
   return runtime.exitCode;
 }
