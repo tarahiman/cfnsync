@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { RegionGraph } from '../../src/core/graph.js';
+import { computeLevels, type RegionGraph } from '../../src/core/graph.js';
 import { makeStackKey } from '../../src/core/types.js';
 import type { ChangeSetDetail, ResourceChange } from '../../src/ports/index.js';
 import {
@@ -15,7 +15,7 @@ import {
   buildStackDiff,
   type ConnectionInfo,
   type DeployReport,
-  maskNoEcho,
+  redactReportMessages,
   renderApprovalSummary,
   renderGraphJson,
   renderGraphText,
@@ -466,18 +466,6 @@ describe('FR-3-4 / FR-3-5: text 差分の ANSI カラー', () => {
 describe('NFR-4: NoEcho マスク', () => {
   const SECRET = 'S3cr3t-Raw-Value-Do-Not-Leak';
 
-  it('NFR-4: maskNoEcho は NoEcho キーの値のみ **** に置換する', () => {
-    const masked = maskNoEcho({ DbPassword: SECRET, Other: 'plain' }, [
-      'DbPassword',
-    ]);
-    expect(masked).toEqual({ DbPassword: '****', Other: 'plain' });
-  });
-
-  it('NFR-4: maskNoEcho は noEchoParams に無いキーを変更しない', () => {
-    const masked = maskNoEcho({ A: '1', B: '2' }, []);
-    expect(masked).toEqual({ A: '1', B: '2' });
-  });
-
   it('NFR-4: buildStackDiff は ChangeSetDetail.parameters の実値を StackDiff に持ち込まない(構造的保証)', () => {
     const detail: ChangeSetDetail = {
       status: 'CREATE_COMPLETE',
@@ -655,8 +643,17 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     return new Map([[REGION, graph]]);
   }
 
+  function levelsFor(
+    graphs: Map<string, RegionGraph>,
+  ): Map<string, string[][]> {
+    return new Map(
+      [...graphs].map(([region, graph]) => [region, computeLevels(graph)]),
+    );
+  }
+
   it('FR-8-3/FR-8-6: renderGraphText は依存関係をリージョンごとのレベル(Lv0, Lv1, ...)として出力する', () => {
-    const text = renderGraphText(makeGraphs());
+    const graphs = makeGraphs();
+    const text = renderGraphText(graphs, levelsFor(graphs));
     const lv0Index = text.indexOf('Lv0:');
     const lv1Index = text.indexOf('Lv1:');
     expect(lv0Index).toBeGreaterThanOrEqual(0);
@@ -686,7 +683,8 @@ describe('FR-8-3: 依存マッピングの出力', () => {
       ],
     };
 
-    const text = renderGraphText(new Map([[REGION, graph]]));
+    const graphs = new Map([[REGION, graph]]);
+    const text = renderGraphText(graphs, levelsFor(graphs));
 
     // db1/db2 はそれぞれちょうど 1 回だけ出現する(下流参照ごとに重複しない)。
     const countOccurrences = (needle: string): number =>
@@ -753,7 +751,7 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     const soloKey = makeStackKey('solo.yaml', REGION_B);
     graphs.set(REGION_B, { region: REGION_B, nodes: [soloKey], edges: [] });
 
-    const text = renderGraphText(graphs);
+    const text = renderGraphText(graphs, levelsFor(graphs));
     expect(text).toContain(REGION_B);
     expect(text).toContain('solo.yaml@' + REGION_B);
 
@@ -770,7 +768,7 @@ describe('FR-8-3: 依存マッピングの出力', () => {
     const soloKey = makeStackKey('solo.yaml', REGION_B);
     graphs.set(REGION_B, { region: REGION_B, nodes: [soloKey], edges: [] });
 
-    const text = renderGraphText(graphs);
+    const text = renderGraphText(graphs, levelsFor(graphs));
 
     // REGION ブロック: Lv0(network) → Lv1(database)。
     const regionAHeaderIndex = text.indexOf(`region: ${REGION}\n`);
@@ -828,16 +826,82 @@ describe('FR-7-8(出力): 接続先の先頭表示', () => {
   });
 
   it('FR-7-8: DeployReport に不正に付与されたクレデンシャルらしき余剰フィールドは renderText / renderJson の出力に一切現れない', () => {
-    const rep = report([]) as DeployReport & { credentials?: unknown };
-    // usecase 側の実装ミスを想定した防御的テスト: 契約にない秘匿情報が紛れ込んでも出力に漏れないこと。
-    rep.credentials = {
-      accessKeyId: 'AKIAFAKEEXAMPLE',
-      secretAccessKey: 'super-secret-leak-marker',
-    };
+    const leak = 'super-secret-leak-marker';
+    const rep = report(
+      [
+        {
+          stackKey: `app.yaml@${REGION}`,
+          region: REGION,
+          stackName: 'app',
+          operation: 'update',
+          resources: [
+            {
+              action: 'Modify',
+              logicalResourceId: 'App',
+              resourceType: 'Custom::App',
+              replacement: false,
+              scope: ['Properties'],
+              changedProperties: ['Value'],
+              details: [{ target: { beforeValue: 'safe' } }],
+              containsNoEchoChange: false,
+            },
+          ],
+          warnings: [],
+        },
+      ],
+      {
+        events: [
+          {
+            stackKey: `app.yaml@${REGION}`,
+            region: REGION,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            logicalResourceId: 'App',
+            resourceType: 'Custom::App',
+            resourceStatus: 'UPDATE_COMPLETE',
+          },
+        ],
+        result: {
+          stacks: [
+            {
+              stackKey: `app.yaml@${REGION}`,
+              region: REGION,
+              stackName: 'app',
+              outcome: 'succeeded',
+            },
+          ],
+        },
+        reconciliations: [
+          {
+            stackKey: `app.yaml@${REGION}`,
+            region: REGION,
+            kind: 'empty-change-set',
+            stateUpdated: true,
+          },
+        ],
+      },
+    );
+    // usecase 側の実装ミスを想定し、各階層へ契約外の秘匿フィールドを混入させる。
+    for (const value of [
+      rep,
+      rep.connection,
+      rep.diffs[0],
+      rep.diffs[0].resources[0],
+      rep.diffs[0].resources[0].details[0],
+      rep.diffs[0].resources[0].details[0].target,
+      rep.events?.[0],
+      rep.result?.stacks[0],
+      rep.reconciliations?.[0],
+    ]) {
+      if (value !== undefined) Object.assign(value, { credentials: leak });
+    }
+    Object.assign(rep, { accessKeyId: 'AKIAFAKEEXAMPLE' });
 
-    expect(renderText(rep)).not.toContain('super-secret-leak-marker');
-    expect(renderJson(rep)).not.toContain('super-secret-leak-marker');
+    expect(renderText(rep)).not.toContain(leak);
+    expect(renderJson(rep)).not.toContain(leak);
     expect(renderJson(rep)).not.toContain('AKIAFAKEEXAMPLE');
+    expect(
+      JSON.stringify(redactReportMessages(rep, (_stackKey, text) => text)),
+    ).not.toContain(leak);
   });
 });
 

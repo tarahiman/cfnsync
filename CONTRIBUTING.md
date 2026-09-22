@@ -21,6 +21,12 @@ pnpm run quality:check# skill/docs checks, format, lint, test type-check, tests,
 
 Run the test suite before and after any change — it must stay green.
 
+Repository scripts under `scripts/` use exit code 1 for verification failures and 2 when
+verification cannot run. The rule governs those scripts' own exits. It does not reinterpret
+the codes of third-party tools that `quality:check` chains: `tsc`, for example, exits 2 for a
+type error, which is a verification failure. `scripts/run-staged-quality-checks.sh` therefore
+normalizes any failure of the nested `quality:check` to 1 rather than propagating it.
+
 `pnpm run build` type-checks only `src/` because it emits `dist/`. `test/` is far
 larger than `src/`, so `typecheck:test` type-checks both together with
 `tsconfig.test.json` (`noEmit`), which is what stops a test from silently
@@ -78,6 +84,7 @@ If Gitleaks is already managed by your system, you may enable only the hook with
 
 ## Making changes
 
+- **Follow the coding standards.** Use the [coding standards](./docs/coding-standards.md) to distinguish machine-enforced rules from review-only guidance and to ratchet complexity walls downward.
 - **Specs first.** Follow the [specification change flow](./docs/spec/README.md#仕様変更の流れ). Any behavior change must be reflected in [`docs/spec/requirements.md`](./docs/spec/requirements.md) and [`docs/spec/design.md`](./docs/spec/design.md) *before* implementation, then propagated to traceability, tests, user documentation, and the changelog as applicable.
 - **Do not weaken the safety invariants** documented in the design spec and the README "Safety model" section (fail-closed guards, state compare-and-swap, change-set ownership). These came out of adversarial review and are load-bearing.
 - **User-facing CLI messages are English.** Keep help text and command output in English.

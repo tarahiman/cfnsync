@@ -8,6 +8,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { VerificationError } from '../../scripts/lib/cli.mjs';
 import {
   checkSkillReferences,
   findOutOfSyncSkillReferences,
@@ -111,6 +112,32 @@ describe('skill reference synchronization', () => {
     expect(() => checkSkillReferences(root)).toThrow(
       /must keep the repository-only related documents section as its final H2 section/,
     );
+  });
+
+  it('classifies a missing repository-only section as a verification failure, not a cannot-run error', () => {
+    // Regression test: per CONTRIBUTING.md ("1 = verification failure / 2 =
+    // cannot run"), a source document that fails the content contract is a
+    // verification failure. This previously threw a plain Error, which
+    // scripts/lib/cli.mjs's runAsScript maps to exit code 2 instead of 1.
+    const root = createFixture();
+    writeFileSync(
+      join(root, SKILL_REFERENCE_FILES[0].source),
+      '# Missing expected section\n',
+    );
+
+    expect(() => syncSkillReferences(root)).toThrow(VerificationError);
+  });
+
+  it('classifies a misplaced repository-only section as a verification failure, not a cannot-run error', () => {
+    const root = createFixture();
+    const configReference = join(root, SKILL_REFERENCE_FILES[0].source);
+    writeFileSync(
+      configReference,
+      `${readFileSync(configReference, 'utf8')}\n## New canonical section\n\nMust not be dropped.\n`,
+    );
+
+    expect(() => syncSkillReferences(root)).toThrow(VerificationError);
+    expect(() => checkSkillReferences(root)).toThrow(VerificationError);
   });
 
   it('fails the check without modifying stale references or sources', () => {

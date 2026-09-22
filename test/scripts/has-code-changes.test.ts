@@ -20,6 +20,7 @@ describe('code-related path detection', () => {
     'pnpm-lock.yaml',
     './tsconfig.json',
     'tsconfig.test.json',
+    'tsconfig.scripts.json',
   ])('treats %s as code-related', (filePath) => {
     expect(isCodeRelatedPath(filePath)).toBe(true);
   });
@@ -31,6 +32,22 @@ describe('code-related path detection', () => {
     '.github/ISSUE_TEMPLATE/bug_report.yml',
   ])('treats %s as documentation or metadata', (filePath) => {
     expect(isCodeRelatedPath(filePath)).toBe(false);
+  });
+
+  it('treats any root-level tsconfig*.json file as code-related without hand-listing it', () => {
+    // Regression test: tsconfig.scripts.json was introduced by this change
+    // but omitted from the old hand-maintained CODE_FILES list, so a diff
+    // touching only that file was silently classified as "no code changes"
+    // and the quality gate was skipped entirely. Root-level tsconfig*.json
+    // files are now matched by pattern so a future tsconfig variant cannot
+    // fall through the same way.
+    expect(isCodeRelatedPath('tsconfig.future-variant.json')).toBe(true);
+  });
+
+  it('does not widen the tsconfig pattern to nested or unrelated files', () => {
+    expect(isCodeRelatedPath('packages/example/tsconfig.json')).toBe(false);
+    expect(isCodeRelatedPath('tsconfig.json.bak')).toBe(false);
+    expect(isCodeRelatedPath('tsconfigsomething.json')).toBe(false);
   });
 
   it('normalizes Windows path separators', () => {

@@ -1,11 +1,17 @@
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
-import { renderApprovalSummary } from '../report/index.js';
+import {
+  type ProgressEvent,
+  renderApprovalSummary,
+  type StackEventLine,
+} from '../report/index.js';
 import {
   type CfnSyncConfig,
   renderDeploy,
+  renderForceUnlock,
   renderGraph,
+  renderImport,
   renderStatus,
   validateEffectiveConfig,
 } from '../usecase/cliBoundary.js';
@@ -73,10 +79,7 @@ function loadBaseInputs(
 } {
   const configPath = resolve(options.config);
   const configDir = dirname(configPath);
-  const loaded =
-    Object.keys(loadOptions).length === 0
-      ? ctx.deps.loadConfig(options.config)
-      : ctx.deps.loadConfig(options.config, loadOptions);
+  const loaded = ctx.deps.loadConfig(options.config, loadOptions);
   const region = effectiveRegion(options, loaded);
   const config =
     region === loaded.defaultRegion
@@ -114,6 +117,44 @@ function cachedCfnFactory(
   };
 }
 
+/** FR-1 / design §4.5: 対象 state backend を構成から生成する。全コマンド共通の生成点。 */
+function backendFor(
+  ctx: CommandContext,
+  input: { config: CfnSyncConfig; configDir: string; profile?: string },
+): ReturnType<CliDependencies['createBackend']> {
+  return ctx.deps.createBackend({
+    config: input.config,
+    configDir: input.configDir,
+    profile: input.profile,
+  });
+}
+
+/**
+ * FR-7 系: CloudFormation / STS ゲートウェイと state backend の三つ組。
+ * deploy・import で共通の生成点(design §3)。
+ */
+function awsDeps(
+  ctx: CommandContext,
+  input: {
+    config: CfnSyncConfig;
+    configDir: string;
+    profile?: string;
+    region: string;
+  },
+): {
+  cfnFactory: (region: string) => ReturnType<CliDependencies['createCfn']>;
+  sts: ReturnType<CliDependencies['createSts']>;
+  backend: ReturnType<CliDependencies['createBackend']>;
+} {
+  return {
+    cfnFactory: cachedCfnFactory((region) =>
+      ctx.deps.createCfn({ region, profile: input.profile }),
+    ),
+    sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
+    backend: backendFor(ctx, input),
+  };
+}
+
 export async function runStatus(
   ctx: CommandContext,
   options: CommonOptions,
@@ -122,11 +163,7 @@ export async function runStatus(
   const result = await ctx.deps.getStatus({
     config: input.config,
     templates: input.templates,
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
+    backend: backendFor(ctx, input),
   });
   const output = renderStatus(result.entries, options.output === 'json');
   writeLine(ctx.io.stdout, output);
@@ -146,7 +183,7 @@ export async function runGraph(
     writeLine(ctx.io.stderr, `warning: ${warning}`);
   writeLine(
     ctx.io.stdout,
-    renderGraph(result.graphs, options.output === 'json'),
+    renderGraph(result.graphs, result.levels, options.output === 'json'),
   );
   return 0;
 }
@@ -155,28 +192,15 @@ function deploymentDeps(
   ctx: CommandContext,
   input: ReturnType<typeof loadInputs>,
 ) {
-  const cfnFactory = cachedCfnFactory((region) =>
-    ctx.deps.createCfn({ region, profile: input.profile }),
-  );
   return {
-    cfnFactory,
-    sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
-    onEvent: (event: {
-      stackKey: string;
-      resourceStatus: string;
-      logicalResourceId: string;
-    }) => {
+    ...awsDeps(ctx, input),
+    onEvent: (event: StackEventLine) => {
       writeLine(
         ctx.io.stderr,
         `[${event.stackKey}] ${event.logicalResourceId} ${event.resourceStatus}`,
       );
     },
-    onProgress: (event: { stackKey: string; message: string }) => {
+    onProgress: (event: ProgressEvent) => {
       writeLine(ctx.io.stderr, `[${event.stackKey}] ${event.message}`);
     },
   };
@@ -242,22 +266,11 @@ export async function runImporter(
   const input = loadBaseInputs(ctx, options, {
     allowMissingTemplates: options.writeTemplate === true,
   });
-  const cfnFactory = cachedCfnFactory((region) =>
-    ctx.deps.createCfn({ region, profile: input.profile }),
-  );
   const result = await ctx.deps.runImport({
     config: input.config,
     configPath: input.configPath,
     templatePaths: ctx.deps.resolveTemplatePaths(input.config, input.configDir),
-    deps: {
-      cfnFactory,
-      sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-      backend: ctx.deps.createBackend({
-        config: input.config,
-        configDir: input.configDir,
-        profile: input.profile,
-      }),
-    },
+    deps: awsDeps(ctx, input),
     options: {
       reconcile: options.reconcile,
       writeTemplate: options.writeTemplate === true,
@@ -269,14 +282,7 @@ export async function runImporter(
       : (result.textDiagnostics ?? result.report.warnings);
   for (const warning of warnings)
     writeLine(ctx.io.stderr, `warning: ${warning}`);
-  writeLine(
-    ctx.io.stdout,
-    options.output === 'json'
-      ? JSON.stringify(result.report, null, 2)
-      : result.report.stacks
-          .map((stack) => `${stack.status}: ${stack.stackKey}`)
-          .join('\n') || 'No stacks to import.',
-  );
+  writeLine(ctx.io.stdout, renderImport(result, options.output === 'json'));
   return result.exitCode;
 }
 
@@ -287,20 +293,14 @@ export async function runForceUnlock(
 ): Promise<0 | 1> {
   const input = loadBaseInputs(ctx, options, { validateTemplateFiles: false });
   const result = await ctx.deps.forceUnlock({
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
+    backend: backendFor(ctx, input),
     runId,
   });
   writeLine(
     options.output === 'json' || result.exitCode === 0
       ? ctx.io.stdout
       : ctx.io.stderr,
-    options.output === 'json'
-      ? JSON.stringify(result, null, 2)
-      : result.message,
+    renderForceUnlock(result, options.output === 'json'),
   );
   return result.exitCode;
 }
@@ -316,7 +316,7 @@ function isPromptAborted(error: unknown): boolean {
   return (
     error instanceof Error &&
     (error.name === 'AbortError' ||
-      (error as { code?: unknown }).code === 'ABORT_ERR')
+      ('code' in error && error.code === 'ABORT_ERR'))
   );
 }
 

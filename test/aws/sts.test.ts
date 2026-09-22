@@ -114,6 +114,24 @@ describe('FR-7-1 / FR-7-2 / FR-7-9d(オプション伝播): クライアント�
 });
 
 // ---------------------------------------------------------------------------
+// NFR-3(リトライ): クライアント adaptive 構成(`aws/clientConfig` 経由)
+// ---------------------------------------------------------------------------
+
+describe('NFR-3(リトライ): クライアント adaptive 構成', () => {
+  it('NFR-3: STSClient が adaptive retry mode / maxAttempts:10 で構成される', async () => {
+    const gateway = new StsGatewayImpl({ region: 'ap-northeast-1' });
+
+    const rm = gateway.client.config.retryMode;
+    const resolvedRm = typeof rm === 'function' ? await rm() : rm;
+    expect(resolvedRm).toBe('adaptive');
+
+    const ma = gateway.client.config.maxAttempts;
+    const resolvedMa = typeof ma === 'function' ? await ma() : ma;
+    expect(resolvedMa).toBe(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 型適合(NFR-2 と整合): StsGatewayImpl は StsGateway 契約を満たす
 // ---------------------------------------------------------------------------
 

@@ -3,9 +3,9 @@ import { resolveTargets } from '../core/config.js';
 import { ConfigError } from '../core/errors.js';
 import {
   buildGraphs,
+  computeLevels,
   type RegionGraph,
   type StackNode,
-  topologicalOrder,
 } from '../core/graph.js';
 import {
   analyzeStaticTemplate,
@@ -13,9 +13,11 @@ import {
   resolveStaticTemplateAnalysis,
   type StaticTemplateAnalysis,
 } from '../core/template.js';
+import type { StackKey } from '../core/types.js';
 
 export interface GraphResult {
   graphs: Map<string, RegionGraph>;
+  levels: Map<string, StackKey[][]>;
   warnings: string[];
 }
 
@@ -55,6 +57,9 @@ export function getGraph(input: {
     });
   }
   const graphs = buildGraphs(nodes);
-  for (const graph of graphs.values()) topologicalOrder(graph);
-  return { graphs, warnings };
+  const levels = new Map<string, StackKey[][]>();
+  for (const [region, graph] of graphs) {
+    levels.set(region, computeLevels(graph));
+  }
+  return { graphs, levels, warnings };
 }
