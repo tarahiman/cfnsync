@@ -3,8 +3,7 @@
  *
  * design.md §4.5(バックエンドと排他制御)に対応する。CI・チーム利用向けに、
  * S3 の条件付き書き込み(`If-Match` / `If-None-Match`)で CAS(FR-1-6 s3)と
- * ロックオブジェクト(FR-1-7,8,9,10)を実現する。SDK クライアントは
- * cloudformation.ts と同じ流儀(retryMode adaptive)で構成する。
+ * ロックオブジェクト(FR-1-7,8,9,10)を実現する。
  */
 
 import {
@@ -15,7 +14,6 @@ import {
   type PutObjectCommandOutput,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { z } from 'zod';
 import { AwsError, LockError, StateConflictError } from '../core/errors.js';
 import {
@@ -30,6 +28,7 @@ import type {
   StateBackend,
   StateVersion,
 } from '../ports/index.js';
+import { awsClientConfig } from './clientConfig.js';
 import { errorName, httpStatus, toAwsError } from './errors.js';
 
 /** `S3StateBackend` のコンストラクタオプション。 */
@@ -48,6 +47,8 @@ const lockInfoSchema = z.object({
   startedAt: z.string().min(1),
   owner: z.string().min(1),
 });
+
+const GET_LOCK_OPERATION = 'S3 GetObject(lock)';
 
 function parseLockInfo(text: string, operation: string): LockInfo {
   let json: unknown;
@@ -106,30 +107,52 @@ export class S3StateBackend implements StateBackend {
     this.bucket = options.bucket;
     this.key = options.key;
     this.lockKey = `${options.key}.lock`;
-    this.client = new S3Client({
-      region: options.region,
-      // NFR-3: スロットリングに指数バックオフでリトライ(cloudformation.ts と同流儀)。
-      retryMode: 'adaptive',
-      maxAttempts: options.maxAttempts ?? 10,
-      // FR-7-1: profile 指定時のみ既定クレデンシャルチェーンに profile を適用。
-      ...(options.profile !== undefined
-        ? { credentials: defaultProvider({ profile: options.profile }) }
-        : {}),
-    });
+    this.client = new S3Client(awsClientConfig(options));
+  }
+
+  private async getObject(
+    key: string,
+    operation: string,
+  ): Promise<GetObjectCommandOutput | undefined> {
+    try {
+      return await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (err) {
+      if (isNotFound(err)) return undefined;
+      throw toAwsError(operation, err);
+    }
+  }
+
+  private async deleteLockIfMatch(
+    etag: string,
+    ownerChangedReason: string,
+  ): Promise<{ released: boolean; reason?: string }> {
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: this.lockKey,
+          IfMatch: etag,
+        }),
+      );
+      return { released: true };
+    } catch (err) {
+      if (isPreconditionFailed(err)) {
+        return { released: false, reason: ownerChangedReason };
+      }
+      if (isNotFound(err)) {
+        return { released: false, reason: 'The lock is already released' };
+      }
+      throw toAwsError('S3 DeleteObject(lock)', err);
+    }
   }
 
   async load(): Promise<
     { state: CfnSyncState; version: StateVersion } | undefined
   > {
-    let output: GetObjectCommandOutput;
-    try {
-      output = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: this.key }),
-      );
-    } catch (err) {
-      if (isNotFound(err)) return undefined; // 初回(NoSuchKey)。
-      throw toAwsError('S3 GetObject(state)', err);
-    }
+    const output = await this.getObject(this.key, 'S3 GetObject(state)');
+    if (output === undefined) return undefined; // 初回(NoSuchKey)。
     const etag = requireEtag(output.ETag, 'GetObject(state)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
@@ -220,15 +243,8 @@ export class S3StateBackend implements StateBackend {
   async verifyLock(handle: LockHandle): Promise<boolean> {
     if (handle.backend !== 's3') return false;
     // FR-1-9: ロックを再読込し runId・ETag が自分と一致すれば所有権あり。消失・不一致は喪失。
-    let output: GetObjectCommandOutput;
-    try {
-      output = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
-      );
-    } catch (err) {
-      if (isNotFound(err)) return false;
-      throw toAwsError('S3 GetObject(lock)', err);
-    }
+    const output = await this.getObject(this.lockKey, GET_LOCK_OPERATION);
+    if (output === undefined) return false;
     const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return false;
@@ -251,40 +267,15 @@ export class S3StateBackend implements StateBackend {
           'Not performing a conditional release because the lock handle has no ETag (fail-closed)',
       };
     }
-    try {
-      await this.client.send(
-        new DeleteObjectCommand({
-          Bucket: this.bucket,
-          Key: this.lockKey,
-          IfMatch: handle.etag,
-        }),
-      );
-      return { released: true };
-    } catch (err) {
-      if (isPreconditionFailed(err)) {
-        return {
-          released: false,
-          reason: 'Did not release because the lock owner has changed',
-        };
-      }
-      if (isNotFound(err)) {
-        // 冪等: 既に解放済み。エラーにしない。
-        return { released: false, reason: 'The lock is already released' };
-      }
-      throw toAwsError('S3 DeleteObject(lock)', err);
-    }
+    return this.deleteLockIfMatch(
+      handle.etag,
+      'Did not release because the lock owner has changed',
+    );
   }
 
   async readLock(): Promise<LockInfo | undefined> {
-    let output: GetObjectCommandOutput;
-    try {
-      output = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
-      );
-    } catch (err) {
-      if (isNotFound(err)) return undefined;
-      throw toAwsError('S3 GetObject(lock)', err);
-    }
+    const output = await this.getObject(this.lockKey, GET_LOCK_OPERATION);
+    if (output === undefined) return undefined;
     requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined) return undefined;
@@ -296,16 +287,9 @@ export class S3StateBackend implements StateBackend {
   ): Promise<{ released: boolean; reason?: string }> {
     // FR-1-8 / §5.6: ロックを読み、記録された runId が一致する場合のみ、読み取り時の ETag による
     // If-Match 条件付き削除で解放する。不一致なら DeleteObject を一切呼ばない。
-    let output: GetObjectCommandOutput;
-    try {
-      output = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key: this.lockKey }),
-      );
-    } catch (err) {
-      if (isNotFound(err))
-        return { released: false, reason: 'The lock does not exist' };
-      throw toAwsError('S3 GetObject(lock)', err);
-    }
+    const output = await this.getObject(this.lockKey, GET_LOCK_OPERATION);
+    if (output === undefined)
+      return { released: false, reason: 'The lock does not exist' };
     const etag = requireEtag(output.ETag, 'GetObject(lock)');
     const text = await output.Body?.transformToString();
     if (text === undefined)
@@ -324,28 +308,10 @@ export class S3StateBackend implements StateBackend {
       };
     }
 
-    try {
-      await this.client.send(
-        new DeleteObjectCommand({
-          Bucket: this.bucket,
-          Key: this.lockKey,
-          IfMatch: etag,
-        }),
-      );
-      return { released: true };
-    } catch (err) {
-      if (isPreconditionFailed(err)) {
-        return {
-          released: false,
-          reason:
-            'Did not release because the lock owner changed after it was read',
-        };
-      }
-      if (isNotFound(err)) {
-        return { released: false, reason: 'The lock is already released' };
-      }
-      throw toAwsError('S3 DeleteObject(lock)', err);
-    }
+    return this.deleteLockIfMatch(
+      etag,
+      'Did not release because the lock owner changed after it was read',
+    );
   }
 
   stateId(): string {

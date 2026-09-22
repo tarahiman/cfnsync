@@ -237,6 +237,21 @@ describe('S3StateBackend lock (FR-1-7 / FR-1-8 / FR-1-9 / FR-1-10)', () => {
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
   });
 
+  it('FR-1-8: releaseLock の所有者交代理由文言は forceUnlock と作り分けられている', async () => {
+    s3Mock
+      .on(DeleteObjectCommand, { Key: LOCK_KEY })
+      .rejects(preconditionFailed());
+    const result = await makeBackend().releaseLock({
+      backend: 's3',
+      runId: 'run-1',
+      etag: '"lock-1"',
+    });
+
+    expect(result.reason).toBe(
+      'Did not release because the lock owner has changed',
+    );
+  });
+
   it('FR-1-7(冪等): releaseLock を 2 回呼んでもエラーにならない', async () => {
     s3Mock
       .on(DeleteObjectCommand, { Key: LOCK_KEY })
@@ -365,6 +380,21 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     expect(result.reason).toBeTruthy();
   });
 
+  it('FR-1-8: forceUnlock の所有者交代理由文言は releaseLock と作り分けられている', async () => {
+    s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
+      Body: bodyOf(JSON.stringify(LOCK_INFO)),
+      ETag: '"lock-1"',
+    } as never);
+    s3Mock
+      .on(DeleteObjectCommand, { Key: LOCK_KEY })
+      .rejects(preconditionFailed());
+
+    const result = await makeBackend().forceUnlock('run-1');
+    expect(result.reason).toBe(
+      'Did not release because the lock owner changed after it was read',
+    );
+  });
+
   it('internal: 不正なロック JSON では forceUnlock の削除を呼ばない', async () => {
     s3Mock.on(GetObjectCommand, { Key: LOCK_KEY }).resolves({
       Body: bodyOf(JSON.stringify({ runId: 'run-1', owner: 'ci' })),
@@ -374,6 +404,20 @@ describe('S3StateBackend forceUnlock (FR-1-8, T-17 基盤)', () => {
     const result = await makeBackend().forceUnlock('run-1');
     expect(result.released).toBe(false);
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+});
+
+describe('S3StateBackend クライアント構成 (NFR-3)', () => {
+  it('NFR-3: S3Client が adaptive retry mode / maxAttempts:10 で構成される', async () => {
+    const backend = makeBackend();
+
+    const rm = backend.client.config.retryMode;
+    const resolvedRm = typeof rm === 'function' ? await rm() : rm;
+    expect(resolvedRm).toBe('adaptive');
+
+    const ma = backend.client.config.maxAttempts;
+    const resolvedMa = typeof ma === 'function' ? await ma() : ma;
+    expect(resolvedMa).toBe(10);
   });
 });
 

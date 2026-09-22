@@ -180,12 +180,6 @@ export interface CloudFormationGateway {
     input: CreateChangeSetInput,
   ): Promise<{ id: string; stackId?: string }>;
 
-  /** `DescribeChangeSet` を Changes の NextToken で全ページ結合して返す(FR-2 / FR-3)。 */
-  describeChangeSet(
-    stackName: string,
-    changeSetName: string,
-  ): Promise<ChangeSetDetail>;
-
   /** `DescribeChangeSet` を終端(`CREATE_COMPLETE` / `FAILED` 等)までポーリングして返す。 */
   waitForChangeSet(
     stackName: string,
