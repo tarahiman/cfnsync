@@ -234,6 +234,36 @@ describe('core/config', () => {
       ).toThrowError(/cannot reference itself.*app\.yaml@ap-northeast-1/);
     });
 
+    it('FR-8-2: 自己依存の本文は逐語で固定する(config 経路)', () => {
+      // #33 item 6 で config 経路と graph 経路の検証を resolveManagedDependsOn へ統合した。
+      // 本文は利用者可視なので、部分一致ではなく完全一致で固定する。
+      expect(() =>
+        validateConfig(
+          minimalRaw({ stacks: { 'app.yaml': { dependsOn: ['app.yaml'] } } }),
+        ),
+      ).toThrowError(
+        expect.objectContaining({
+          publicMessage:
+            "Explicit dependsOn 'app.yaml' cannot reference itself",
+        }),
+      );
+    });
+
+    it('FR-8-2: 未解決依存の本文は逐語で固定する(config 経路)', () => {
+      expect(() =>
+        validateConfig(
+          minimalRaw({
+            stacks: { 'app.yaml': { dependsOn: ['missing.yaml'] } },
+          }),
+        ),
+      ).toThrowError(
+        expect.objectContaining({
+          publicMessage:
+            "Explicit dependsOn 'missing.yaml' does not resolve to a managed target in the same region: missing.yaml@ap-northeast-1",
+        }),
+      );
+    });
+
     it.each(['', '.', 'a/..'])('FR-11-5: 退化パス %j を拒否する', (path) => {
       expect(() =>
         validateConfig(minimalRaw({ stacks: { [path]: {} } })),
