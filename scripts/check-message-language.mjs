@@ -1,8 +1,13 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// @ts-check
+
+import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 
+import { runAsScript } from './lib/cli.mjs';
+import { filesUnder } from './lib/fs.mjs';
+import { reportFailures } from './lib/report.mjs';
+
+/** @param {string} text */
 function hasNonAscii(text) {
   for (let i = 0; i < text.length; i += 1) {
     if (text.charCodeAt(i) > 0x7f) return true;
@@ -22,6 +27,9 @@ function hasNonAscii(text) {
  * Template literal expressions (the `${...}` parts) are separate
  * expression nodes, not text, so only their static quasi segments are
  * checked.
+ *
+ * @param {string} source
+ * @param {string} [fileName]
  */
 export function findNonAsciiLiterals(source, fileName = 'input.ts') {
   const sourceFile = ts.createSourceFile(
@@ -31,8 +39,10 @@ export function findNonAsciiLiterals(source, fileName = 'input.ts') {
     /* setParentNodes */ false,
     fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  /** @type {{ line: number, text: string }[]} */
   const violations = [];
 
+  /** @param {import('typescript').Node} node */
   const isLiteralWithText = (node) =>
     ts.isStringLiteral(node) ||
     ts.isNoSubstitutionTemplateLiteral(node) ||
@@ -40,6 +50,7 @@ export function findNonAsciiLiterals(source, fileName = 'input.ts') {
     ts.isTemplateMiddle(node) ||
     ts.isTemplateTail(node);
 
+  /** @param {import('typescript').Node} node */
   const visit = (node) => {
     if (isLiteralWithText(node) && hasNonAscii(node.text)) {
       const { line } = sourceFile.getLineAndCharacterOfPosition(
@@ -54,30 +65,21 @@ export function findNonAsciiLiterals(source, fileName = 'input.ts') {
   return violations;
 }
 
-function filesUnder(directory) {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    return entry.isDirectory() ? filesUnder(path) : [path];
-  });
-}
-
 export function main() {
   const violations = [];
-  for (const path of filesUnder('src')) {
-    if (!path.endsWith('.ts')) continue;
+  const sourceFiles = filesUnder('src', (path) => path.endsWith('.ts'));
+  for (const path of sourceFiles) {
     const source = readFileSync(path, 'utf8');
     for (const violation of findNonAsciiLiterals(source, path)) {
       violations.push(`${path}:${violation.line}: ${violation.text}`);
     }
   }
 
-  if (violations.length > 0) {
-    throw new Error(
-      `NFR-7: CLI message output must be English with no multi-byte characters:\n${violations.join('\n')}`,
-    );
-  }
+  reportFailures(
+    'NFR-7: CLI message output must be English with no multi-byte characters:',
+    violations,
+    `Checked ${sourceFiles.length} TypeScript source files: CLI message literals are English.`,
+  );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
-}
+runAsScript(import.meta.url, main);

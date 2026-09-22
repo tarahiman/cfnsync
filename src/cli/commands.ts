@@ -117,6 +117,44 @@ function cachedCfnFactory(
   };
 }
 
+/** FR-1 / design §4.5: 対象 state backend を構成から生成する。全コマンド共通の生成点。 */
+function backendFor(
+  ctx: CommandContext,
+  input: { config: CfnSyncConfig; configDir: string; profile?: string },
+): ReturnType<CliDependencies['createBackend']> {
+  return ctx.deps.createBackend({
+    config: input.config,
+    configDir: input.configDir,
+    profile: input.profile,
+  });
+}
+
+/**
+ * FR-7 系: CloudFormation / STS ゲートウェイと state backend の三つ組。
+ * deploy・import で共通の生成点(design §3)。
+ */
+function awsDeps(
+  ctx: CommandContext,
+  input: {
+    config: CfnSyncConfig;
+    configDir: string;
+    profile?: string;
+    region: string;
+  },
+): {
+  cfnFactory: (region: string) => ReturnType<CliDependencies['createCfn']>;
+  sts: ReturnType<CliDependencies['createSts']>;
+  backend: ReturnType<CliDependencies['createBackend']>;
+} {
+  return {
+    cfnFactory: cachedCfnFactory((region) =>
+      ctx.deps.createCfn({ region, profile: input.profile }),
+    ),
+    sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
+    backend: backendFor(ctx, input),
+  };
+}
+
 export async function runStatus(
   ctx: CommandContext,
   options: CommonOptions,
@@ -125,11 +163,7 @@ export async function runStatus(
   const result = await ctx.deps.getStatus({
     config: input.config,
     templates: input.templates,
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
+    backend: backendFor(ctx, input),
   });
   const output = renderStatus(result.entries, options.output === 'json');
   writeLine(ctx.io.stdout, output);
@@ -158,17 +192,8 @@ function deploymentDeps(
   ctx: CommandContext,
   input: ReturnType<typeof loadInputs>,
 ) {
-  const cfnFactory = cachedCfnFactory((region) =>
-    ctx.deps.createCfn({ region, profile: input.profile }),
-  );
   return {
-    cfnFactory,
-    sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
+    ...awsDeps(ctx, input),
     onEvent: (event: StackEventLine) => {
       writeLine(
         ctx.io.stderr,
@@ -241,22 +266,11 @@ export async function runImporter(
   const input = loadBaseInputs(ctx, options, {
     allowMissingTemplates: options.writeTemplate === true,
   });
-  const cfnFactory = cachedCfnFactory((region) =>
-    ctx.deps.createCfn({ region, profile: input.profile }),
-  );
   const result = await ctx.deps.runImport({
     config: input.config,
     configPath: input.configPath,
     templatePaths: ctx.deps.resolveTemplatePaths(input.config, input.configDir),
-    deps: {
-      cfnFactory,
-      sts: ctx.deps.createSts({ region: input.region, profile: input.profile }),
-      backend: ctx.deps.createBackend({
-        config: input.config,
-        configDir: input.configDir,
-        profile: input.profile,
-      }),
-    },
+    deps: awsDeps(ctx, input),
     options: {
       reconcile: options.reconcile,
       writeTemplate: options.writeTemplate === true,
@@ -279,11 +293,7 @@ export async function runForceUnlock(
 ): Promise<0 | 1> {
   const input = loadBaseInputs(ctx, options, { validateTemplateFiles: false });
   const result = await ctx.deps.forceUnlock({
-    backend: ctx.deps.createBackend({
-      config: input.config,
-      configDir: input.configDir,
-      profile: input.profile,
-    }),
+    backend: backendFor(ctx, input),
     runId,
   });
   writeLine(
